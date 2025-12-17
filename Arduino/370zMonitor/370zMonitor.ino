@@ -26,7 +26,7 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_TOUCH        0   // Disabled for now
 #define ENABLE_UI_UPDATES   1   // Enable bar/label updates
 #define ENABLE_CHARTS       1   // Re-enable charts
-#define UPDATE_INTERVAL_MS  100 // Update every 150ms (original speed)
+#define UPDATE_INTERVAL_MS  125 // Update every (150ms original speed)
 
 //-----------------------------------------------------------------
 
@@ -46,6 +46,18 @@ static bool g_ioexp_ok = false;
 
 //-----------------------------------------------------------------
 
+// OBD Data
+
+int RPM = 0;
+
+//-----------------------------------------------------------------
+
+// Sensors Data
+
+int oilPressurePSI = 0;
+
+//-----------------------------------------------------------------
+
 // UI objects
 #include "ui.h"
 
@@ -58,6 +70,10 @@ static bool g_ioexp_ok = false;
 extern lv_obj_t * ui_OIL_PRESS_Bar;
 extern lv_obj_t * ui_OIL_PRESS_CHART;
 extern lv_obj_t * ui_OIL_PRESS_Value;
+int OIL_PRESS_Min_PSI = 0;
+int OIL_PRESS_Max_PSI = 150;
+int OIL_PRESS_ValueCriticalAbsolute = 120;
+bool OIL_PRESS_ValueCriticalRPM = false;
 
 //OIL TEMP [Oil pan/C]
 //	(Oil pan, Out line - post termostatic valve)
@@ -69,6 +85,13 @@ extern lv_obj_t * ui_OIL_TEMP_Bar;
 extern lv_obj_t * ui_OIL_TEMP_CHART;
 extern lv_obj_t * ui_OIL_TEMP_Value_P;
 extern lv_obj_t * ui_OIL_TEMP_Value_C;
+int OIL_TEMP_Value_Pan_Celsius;
+int OIL_TEMP_Value_Pan_Fahrenheit;
+int OIL_TEMP_Value_Cooled_Celsius;
+int OIL_TEMP_Value_Cooled_Fahrenheit;
+int OIL_TEMP_Min_F = 150;
+int OIL_TEMP_Max_F = 300;
+int OIL_TEMP_ValueCriticalF = 260;
 
 //WATER TEMP [H/C]
 //	(Upper/Lower radiator hose)
@@ -78,8 +101,15 @@ extern lv_obj_t * ui_OIL_TEMP_Value_C;
 //		>= 230 F*
 extern lv_obj_t * ui_W_TEMP_Bar;
 extern lv_obj_t * ui_W_TEMP_CHART;
-extern lv_obj_t * ui_W_TEMP_Value_H;
-extern lv_obj_t * ui_W_TEMP_Value_C;
+extern lv_obj_t* ui_W_TEMP_Value_H;
+extern lv_obj_t* ui_W_TEMP_Value_C;
+int W_TEMP_Value_Hot_Celsius;
+int W_TEMP_Value_Hot_Fahrenheit;
+int W_TEMP_Value_Cooled_Celsius;
+int W_TEMP_Value_Cooled_Fahrenheit;
+int W_TEMP_Min_F = 100;
+int W_TEMP_Max_F = 260;
+int W_TEMP_ValueCritical_F = 230;
 
 //TRAN TEMP [H/C]
 //	(In/Out lines - pre termostatic valve)
@@ -89,8 +119,15 @@ extern lv_obj_t * ui_W_TEMP_Value_C;
 //		>= 230 F*
 extern lv_obj_t * ui_TRAN_TEMP_Bar;
 extern lv_obj_t * ui_TRAN_TEMP_CHART;
-extern lv_obj_t * ui_TRAN_TEMP_Value_H;
-extern lv_obj_t * ui_TRAN_TEMP_Value_C;
+extern lv_obj_t* ui_TRAN_TEMP_Value_H;
+extern lv_obj_t* ui_TRAN_TEMP_Value_C;
+int TRAN_TEMP_Value_Hot_Celsius;
+int TRAN_TEMP_Value_Hot_Fahrenheit;
+int TRAN_TEMP_Value_Cooled_Celsius;
+int TRAN_TEMP_Value_Cooled_Fahrenheit;
+int TRAN_TEMP_Min_F = 80;
+int TRAN_TEMP_Max_F = 280;
+int TRAN_TEMP_ValueCritical_F = 230;
 
 //STEER TEMP [H/C]
 //	(In/Out lines)
@@ -102,6 +139,13 @@ extern lv_obj_t * ui_STEER_TEMP_Bar;
 extern lv_obj_t * ui_STEER_TEMP_CHART;
 extern lv_obj_t * ui_STEER_TEMP_Value_H;
 extern lv_obj_t * ui_STEER_TEMP_Value_C;
+int STEER_TEMP_Value_Hot_Celsius;
+int STEER_TEMP_Value_Hot_Fahrenheit;
+int STEER_TEMP_Value_Cooled_Celsius;
+int STEER_TEMP_Value_Cooled_Fahrenheit;
+int STEER_TEMP_Min_F = 60;
+int STEER_TEMP_Max_F = 300;
+int STEER_TEMP_ValueCritical_F = 230;
 
 //DIFF TEMP [H/C]
 //	(In/Out lines)
@@ -113,6 +157,13 @@ extern lv_obj_t * ui_DIFF_TEMP_Bar;
 extern lv_obj_t * ui_DIFF_TEMP_CHART;
 extern lv_obj_t * ui_DIFF_TEMP_Value_H;
 extern lv_obj_t * ui_DIFF_TEMP_Value_C;
+int DIFF_TEMP_Value_Hot_Celsius;
+int DIFF_TEMP_Value_Hot_Fahrenheit;
+int DIFF_TEMP_Value_Cooled_Celsius;
+int DIFF_TEMP_Value_Cooled_Fahrenheit;
+int DIFF_TEMP_Min_F = 60;
+int DIFF_TEMP_Max_F = 320;
+int DIFF_TEMP_ValueCritical_F = 270;
 
 //FUEL TRUST
 //	-Spread:
@@ -121,8 +172,10 @@ extern lv_obj_t * ui_DIFF_TEMP_Value_C;
 //		<= 50%
 extern lv_obj_t * ui_FUEL_TRUST_Bar;
 extern lv_obj_t * ui_FUEL_TRUST_CHART;
-extern lv_obj_t * ui_FUEL_TRUST_Value_H;
-extern lv_obj_t * ui_FUEL_TRUST_Value_C;
+extern lv_obj_t * ui_FUEL_TRUST_Value;
+int FUEL_TRUST_Min_F = 0;
+int FUEL_TRUST_Max_F = 100;
+int FUEL_TRUST_ValueCritical_F = 50;
 
 //-----------------------------------------------------------------
 
@@ -187,6 +240,20 @@ static uint32_t temp_bucket_start = 0;
 static int32_t oil_press_history[CHART_POINTS] = {0};
 static int32_t oil_temp_history[CHART_POINTS] = {0};  // Stored in °C
 
+//=================================================================
+
+static inline int OilPressMin_FromRPM()
+{
+    //VALUE CRITICAL <= 10 PSI per 1000 RPM minimum
+
+    int value = (RPM * 10 + 999) / 1000;
+    const bool isCritical = (oilPressurePSI < value);
+
+    return isCritical;
+}
+
+//-----------------------------------------------------------------
+
 // ===== Chart draw callbacks for bar coloring =====
 // Oil pressure: red < 20, orange 20-100, red > 100
 static void oil_press_chart_draw_cb(lv_event_t * e) {
@@ -237,6 +304,8 @@ static void shift_history(int32_t* history, int32_t new_value) {
 }
 
 //-----------------------------------------------------------------
+
+#pragma region Hardware functions
 
 // ===== IO Expander Functions =====
 static bool ch422_write_system(uint8_t sys_param) {
@@ -299,13 +368,16 @@ void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
     data->state = LV_INDEV_STATE_RELEASED;
 }
 
-//-----------------------------------------------------------------
-//-----------------------------------------------------------------
+#pragma endregion
+
+//=================================================================
 
 void setup() {
     Serial.begin(115200);
     delay(1000);
     
+#pragma region DIAGNOSTICS
+
     Serial.println("\n========================================");
     Serial.println("   DIAGNOSTIC v3 - CLIB malloc + PSRAM");
     Serial.println("========================================");
@@ -394,6 +466,12 @@ void setup() {
     //Serial.println("[6/6] Applying stability fixes...");
     //simplify_ui();
     
+#pragma endregion
+
+    OIL_PRESS_ValueCriticalRPM = OilPressMin_FromRPM();
+
+    //-----------------------------
+
     // Create FPS counter label
     if (ui_Screen1 != NULL) {
         fps_label = lv_label_create(ui_Screen1);
@@ -403,6 +481,8 @@ void setup() {
         lv_obj_set_style_text_font(fps_label, &lv_font_montserrat_20, LV_PART_MAIN);
     }
     
+    //-----------------------------
+
     // Initialize charts
     #if ENABLE_CHARTS
     if (ui_OIL_PRESS_CHART) {
@@ -456,6 +536,8 @@ void setup() {
     }
     #endif
     
+    //-----------------------------
+
     // Force first render
     Serial.println("\nForcing initial render...");
     uint32_t t0 = millis();
@@ -468,15 +550,16 @@ void setup() {
     Serial.println("========================================\n");
 }
 
-//-----------------------------------------------------------------
-//-----------------------------------------------------------------
+//=================================================================
 
 void loop() {
     static uint32_t last_tick = 0;
     static uint32_t last_status = 0;
     static uint32_t last_update = 0;
+
     static int oil_pressure = 75;
     static int oil_temp_c = 98;
+    static int fuel_trust = 100;
     
     uint32_t now = millis();
     
@@ -487,7 +570,7 @@ void loop() {
     
     loop_count++;
     
-    // Status every 2 seconds
+    // Status every 1 seconds
     if (now - last_status >= 1000) {
         // Update FPS label
         if (fps_label != NULL) {
@@ -511,7 +594,7 @@ void loop() {
         //-----------------------
 
         // Animate oil pressure (0-150 PSI range)
-        oil_pressure += random(-15, 16);
+        oil_pressure += random(-7, 8);
         if (oil_pressure > 150) oil_pressure = 150;
         if (oil_pressure < 0) oil_pressure = 0;
         
@@ -542,16 +625,66 @@ void loop() {
                 temp_red ? lv_color_hex(0xFF0000) : lv_color_hex(0xFF4619),
                 LV_PART_INDICATOR);
         }
+        
+        //-----------------------
+
         // Animate temp labels
-        if (ui_OIL_TEMP_Value_P) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F", temp_f);
-            lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
-        }
         if (ui_OIL_TEMP_Value_C) {
             char buf[16];
             snprintf(buf, sizeof(buf), "%d°F", temp_f);
             lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
+        }
+        if (ui_OIL_TEMP_Value_P) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%d°F", oil_temp_c);
+            lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
+        }
+
+        //-----------------------
+
+        // Animate fuel trust (0-100% range)
+        static uint32_t fuel_trust_dip_time = 0;
+        static bool fuel_trust_dipping = false;
+        uint32_t now = millis();
+
+        if (!fuel_trust_dipping) {
+            // Normal state: hover around 95-100
+            fuel_trust = 95 + random(0, 6);  // 95-100
+
+            // Random chance to start a dip every 5-20 seconds
+            if (fuel_trust_dip_time == 0) {
+                fuel_trust_dip_time = now + random(5000, 20001);
+            }
+
+            if (now >= fuel_trust_dip_time) {
+                fuel_trust_dipping = true;
+                fuel_trust = 40 + random(0, 35);  // Dip to 40-75
+            }
+        }
+        else {
+            // Dipping state: quickly recover back to normal
+            fuel_trust += random(10, 20);  // Fast recovery
+
+            if (fuel_trust >= 95) {
+                fuel_trust = 95 + random(0, 6);
+                fuel_trust_dipping = false;
+                fuel_trust_dip_time = now + random(5000, 20001);  // Schedule next dip
+            }
+        }
+
+        // Update fuel trust  bar and label
+        if (ui_FUEL_TRUST_Bar) {
+            lv_bar_set_value(ui_FUEL_TRUST_Bar, fuel_trust, LV_ANIM_OFF);
+            // Color: red if <50, else orange
+            bool press_red = (fuel_trust < 50);
+            lv_obj_set_style_bg_color(ui_FUEL_TRUST_Bar,
+                press_red ? lv_color_hex(0xFF0000) : lv_color_hex(0xFF4619),
+                LV_PART_INDICATOR);
+        }
+        if (ui_FUEL_TRUST_Value) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%d %%", fuel_trust);
+            lv_label_set_text(ui_FUEL_TRUST_Value, buf);
         }
 
         //-----------------------

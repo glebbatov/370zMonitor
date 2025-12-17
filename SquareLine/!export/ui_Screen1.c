@@ -619,7 +619,7 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_y(ui_W_TEMP_Value_H, -15);
     lv_obj_set_align(ui_W_TEMP_Value_H, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_W_TEMP_Value_H, "0°F [H]");
-    lv_obj_set_style_text_font(ui_W_TEMP_Value_H, &ui_font_OrbitronMedium26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_W_TEMP_Value_H, &ui_font_OrbitronMedium24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_W_TEMP_Value_C = lv_label_create(ui_W_TEMP);
     lv_obj_set_width(ui_W_TEMP_Value_C, LV_SIZE_CONTENT);   /// 1
@@ -628,7 +628,7 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_y(ui_W_TEMP_Value_C, 12);
     lv_obj_set_align(ui_W_TEMP_Value_C, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_W_TEMP_Value_C, "0°F [C]");
-    lv_obj_set_style_text_font(ui_W_TEMP_Value_C, &ui_font_OrbitronMedium26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_W_TEMP_Value_C, &ui_font_OrbitronMedium24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_W_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_W_TEMP);
     lv_obj_set_width(ui_W_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1
@@ -770,7 +770,7 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_y(ui_TRAN_TEMP_Value_H, -15);
     lv_obj_set_align(ui_TRAN_TEMP_Value_H, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_TRAN_TEMP_Value_H, "0°F [H]");
-    lv_obj_set_style_text_font(ui_TRAN_TEMP_Value_H, &ui_font_OrbitronMedium26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_TRAN_TEMP_Value_H, &ui_font_OrbitronMedium24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_TRAN_TEMP_Value_C = lv_label_create(ui_TRAN_TEMP);
     lv_obj_set_width(ui_TRAN_TEMP_Value_C, LV_SIZE_CONTENT);   /// 1
@@ -779,7 +779,7 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_y(ui_TRAN_TEMP_Value_C, 12);
     lv_obj_set_align(ui_TRAN_TEMP_Value_C, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_TRAN_TEMP_Value_C, "0°F [C]");
-    lv_obj_set_style_text_font(ui_TRAN_TEMP_Value_C, &ui_font_OrbitronMedium26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_TRAN_TEMP_Value_C, &ui_font_OrbitronMedium24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_TRAN_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_TRAN_TEMP);
     lv_obj_set_width(ui_TRAN_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1
@@ -922,7 +922,7 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_y(ui_STEER_TEMP_Value_H, -15);
     lv_obj_set_align(ui_STEER_TEMP_Value_H, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_STEER_TEMP_Value_H, "0°F [H]");
-    lv_obj_set_style_text_font(ui_STEER_TEMP_Value_H, &ui_font_OrbitronMedium26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_STEER_TEMP_Value_H, &ui_font_OrbitronMedium24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_STEER_TEMP_Value_C = lv_label_create(ui_STEER_TEMP);
     lv_obj_set_width(ui_STEER_TEMP_Value_C, LV_SIZE_CONTENT);   /// 1
@@ -931,7 +931,7 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_y(ui_STEER_TEMP_Value_C, 12);
     lv_obj_set_align(ui_STEER_TEMP_Value_C, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_STEER_TEMP_Value_C, "0°F [C]");
-    lv_obj_set_style_text_font(ui_STEER_TEMP_Value_C, &ui_font_OrbitronMedium26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_STEER_TEMP_Value_C, &ui_font_OrbitronMedium24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_STEER_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_STEER_TEMP);
     lv_obj_set_width(ui_STEER_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1
@@ -1075,7 +1075,7 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_y(ui_DIFF_TEMP_Value_H, -15);
     lv_obj_set_align(ui_DIFF_TEMP_Value_H, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_DIFF_TEMP_Value_H, "0°F [H]");
-    lv_obj_set_style_text_font(ui_DIFF_TEMP_Value_H, &ui_font_OrbitronMedium26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_DIFF_TEMP_Value_H, &ui_font_OrbitronMedium24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_DIFF_TEMP_Value_C = lv_label_create(ui_DIFF_TEMP);
     lv_obj_set_width(ui_DIFF_TEMP_Value_C, LV_SIZE_CONTENT);   /// 1
@@ -1084,7 +1084,7 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_y(ui_DIFF_TEMP_Value_C, 12);
     lv_obj_set_align(ui_DIFF_TEMP_Value_C, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_DIFF_TEMP_Value_C, "0°F [C]");
-    lv_obj_set_style_text_font(ui_DIFF_TEMP_Value_C, &ui_font_OrbitronMedium26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_DIFF_TEMP_Value_C, &ui_font_OrbitronMedium24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_DIFF_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_DIFF_TEMP);
     lv_obj_set_width(ui_DIFF_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1
@@ -1216,7 +1216,7 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_y(ui_FUEL_TRUST_Value, -1);
     lv_obj_set_align(ui_FUEL_TRUST_Value, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_FUEL_TRUST_Value, "0 %");
-    lv_obj_set_style_text_font(ui_FUEL_TRUST_Value, &ui_font_OrbitronMedium26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_FUEL_TRUST_Value, &ui_font_OrbitronMedium24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_FUEL_TRUST_VALUE_CRITICAL_Label = lv_label_create(ui_FUEL_TRUST);
     lv_obj_set_width(ui_FUEL_TRUST_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1

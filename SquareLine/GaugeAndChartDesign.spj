@@ -5826,7 +5826,7 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "OrbitronMedium26",
+                                "strval": "OrbitronMedium24",
                                 "InheritedType": 3
                               }
                             ],
@@ -5978,7 +5978,7 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "OrbitronMedium26",
+                                "strval": "OrbitronMedium24",
                                 "InheritedType": 3
                               }
                             ],
@@ -7493,7 +7493,7 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "OrbitronMedium26",
+                                "strval": "OrbitronMedium24",
                                 "InheritedType": 3
                               }
                             ],
@@ -7645,7 +7645,7 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "OrbitronMedium26",
+                                "strval": "OrbitronMedium24",
                                 "InheritedType": 3
                               }
                             ],
@@ -9160,7 +9160,7 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "OrbitronMedium26",
+                                "strval": "OrbitronMedium24",
                                 "InheritedType": 3
                               }
                             ],
@@ -9312,7 +9312,7 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "OrbitronMedium26",
+                                "strval": "OrbitronMedium24",
                                 "InheritedType": 3
                               }
                             ],
@@ -10827,7 +10827,7 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "OrbitronMedium26",
+                                "strval": "OrbitronMedium24",
                                 "InheritedType": 3
                               }
                             ],
@@ -10979,7 +10979,7 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "OrbitronMedium26",
+                                "strval": "OrbitronMedium24",
                                 "InheritedType": 3
                               }
                             ],
@@ -12336,7 +12336,7 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "OrbitronMedium26",
+                                "strval": "OrbitronMedium24",
                                 "InheritedType": 3
                               }
                             ],
@@ -12958,7 +12958,7 @@
     "theme_color1": 5,
     "theme_color2": 0,
     "custom_variable_prefix": "uic",
-    "backup_cnt": 28,
+    "backup_cnt": 29,
     "autosave_cnt": 0,
     "group_color_cnt": 0,
     "lvgl_version": "9.1.0",

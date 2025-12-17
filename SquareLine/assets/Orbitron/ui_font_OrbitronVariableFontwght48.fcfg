@@ -1,0 +1,16 @@
+{
+  "codename": "OrbitronVariableFontwght48",
+  "ttf_path": "/assets/Orbitron/Orbitron-VariableFont_wght.ttf",
+  "bin_path": "/assets/Orbitron\\ui_font_OrbitronVariableFontwght48.bin",
+  "c_path": "/assets/Orbitron\\ui_font_OrbitronVariableFontwght48.c",
+  "cfg_path": "/assets/Orbitron\\ui_font_OrbitronVariableFontwght48.fcfg",
+  "size": 48,
+  "bpp": 4,
+  "letters": 0,
+  "ranges": [
+    "0x20-0x7f"
+  ],
+  "symbols": "°",
+  "customparams": "--no-compress --no-prefilter",
+  "uploaded": false
+}

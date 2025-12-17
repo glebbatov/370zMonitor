@@ -1,0 +1,16 @@
+{
+  "codename": "OrbitronSemiBold12",
+  "ttf_path": "/assets/Orbitron/static/Orbitron-SemiBold.ttf",
+  "bin_path": "/assets/Orbitron/static\\ui_font_OrbitronSemiBold12.bin",
+  "c_path": "/assets/Orbitron/static\\ui_font_OrbitronSemiBold12.c",
+  "cfg_path": "/assets/Orbitron/static\\ui_font_OrbitronSemiBold12.fcfg",
+  "size": 12,
+  "bpp": 4,
+  "letters": 0,
+  "ranges": [
+    "0x20-0x7f"
+  ],
+  "symbols": "°",
+  "customparams": "--no-compress --no-prefilter",
+  "uploaded": false
+}

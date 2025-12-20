@@ -52,7 +52,7 @@ static bool g_ioexp_ok = false;
 
 //-----------------------------------------------------------------
 
-// Gauges data
+#pragma region Gauges data
 
 //OIL PRESS
 //	-Spread:
@@ -144,21 +144,27 @@ int FUEL_TRUST_Min_F = 0;
 int FUEL_TRUST_Max_F = 100;
 int FUEL_TRUST_ValueCritical_F = 50;
 
-//-----------------------------------------------------------------
+#pragma endregion Gauges data
 
-// OBD Data
+//-----------------------------
+
+#pragma region OBD Data
 
 int RPM = 0;
 
-//-----------------------------------------------------------------
+#pragma endregion OBD Data
 
-// Sensors Data
+//-----------------------------
+
+#pragma region Sensors Data
 
 int oilPressurePSI = 0;
 
-//-----------------------------------------------------------------
+#pragma endregion Sensors Data
 
-// Animation
+//-----------------------------
+
+#pragma region Animation
 
 // Smoothing value
 static float smooth_oil_pressure = 75.0f;
@@ -168,9 +174,22 @@ static float smooth_fuel_trust = 100.0f;
 // Smoothing factor: 0.3 = responsive, 0.1 = very smooth
 #define SMOOTH_FACTOR 0.3f
 
-//-----------------------------------------------------------------
+#pragma endregion Animation
 
-// UI objects
+//-----------------------------
+
+#pragma region Colors
+
+// Colors
+static int hexRed = 0xFF0000;
+static int hexOrange = 0xFF4619;
+
+#pragma endregion Colors
+
+//-----------------------------
+
+#pragma region UI objects
+
 #include "ui.h"
 
 //OIL PRESS
@@ -213,6 +232,8 @@ extern lv_obj_t * ui_DIFF_TEMP_Value_C;
 extern lv_obj_t * ui_FUEL_TRUST_Bar;
 extern lv_obj_t * ui_FUEL_TRUST_CHART;
 extern lv_obj_t * ui_FUEL_TRUST_Value;
+
+#pragma endregion UI objects
 
 //-----------------------------------------------------------------
 
@@ -305,7 +326,8 @@ static inline int OilPressMin_FromRPM()
 
 //-----------------------------------------------------------------
 
-// ===== Chart draw callbacks for bar coloring =====
+#pragma region Chart draw callbacks for bar coloring
+
 // Oil pressure: red < 20, orange 20-100, red > 100
 static void oil_press_chart_draw_cb(lv_event_t * e) {
     lv_draw_task_t * draw_task = lv_event_get_draw_task(e);
@@ -323,10 +345,10 @@ static void oil_press_chart_draw_cb(lv_event_t * e) {
     int32_t psi = oil_press_history[idx];
 
     bool is_red = (psi < 20) || (psi > 100);     // change this if you only want >100 to be red
-    fill_dsc->color = is_red ? lv_color_hex(0xFF0000) : lv_color_hex(0xFF4619);
+    fill_dsc->color = is_red ? lv_color_hex(hexRed) : lv_color_hex(hexOrange);
 }
 
-// Oil temp: red < 180°F or > 260°F, orange in between
+// Oil temp: red < 100°F or > 260°F, orange in between
 static void oil_temp_chart_draw_cb(lv_event_t * e) {
     lv_draw_task_t * draw_task = lv_event_get_draw_task(e);
 
@@ -340,10 +362,9 @@ static void oil_temp_chart_draw_cb(lv_event_t * e) {
     if(idx >= CHART_POINTS) return;
 
     int32_t temp_c = oil_temp_history[idx];
-    int32_t temp_f = (temp_c * 9) / 5 + 32;
 
-    bool is_red = (temp_f < 180) || (temp_f > 260);
-    fill_dsc->color = is_red ? lv_color_hex(0xFF0000) : lv_color_hex(0xFF4619);
+    bool is_red = (temp_c < W_TEMP_Min_F) || (temp_c > W_TEMP_Max_F);
+    fill_dsc->color = is_red ? lv_color_hex(hexRed) : lv_color_hex(hexOrange);
 }
 
 // Helper to shift history array left and add new value
@@ -354,9 +375,12 @@ static void shift_history(int32_t* history, int32_t new_value) {
     history[CHART_POINTS - 1] = new_value;
 }
 
-//-----------------------------------------------------------------
+#pragma endregion Chart draw callbacks for bar coloring
 
-// ===== Triple-tap callback for utilities toggle =====
+//-----------------------------
+
+#pragma region Triple-tap callback for utilities toggle
+
 #define TRIPLE_TAP_TIMEOUT_MS 500  // Max time between taps
 
 static void utilities_triple_tap_cb(lv_event_t * e) {
@@ -399,11 +423,16 @@ static void utilities_triple_tap_cb(lv_event_t * e) {
     }
 }
 
+#pragma endregion Triple-tap callback for utilities toggle
+
 //-----------------------------------------------------------------
 
 #pragma region Hardware functions
 
-// ===== IO Expander Functions =====
+//-----------------------------
+
+#pragma region IO Expander Functions
+
 static bool ch422_write_system(uint8_t sys_param) {
     Wire.beginTransmission(CH422_ADDR_SYSTEM);
     Wire.write(sys_param);
@@ -435,9 +464,11 @@ void setBacklight(bool on) {
     if (g_ioexp_ok) exio_set(EXIO_DISP, on);
 }
 
-//-----------------------------------------------------------------
+#pragma endregion IO Expander Functions
 
-// ===== LVGL Callbacks =====
+//-----------------------------
+
+#pragma region LVGL Callbacks
 void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
     uint32_t w = (area->x2 - area->x1 + 1);
     uint32_t h = (area->y2 - area->y1 + 1);
@@ -460,6 +491,11 @@ void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
     flush_count++;
 }
 
+#pragma endregion LVGL Callbacks
+
+//-----------------------------
+
+#pragma region Touch Callbacks
 void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
     touch.read();
     
@@ -495,12 +531,16 @@ void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
         data->state = LV_INDEV_STATE_RELEASED;
     }
 }
+#pragma endregion Touch Callbacks
 
-#pragma endregion
+//-----------------------------
+
+#pragma endregion Hardware functions
 
 //=================================================================
 
 void setup() {
+
     Serial.begin(115200);
     delay(1000);
     
@@ -615,8 +655,6 @@ void setup() {
     
 #pragma endregion
 
-    OIL_PRESS_ValueCriticalRPM = OilPressMin_FromRPM();
-
     //-----------------------------
 
     // Bars Animation Speeds
@@ -676,11 +714,11 @@ void setup() {
         lv_chart_set_div_line_count(ui_OIL_PRESS_CHART, 0, 0);
         
         // Add series
-        chart_series_oil_press = lv_chart_add_series(ui_OIL_PRESS_CHART, lv_color_hex(0xFF4619), LV_CHART_AXIS_PRIMARY_Y);
+        chart_series_oil_press = lv_chart_add_series(ui_OIL_PRESS_CHART, lv_color_hex(hexOrange), LV_CHART_AXIS_PRIMARY_Y);
         
         // Initialize with zeros
         for (int i = 0; i < 24; i++) {
-            lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, 0);
+            lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, -100);
         }
         lv_chart_refresh(ui_OIL_PRESS_CHART);
         Serial.println("Oil pressure chart initialized (zeros)");
@@ -696,16 +734,16 @@ void setup() {
         // Configure chart
         lv_chart_set_type(ui_OIL_TEMP_CHART, LV_CHART_TYPE_BAR);
         lv_chart_set_point_count(ui_OIL_TEMP_CHART, 24);
-        lv_chart_set_range(ui_OIL_TEMP_CHART, LV_CHART_AXIS_PRIMARY_Y, 0, 140);
+        lv_chart_set_range(ui_OIL_TEMP_CHART, LV_CHART_AXIS_PRIMARY_Y, W_TEMP_Min_F, W_TEMP_Max_F);
         lv_chart_set_update_mode(ui_OIL_TEMP_CHART, LV_CHART_UPDATE_MODE_SHIFT);
         lv_chart_set_div_line_count(ui_OIL_TEMP_CHART, 0, 0);
         
         // Add series
-        chart_series_oil_temp = lv_chart_add_series(ui_OIL_TEMP_CHART, lv_color_hex(0xFF4619), LV_CHART_AXIS_PRIMARY_Y);
+        chart_series_oil_temp = lv_chart_add_series(ui_OIL_TEMP_CHART, lv_color_hex(hexOrange), LV_CHART_AXIS_PRIMARY_Y);
         
         // Initialize with zeros
         for (int i = 0; i < 24; i++) {
-            lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, 0);
+            lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, -100);
         }
         lv_chart_refresh(ui_OIL_TEMP_CHART);
         Serial.println("Oil temp chart initialized (zeros)");
@@ -736,10 +774,12 @@ void loop() {
     static uint32_t last_status = 0;
     static uint32_t last_update = 0;
 
-    static int oil_pressure = 75;
-    static int oil_temp_p = 100;
-    static int oil_temp_c = 100;
+    static int oil_pressure = 40;
+    static int oil_temp_p = 180;
+    static int oil_temp_c = 180;
     static int fuel_trust = 100;
+
+    OIL_PRESS_ValueCriticalRPM = OilPressMin_FromRPM();
     
     uint32_t now = millis();
     
@@ -786,7 +826,7 @@ void loop() {
 
         #pragma region oil pressure
 
-        // Animate oil pressure (0-150 PSI range)
+        // Animate oil pressure
         oil_pressure += random(-7, 8);
         if (oil_pressure > OIL_PRESS_Max_PSI) oil_pressure = OIL_PRESS_Max_PSI;
         if (oil_pressure < OIL_PRESS_Min_PSI) oil_pressure = OIL_PRESS_Min_PSI;
@@ -799,9 +839,7 @@ void loop() {
             lv_bar_set_value(ui_OIL_PRESS_Bar, smooth_oil_pressure, LV_ANIM_ON);
             // Color: red if <20 or >100, else orange
             bool press_red = (oil_pressure < OIL_PRESS_ValueCriticalRPM) || (oil_pressure > OIL_PRESS_ValueCriticalAbsolute);
-            lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar,
-                press_red ? lv_color_hex(0xFF0000) : lv_color_hex(0xFF4619),
-                LV_PART_INDICATOR);
+            lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar, press_red ? lv_color_hex(hexRed) : lv_color_hex(hexOrange), LV_PART_INDICATOR);
         }
 
         // Smooth the animation for the oil pressure label (only updating when the displayed value actually changes)
@@ -821,15 +859,16 @@ void loop() {
         
         #pragma region oil temp
 
+        // Animate oil temp
+        oil_temp_p += random(-2, 3);
+        if (oil_temp_p > W_TEMP_Max_F) oil_temp_p = W_TEMP_Max_F;
+        if (oil_temp_p < W_TEMP_Min_F) oil_temp_p = W_TEMP_Min_F;
+
         // Animate temp bar
-        int temp_f = (oil_temp_p * 9) / 5 + 32;
         if (ui_OIL_TEMP_Bar) {
-            // Bar range is 150-300°F
-            lv_bar_set_value(ui_OIL_TEMP_Bar, temp_f, LV_ANIM_ON);
-            bool temp_red = (temp_f > OIL_TEMP_ValueCriticalF);
-            lv_obj_set_style_bg_color(ui_OIL_TEMP_Bar,
-                temp_red ? lv_color_hex(0xFF0000) : lv_color_hex(0xFF4619),
-                LV_PART_INDICATOR);
+            lv_bar_set_value(ui_OIL_TEMP_Bar, oil_temp_p, LV_ANIM_ON);
+            bool temp_red = (oil_temp_p > OIL_TEMP_ValueCriticalF);
+            lv_obj_set_style_bg_color(ui_OIL_TEMP_Bar, temp_red ? lv_color_hex(hexRed) : lv_color_hex(hexOrange), LV_PART_INDICATOR);
         }
         
         //-----------------------
@@ -837,12 +876,12 @@ void loop() {
         // Animate temp labels
         if (ui_OIL_TEMP_Value_P) {
             char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F", oil_temp_p);
+            snprintf(buf, sizeof(buf), "%d°F [P]", oil_temp_p);
             lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
         }
         if (ui_OIL_TEMP_Value_C) {
             char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F", temp_f);
+            snprintf(buf, sizeof(buf), "%d°F [C]", oil_temp_p);
             lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
         }
 
@@ -900,7 +939,7 @@ void loop() {
             // Color: red if <50, else orange
             bool press_red = (fuel_trust < 50);
             lv_obj_set_style_bg_color(ui_FUEL_TRUST_Bar,
-                press_red ? lv_color_hex(0xFF0000) : lv_color_hex(0xFF4619),
+                press_red ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
         if (ui_FUEL_TRUST_Value) {

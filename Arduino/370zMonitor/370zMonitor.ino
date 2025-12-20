@@ -226,7 +226,7 @@ Arduino_RGB_Display *gfx = new Arduino_RGB_Display(800, 480, rgbpanel, 0, true);
 //-----------------------------------------------------------------
 
 // LVGL
-#define LVGL_BUFFER_SIZE (800 * 48)  // 48 lines - will go to PSRAM
+#define LVGL_BUFFER_SIZE (800 * 69)  // 48 lines - will go to PSRAM | 480 ÷ 7 ≈ 69 lines per strip
 static lv_display_t *disp;
 static lv_indev_t *indev;
 static uint8_t *disp_draw_buf1;
@@ -239,6 +239,10 @@ static uint32_t loop_count = 0;
 static uint32_t flush_count = 0;
 static uint32_t update_count = 0;
 static lv_obj_t * fps_label = NULL;
+static lv_obj_t * cpu_label = NULL;
+
+// CPU usage tracking
+static uint32_t cpu_busy_time = 0;  // Time spent working (not in delay)
 
 // Chart series
 static lv_chart_series_t * chart_series_oil_press = NULL;
@@ -522,6 +526,13 @@ void setup() {
         lv_label_set_text(fps_label, "--- FPS");
         lv_obj_set_style_text_color(fps_label, lv_color_hex(0x00FF00), LV_PART_MAIN);
         lv_obj_set_style_text_font(fps_label, &lv_font_montserrat_20, LV_PART_MAIN);
+        
+        // Create CPU usage label below FPS
+        cpu_label = lv_label_create(ui_Screen1);
+        lv_obj_align(cpu_label, LV_ALIGN_TOP_RIGHT, -10, 35);
+        lv_label_set_text(cpu_label, "--- %");
+        lv_obj_set_style_text_color(cpu_label, lv_color_hex(0x00FF00), LV_PART_MAIN);
+        lv_obj_set_style_text_font(cpu_label, &lv_font_montserrat_20, LV_PART_MAIN);
     }
     
     //-----------------------------
@@ -625,10 +636,21 @@ void loop() {
             lv_label_set_text(fps_label, fps_buf);
         }
         
-        Serial.printf("[STATUS] loops=%u flushes=%u heap=%u psram=%u\n",
-                      loop_count, flush_count,
+        // Update CPU usage label (busy_time / total_time * 100)
+        if (cpu_label != NULL) {
+            // Total time for 1 second = 1000ms, cpu_busy_time is in ms
+            int cpu_percent = (cpu_busy_time * 100) / 1000;
+            if (cpu_percent > 100) cpu_percent = 100;
+            char cpu_buf[16];
+            snprintf(cpu_buf, sizeof(cpu_buf), "%3d %%", cpu_percent);
+            lv_label_set_text(cpu_label, cpu_buf);
+        }
+        
+        Serial.printf("[STATUS] loops=%u flushes=%u cpu=%u%% heap=%u psram=%u\n",
+                      loop_count, flush_count, (cpu_busy_time * 100) / 1000,
                       ESP.getFreeHeap(), ESP.getFreePsram());
         flush_count = 0;  // Reset for next second
+        cpu_busy_time = 0;  // Reset CPU tracking
         last_status = now;
     }
     
@@ -809,6 +831,7 @@ void loop() {
     }
     
     uint32_t elapsed = millis() - frame_start;
+    cpu_busy_time += elapsed;  // Track time spent working
     if (elapsed < FRAME_TIME_MS) {
         delay(FRAME_TIME_MS - elapsed);
     }

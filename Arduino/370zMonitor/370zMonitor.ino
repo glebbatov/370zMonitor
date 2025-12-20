@@ -46,6 +46,11 @@ static bool g_ioexp_ok = false;
 
 //-----------------------------------------------------------------
 
+#define TARGET_FPS 60
+#define FRAME_TIME_MS (1000 / TARGET_FPS)  // ~16ms
+
+//-----------------------------------------------------------------
+
 // OBD Data
 
 int RPM = 0;
@@ -591,6 +596,9 @@ void setup() {
 //=================================================================
 
 void loop() {
+    static uint32_t frame_start = 0;
+    frame_start = millis();
+
     static uint32_t last_tick = 0;
     static uint32_t last_status = 0;
     static uint32_t last_update = 0;
@@ -800,5 +808,8 @@ void loop() {
         Serial.printf("[WARN] lv_timer_handler took %u us!\n", dt);
     }
     
-    delay(10);
+    uint32_t elapsed = millis() - frame_start;
+    if (elapsed < FRAME_TIME_MS) {
+        delay(FRAME_TIME_MS - elapsed);
+    }
 }

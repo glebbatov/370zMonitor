@@ -58,6 +58,18 @@ int oilPressurePSI = 0;
 
 //-----------------------------------------------------------------
 
+// Animation
+
+// Smoothing value
+static float smooth_oil_pressure = 75.0f;
+static float smooth_oil_temp_f = 210.0f;
+static float smooth_fuel_trust = 100.0f;
+
+// Smoothing factor: 0.3 = responsive, 0.1 = very smooth
+#define SMOOTH_FACTOR 0.3f
+
+//-----------------------------------------------------------------
+
 // UI objects
 #include "ui.h"
 
@@ -485,6 +497,19 @@ void setup() {
 
     //-----------------------------
 
+    // Bars Animation Speeds
+    if (ui_OIL_PRESS_Bar) {
+        lv_obj_set_style_anim_duration(ui_OIL_PRESS_Bar, 100, LV_PART_MAIN);  // 100ms animation
+    }
+    if (ui_OIL_TEMP_Bar) {
+        lv_obj_set_style_anim_duration(ui_OIL_TEMP_Bar, 100, LV_PART_MAIN);
+    }
+    if (ui_FUEL_TRUST_Bar) {
+        lv_obj_set_style_anim_duration(ui_FUEL_TRUST_Bar, 100, LV_PART_MAIN);
+    }
+
+    //-----------------------------
+
     // Create FPS counter label
     if (ui_Screen1 != NULL) {
         fps_label = lv_label_create(ui_Screen1);
@@ -606,33 +631,48 @@ void loop() {
         
         //-----------------------
 
+        #pragma region oil pressure
+
         // Animate oil pressure (0-150 PSI range)
         oil_pressure += random(-7, 8);
         if (oil_pressure > 150) oil_pressure = 150;
         if (oil_pressure < 0) oil_pressure = 0;
         
-        // Update pressure bar and label
+        // Smooth the animation for the oil pressure bar
+        smooth_oil_pressure = smooth_oil_pressure * (1.0f - SMOOTH_FACTOR) + oil_pressure * SMOOTH_FACTOR;
+        int display_pressure = (int)(smooth_oil_pressure + 0.5f);
+        // Update pressure bar
         if (ui_OIL_PRESS_Bar) {
-            lv_bar_set_value(ui_OIL_PRESS_Bar, oil_pressure, LV_ANIM_OFF);
+            lv_bar_set_value(ui_OIL_PRESS_Bar, smooth_oil_pressure, LV_ANIM_ON);
             // Color: red if <20 or >100, else orange
             bool press_red = (oil_pressure < 20) || (oil_pressure > 100);
             lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar,
                 press_red ? lv_color_hex(0xFF0000) : lv_color_hex(0xFF4619),
                 LV_PART_INDICATOR);
         }
-        if (ui_OIL_PRESS_Value) {
+
+        // Smooth the animation for the oil pressure label (only updating when the displayed value actually changes)
+        static int last_displayed_pressure = -1;
+        int display_pressure_label = (int)(smooth_oil_pressure + 0.5f);
+        // Update pressure label
+        if (ui_OIL_PRESS_Value && display_pressure_label != last_displayed_pressure) {
             char buf[16];
-            snprintf(buf, sizeof(buf), "%d PSI", oil_pressure);
+            snprintf(buf, sizeof(buf), "%d PSI", display_pressure_label);
             lv_label_set_text(ui_OIL_PRESS_Value, buf);
+            last_displayed_pressure = display_pressure_label;
         }
+
+        #pragma endregion oil pressure
 
         //-----------------------
         
+        #pragma region oil temp
+
         // Animate temp bar
         int temp_f = (oil_temp_c * 9) / 5 + 32;
         if (ui_OIL_TEMP_Bar) {
             // Bar range is 150-300°F
-            lv_bar_set_value(ui_OIL_TEMP_Bar, temp_f, LV_ANIM_OFF);
+            lv_bar_set_value(ui_OIL_TEMP_Bar, temp_f, LV_ANIM_ON);
             bool temp_red = (temp_f < 180) || (temp_f > 260);
             lv_obj_set_style_bg_color(ui_OIL_TEMP_Bar,
                 temp_red ? lv_color_hex(0xFF0000) : lv_color_hex(0xFF4619),
@@ -653,7 +693,11 @@ void loop() {
             lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
         }
 
+        #pragma endregion oil temp
+
         //-----------------------
+        
+        #pragma region fuel trust
 
         // Animate fuel trust (0-100% range)
         static uint32_t fuel_trust_dip_time = 0;
@@ -685,9 +729,13 @@ void loop() {
             }
         }
 
-        // Update fuel trust  bar and label
+        // Smooth the animation for the fuel trust
+        smooth_fuel_trust = smooth_fuel_trust * (1.0f - SMOOTH_FACTOR) + fuel_trust * SMOOTH_FACTOR;
+        int display_fuel_trust = (int)(smooth_fuel_trust + 0.5f);
+
+        // Update fuel trust bar and label
         if (ui_FUEL_TRUST_Bar) {
-            lv_bar_set_value(ui_FUEL_TRUST_Bar, fuel_trust, LV_ANIM_OFF);
+            lv_bar_set_value(ui_FUEL_TRUST_Bar, display_fuel_trust, LV_ANIM_ON);
             // Color: red if <50, else orange
             bool press_red = (fuel_trust < 50);
             lv_obj_set_style_bg_color(ui_FUEL_TRUST_Bar,
@@ -699,6 +747,8 @@ void loop() {
             snprintf(buf, sizeof(buf), "%d %%", fuel_trust);
             lv_label_set_text(ui_FUEL_TRUST_Value, buf);
         }
+
+        #pragma endregion fuel trust
 
         //-----------------------
         

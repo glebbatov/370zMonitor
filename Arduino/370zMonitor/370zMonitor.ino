@@ -212,7 +212,8 @@ Arduino_RGB_Display *gfx = new Arduino_RGB_Display(800, 480, rgbpanel, 0, true);
 #define LVGL_BUFFER_SIZE (800 * 48)  // 48 lines - will go to PSRAM
 static lv_display_t *disp;
 static lv_indev_t *indev;
-static uint8_t *disp_draw_buf;
+static uint8_t *disp_draw_buf1;
+static uint8_t *disp_draw_buf2;
 
 //-----------------------------------------------------------------
 
@@ -423,25 +424,37 @@ void setup() {
     size_t buf_bytes = LVGL_BUFFER_SIZE * sizeof(lv_color_t);
     Serial.printf("      Buffer size: %u bytes\n", buf_bytes);
     
-    // Explicitly allocate from PSRAM
-    disp_draw_buf = (uint8_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!disp_draw_buf) {
-        Serial.println("      PSRAM alloc failed, trying internal...");
-        disp_draw_buf = (uint8_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    // Explicitly allocate buffer1 from PSRAM
+    disp_draw_buf1 = (uint8_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!disp_draw_buf1) {
+        Serial.println("      PSRAM alloc 1 failed, trying internal...");
+        disp_draw_buf1 = (uint8_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     }
-    
-    if (!disp_draw_buf) {
-        Serial.println("      FATAL: Buffer alloc failed!");
+    if (!disp_draw_buf1) {
+        Serial.println("      FATAL: Buffer 1 alloc failed!");
         while(1) delay(100);
     }
+    // Explicitly allocate buffer2 from PSRAM
+    disp_draw_buf2 = (uint8_t*)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!disp_draw_buf2) {
+        Serial.println("      PSRAM alloc 2 failed, trying internal...");
+        disp_draw_buf2 = (uint8_t*)heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    }
+    if (!disp_draw_buf2) {
+        Serial.println("      FATAL: Buffer 2 alloc failed!");
+        while (1) delay(100);
+    }
     
-    // Check where buffer was allocated
-    bool in_psram = esp_ptr_external_ram(disp_draw_buf);
-    Serial.printf("      Buffer in %s at 0x%08X\n", in_psram ? "PSRAM" : "internal", (uint32_t)disp_draw_buf);
+    // Check where buffer1 was allocated
+    bool in_psram1 = esp_ptr_external_ram(disp_draw_buf1);
+    Serial.printf("      Buffer 1 in %s at 0x%08X\n", in_psram1 ? "PSRAM" : "internal", (uint32_t)disp_draw_buf1);
+    // Check where buffer2 was allocated
+    bool in_psram2 = esp_ptr_external_ram(disp_draw_buf2);
+    Serial.printf("      Buffer 2 in %s at 0x%08X\n", in_psram2 ? "PSRAM" : "internal", (uint32_t)disp_draw_buf2);
     
     disp = lv_display_create(800, 480);
     lv_display_set_flush_cb(disp, my_disp_flush);
-    lv_display_set_buffers(disp, disp_draw_buf, NULL, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_buffers(disp, disp_draw_buf1, disp_draw_buf2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
     
     // Input device (dummy)
     indev = lv_indev_create();

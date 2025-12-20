@@ -23,7 +23,7 @@ __attribute__((constructor)) void configurePSRAM() {
 //-----------------------------------------------------------------
 
 // ===== FEATURE FLAGS =====
-#define ENABLE_TOUCH        0   // Disabled for now
+#define ENABLE_TOUCH        1
 #define ENABLE_UI_UPDATES   1   // Enable bar/label updates
 #define ENABLE_CHARTS       1   // Re-enable charts
 #define UPDATE_INTERVAL_MS  150 // Update every (150ms original speed)
@@ -226,7 +226,7 @@ Arduino_RGB_Display *gfx = new Arduino_RGB_Display(800, 480, rgbpanel, 0, true);
 //-----------------------------------------------------------------
 
 // LVGL
-#define LVGL_BUFFER_SIZE (800 * 69)  // 48 lines - will go to PSRAM | 480 ÷ 7 ≈ 69 lines per strip
+#define LVGL_BUFFER_SIZE (800 * 69)  // 69 lines - will go to PSRAM | 480 ÷ 7 ≈ 69 lines per strip
 static lv_display_t *disp;
 static lv_indev_t *indev;
 static uint8_t *disp_draw_buf1;
@@ -243,6 +243,9 @@ static lv_obj_t * cpu_label = NULL;
 
 // CPU usage tracking
 static uint32_t cpu_busy_time = 0;  // Time spent working (not in delay)
+
+// Utilities visibility (FPS + CPU labels)
+static bool utilities_visible = true;
 
 // Chart series
 static lv_chart_series_t * chart_series_oil_press = NULL;
@@ -323,6 +326,49 @@ static void shift_history(int32_t* history, int32_t new_value) {
         history[i] = history[i + 1];
     }
     history[CHART_POINTS - 1] = new_value;
+}
+
+//-----------------------------------------------------------------
+
+// ===== Triple-tap callback for utilities toggle =====
+#define TRIPLE_TAP_TIMEOUT_MS 500  // Max time between taps
+
+static void utilities_triple_tap_cb(lv_event_t * e) {
+    static uint32_t last_tap_time = 0;
+    static uint8_t tap_count = 0;
+    
+    uint32_t now = millis();
+    
+    // Reset count if too much time passed since last tap
+    if (now - last_tap_time > TRIPLE_TAP_TIMEOUT_MS) {
+        tap_count = 0;
+    }
+    
+    tap_count++;
+    last_tap_time = now;
+    
+    if (tap_count >= 3) {
+        // Triple tap detected - toggle utilities visibility
+        utilities_visible = !utilities_visible;
+        
+        if (fps_label) {
+            if (utilities_visible) {
+                lv_obj_clear_flag(fps_label, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(fps_label, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        if (cpu_label) {
+            if (utilities_visible) {
+                lv_obj_clear_flag(cpu_label, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(cpu_label, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        
+        Serial.printf("[UI] Utilities %s\n", utilities_visible ? "shown" : "hidden");
+        tap_count = 0;  // Reset for next triple-tap
+    }
 }
 
 //-----------------------------------------------------------------
@@ -533,6 +579,15 @@ void setup() {
         lv_label_set_text(cpu_label, "--- %");
         lv_obj_set_style_text_color(cpu_label, lv_color_hex(0x00FF00), LV_PART_MAIN);
         lv_obj_set_style_text_font(cpu_label, &lv_font_montserrat_20, LV_PART_MAIN);
+    }
+    
+    //-----------------------------
+    
+    // Register triple-tap on FUEL_TRUST_Value to toggle utilities
+    if (ui_FUEL_TRUST_Value) {
+        lv_obj_add_flag(ui_FUEL_TRUST_Value, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(ui_FUEL_TRUST_Value, utilities_triple_tap_cb, LV_EVENT_CLICKED, NULL);
+        Serial.println("Triple-tap gesture registered on FUEL_TRUST_Value");
     }
     
     //-----------------------------

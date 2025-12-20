@@ -26,7 +26,7 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_TOUCH        0   // Disabled for now
 #define ENABLE_UI_UPDATES   1   // Enable bar/label updates
 #define ENABLE_CHARTS       1   // Re-enable charts
-#define UPDATE_INTERVAL_MS  125 // Update every (150ms original speed)
+#define UPDATE_INTERVAL_MS  150 // Update every (150ms original speed)
 
 //-----------------------------------------------------------------
 
@@ -46,7 +46,7 @@ static bool g_ioexp_ok = false;
 
 //-----------------------------------------------------------------
 
-#define TARGET_FPS 60
+#define TARGET_FPS 50
 #define FRAME_TIME_MS (1000 / TARGET_FPS)  // ~16ms
 
 //-----------------------------------------------------------------

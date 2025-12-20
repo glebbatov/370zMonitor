@@ -10,6 +10,7 @@
 #include <lvgl.h>
 #include <esp_heap_caps.h>
 #include <esp32-hal-psram.h>
+#include <TAMC_GT911.h>  // Touch controller
 
 //-----------------------------------------------------------------
 
@@ -234,6 +235,12 @@ static uint8_t *disp_draw_buf2;
 
 //-----------------------------------------------------------------
 
+// GT911 Touch Controller
+// RST is handled via IO expander (EXIO_TP_RST), so we pass -1
+TAMC_GT911 touch = TAMC_GT911(I2C_SDA, I2C_SCL, TOUCH_INT_PIN, -1, 800, 480);
+
+//-----------------------------------------------------------------
+
 // Counters
 static uint32_t loop_count = 0;
 static uint32_t flush_count = 0;
@@ -339,6 +346,8 @@ static void utilities_triple_tap_cb(lv_event_t * e) {
     
     uint32_t now = millis();
     
+    Serial.printf("[TAP] Event fired! tap_count=%d\n", tap_count + 1);  // Debug
+    
     // Reset count if too much time passed since last tap
     if (now - last_tap_time > TRIPLE_TAP_TIMEOUT_MS) {
         tap_count = 0;
@@ -433,7 +442,39 @@ void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
 }
 
 void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
-    data->state = LV_INDEV_STATE_RELEASED;
+    touch.read();
+    
+    if (touch.isTouched) {
+        data->state = LV_INDEV_STATE_PRESSED;
+        
+        // Calibration: map raw GT911 coordinates to screen coordinates
+        // Raw X: ~340 (left) to ~785 (right) -> Screen X: 0 to 800
+        // Raw Y: ~55 (top) to ~750 (bottom) -> Screen Y: 0 to 480
+        int raw_x = touch.points[0].x;
+        int raw_y = touch.points[0].y;
+        
+        int screen_x = (raw_x - 340) * 800 / 445;  // 445 = 785 - 340
+        int screen_y = (raw_y - 55) * 480 / 695;   // 695 = 750 - 55
+        
+        // Clamp to valid range
+        if (screen_x < 0) screen_x = 0;
+        if (screen_x > 799) screen_x = 799;
+        if (screen_y < 0) screen_y = 0;
+        if (screen_y > 479) screen_y = 479;
+        
+        data->point.x = screen_x;
+        data->point.y = screen_y;
+        
+        // Debug: print touch coordinates
+        static uint32_t last_touch_print = 0;
+        if (millis() - last_touch_print > 200) {
+            Serial.printf("[TOUCH] raw(%d,%d) -> screen(%d,%d)\n", 
+                         raw_x, raw_y, screen_x, screen_y);
+            last_touch_print = millis();
+        }
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
 }
 
 #pragma endregion
@@ -471,6 +512,13 @@ void setup() {
     Serial.println("[1/6] IO Expander...");
     g_ioexp_ok = initIOExtension();
     Serial.printf("      %s\n", g_ioexp_ok ? "OK" : "FAILED");
+    
+    // Touch controller (must be after IO expander releases reset)
+    Serial.println("[1.5/6] Touch controller...");
+    delay(100);  // Give GT911 time after reset release
+    touch.begin();
+    touch.setRotation(0);  // Match display orientation
+    Serial.println("      GT911 initialized");
     
     // Display
     Serial.println("[2/6] Display init...");
@@ -523,7 +571,7 @@ void setup() {
     lv_display_set_flush_cb(disp, my_disp_flush);
     lv_display_set_buffers(disp, disp_draw_buf1, disp_draw_buf2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
     
-    // Input device (dummy)
+    // Input device (GT911 touch)
     indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, my_touch_read);
@@ -670,7 +718,8 @@ void loop() {
     static uint32_t last_update = 0;
 
     static int oil_pressure = 75;
-    static int oil_temp_c = 98;
+    static int oil_temp_p = 100;
+    static int oil_temp_c = 100;
     static int fuel_trust = 100;
     
     uint32_t now = millis();
@@ -754,7 +803,7 @@ void loop() {
         #pragma region oil temp
 
         // Animate temp bar
-        int temp_f = (oil_temp_c * 9) / 5 + 32;
+        int temp_f = (oil_temp_p * 9) / 5 + 32;
         if (ui_OIL_TEMP_Bar) {
             // Bar range is 150-300°F
             lv_bar_set_value(ui_OIL_TEMP_Bar, temp_f, LV_ANIM_ON);
@@ -767,18 +816,27 @@ void loop() {
         //-----------------------
 
         // Animate temp labels
+        if (ui_OIL_TEMP_Value_P) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%d°F", oil_temp_p);
+            lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
+        }
         if (ui_OIL_TEMP_Value_C) {
             char buf[16];
             snprintf(buf, sizeof(buf), "%d°F", temp_f);
             lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
         }
-        if (ui_OIL_TEMP_Value_P) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F", oil_temp_c);
-            lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
-        }
 
         #pragma endregion oil temp
+
+        //-----------------------
+
+        #pragma region 
+
+        static int oil_temp_p = 100;
+        static int oil_temp_c = 100;
+
+        #pragma endregion
 
         //-----------------------
         
@@ -835,13 +893,13 @@ void loop() {
 
         #pragma endregion fuel trust
 
-        //-----------------------
+        //----------------------------------------------
         
         // Accumulate samples for chart averaging
         #if ENABLE_CHARTS
         pressure_sum += oil_pressure;
         pressure_samples++;
-        temp_sum += oil_temp_c;
+        temp_sum += oil_temp_p;
         temp_samples++;
         
         // Initialize bucket start times

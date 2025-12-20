@@ -52,6 +52,100 @@ static bool g_ioexp_ok = false;
 
 //-----------------------------------------------------------------
 
+// Gauges data
+
+//OIL PRESS
+//	-Spread:
+//		0-150 PSI
+//	-VALUE CRITICAL:
+//		<= 10 PSI per 1000 RPM minimum
+//		>= 120 PSI
+int OIL_PRESS_Min_PSI = 0;
+int OIL_PRESS_Max_PSI = 150;
+int OIL_PRESS_ValueCriticalAbsolute = 120;
+bool OIL_PRESS_ValueCriticalRPM = false;
+
+//OIL TEMP [Oil pan/C]
+//	(Oil pan, Out line - post termostatic valve)
+//	-Spread:
+//		150-300 F*
+//	-VALUE CRITICAL:
+//		>= 260 F*
+int OIL_TEMP_Value_Pan_Celsius;
+int OIL_TEMP_Value_Pan_Fahrenheit;
+int OIL_TEMP_Value_Cooled_Celsius;
+int OIL_TEMP_Value_Cooled_Fahrenheit;
+int OIL_TEMP_Min_F = 150;
+int OIL_TEMP_Max_F = 300;
+int OIL_TEMP_ValueCriticalF = 260;
+
+//WATER TEMP [H/C]
+//	(Upper/Lower radiator hose)
+//	-Spread:
+//		100-260 F*
+//	-VALUE CRITICAL:
+//		>= 230 F*
+int W_TEMP_Value_Hot_Celsius;
+int W_TEMP_Value_Hot_Fahrenheit;
+int W_TEMP_Value_Cooled_Celsius;
+int W_TEMP_Value_Cooled_Fahrenheit;
+int W_TEMP_Min_F = 100;
+int W_TEMP_Max_F = 260;
+int W_TEMP_ValueCritical_F = 230;
+
+//TRAN TEMP [H/C]
+//	(In/Out lines - pre termostatic valve)
+//	-Spread:
+//		80-280 F*
+//	-VALUE CRITICAL:
+//		>= 230 F*
+int TRAN_TEMP_Value_Hot_Celsius;
+int TRAN_TEMP_Value_Hot_Fahrenheit;
+int TRAN_TEMP_Value_Cooled_Celsius;
+int TRAN_TEMP_Value_Cooled_Fahrenheit;
+int TRAN_TEMP_Min_F = 80;
+int TRAN_TEMP_Max_F = 280;
+int TRAN_TEMP_ValueCritical_F = 230;
+
+//STEER TEMP [H/C]
+//	(In/Out lines)
+//	-Spread:
+//		60-300 F*
+//	-VALUE CRITICAL:
+//		>= 230 F*
+int STEER_TEMP_Value_Hot_Celsius;
+int STEER_TEMP_Value_Hot_Fahrenheit;
+int STEER_TEMP_Value_Cooled_Celsius;
+int STEER_TEMP_Value_Cooled_Fahrenheit;
+int STEER_TEMP_Min_F = 60;
+int STEER_TEMP_Max_F = 300;
+int STEER_TEMP_ValueCritical_F = 230;
+
+//DIFF TEMP [H/C]
+//	(In/Out lines)
+//	-Spread:
+//		60-320 F*
+//	-VALUE CRITICAL:
+//		>= 270 F*
+int DIFF_TEMP_Value_Hot_Celsius;
+int DIFF_TEMP_Value_Hot_Fahrenheit;
+int DIFF_TEMP_Value_Cooled_Celsius;
+int DIFF_TEMP_Value_Cooled_Fahrenheit;
+int DIFF_TEMP_Min_F = 60;
+int DIFF_TEMP_Max_F = 320;
+int DIFF_TEMP_ValueCritical_F = 270;
+
+//FUEL TRUST
+//	-Spread:
+//		0-100%
+//	-VALUE CRITICAL:
+//		<= 50%
+int FUEL_TRUST_Min_F = 0;
+int FUEL_TRUST_Max_F = 100;
+int FUEL_TRUST_ValueCritical_F = 50;
+
+//-----------------------------------------------------------------
+
 // OBD Data
 
 int RPM = 0;
@@ -80,120 +174,45 @@ static float smooth_fuel_trust = 100.0f;
 #include "ui.h"
 
 //OIL PRESS
-//	-Spread:
-//		0-150 PSI
-//	-VALUE CRITICAL:
-//		<= 10 PSI per 1000 RPM minimum
-//		>= 120 PSI
 extern lv_obj_t * ui_OIL_PRESS_Bar;
 extern lv_obj_t * ui_OIL_PRESS_CHART;
 extern lv_obj_t * ui_OIL_PRESS_Value;
-int OIL_PRESS_Min_PSI = 0;
-int OIL_PRESS_Max_PSI = 150;
-int OIL_PRESS_ValueCriticalAbsolute = 120;
-bool OIL_PRESS_ValueCriticalRPM = false;
 
 //OIL TEMP [Oil pan/C]
-//	(Oil pan, Out line - post termostatic valve)
-//	-Spread:
-//		150-300 F*
-//	-VALUE CRITICAL:
-//		>= 260 F*
 extern lv_obj_t * ui_OIL_TEMP_Bar;
 extern lv_obj_t * ui_OIL_TEMP_CHART;
 extern lv_obj_t * ui_OIL_TEMP_Value_P;
 extern lv_obj_t * ui_OIL_TEMP_Value_C;
-int OIL_TEMP_Value_Pan_Celsius;
-int OIL_TEMP_Value_Pan_Fahrenheit;
-int OIL_TEMP_Value_Cooled_Celsius;
-int OIL_TEMP_Value_Cooled_Fahrenheit;
-int OIL_TEMP_Min_F = 150;
-int OIL_TEMP_Max_F = 300;
-int OIL_TEMP_ValueCriticalF = 260;
 
 //WATER TEMP [H/C]
-//	(Upper/Lower radiator hose)
-//	-Spread:
-//		100-260 F*
-//	-VALUE CRITICAL:
-//		>= 230 F*
 extern lv_obj_t * ui_W_TEMP_Bar;
 extern lv_obj_t * ui_W_TEMP_CHART;
 extern lv_obj_t* ui_W_TEMP_Value_H;
 extern lv_obj_t* ui_W_TEMP_Value_C;
-int W_TEMP_Value_Hot_Celsius;
-int W_TEMP_Value_Hot_Fahrenheit;
-int W_TEMP_Value_Cooled_Celsius;
-int W_TEMP_Value_Cooled_Fahrenheit;
-int W_TEMP_Min_F = 100;
-int W_TEMP_Max_F = 260;
-int W_TEMP_ValueCritical_F = 230;
 
 //TRAN TEMP [H/C]
-//	(In/Out lines - pre termostatic valve)
-//	-Spread:
-//		80-280 F*
-//	-VALUE CRITICAL:
-//		>= 230 F*
 extern lv_obj_t * ui_TRAN_TEMP_Bar;
 extern lv_obj_t * ui_TRAN_TEMP_CHART;
 extern lv_obj_t* ui_TRAN_TEMP_Value_H;
 extern lv_obj_t* ui_TRAN_TEMP_Value_C;
-int TRAN_TEMP_Value_Hot_Celsius;
-int TRAN_TEMP_Value_Hot_Fahrenheit;
-int TRAN_TEMP_Value_Cooled_Celsius;
-int TRAN_TEMP_Value_Cooled_Fahrenheit;
-int TRAN_TEMP_Min_F = 80;
-int TRAN_TEMP_Max_F = 280;
-int TRAN_TEMP_ValueCritical_F = 230;
+
 
 //STEER TEMP [H/C]
-//	(In/Out lines)
-//	-Spread:
-//		60-300 F*
-//	-VALUE CRITICAL:
-//		>= 230 F*
 extern lv_obj_t * ui_STEER_TEMP_Bar;
 extern lv_obj_t * ui_STEER_TEMP_CHART;
 extern lv_obj_t * ui_STEER_TEMP_Value_H;
 extern lv_obj_t * ui_STEER_TEMP_Value_C;
-int STEER_TEMP_Value_Hot_Celsius;
-int STEER_TEMP_Value_Hot_Fahrenheit;
-int STEER_TEMP_Value_Cooled_Celsius;
-int STEER_TEMP_Value_Cooled_Fahrenheit;
-int STEER_TEMP_Min_F = 60;
-int STEER_TEMP_Max_F = 300;
-int STEER_TEMP_ValueCritical_F = 230;
 
 //DIFF TEMP [H/C]
-//	(In/Out lines)
-//	-Spread:
-//		60-320 F*
-//	-VALUE CRITICAL:
-//		>= 270 F*
 extern lv_obj_t * ui_DIFF_TEMP_Bar;
 extern lv_obj_t * ui_DIFF_TEMP_CHART;
 extern lv_obj_t * ui_DIFF_TEMP_Value_H;
 extern lv_obj_t * ui_DIFF_TEMP_Value_C;
-int DIFF_TEMP_Value_Hot_Celsius;
-int DIFF_TEMP_Value_Hot_Fahrenheit;
-int DIFF_TEMP_Value_Cooled_Celsius;
-int DIFF_TEMP_Value_Cooled_Fahrenheit;
-int DIFF_TEMP_Min_F = 60;
-int DIFF_TEMP_Max_F = 320;
-int DIFF_TEMP_ValueCritical_F = 270;
 
 //FUEL TRUST
-//	-Spread:
-//		0-100%
-//	-VALUE CRITICAL:
-//		<= 50%
 extern lv_obj_t * ui_FUEL_TRUST_Bar;
 extern lv_obj_t * ui_FUEL_TRUST_CHART;
 extern lv_obj_t * ui_FUEL_TRUST_Value;
-int FUEL_TRUST_Min_F = 0;
-int FUEL_TRUST_Max_F = 100;
-int FUEL_TRUST_ValueCritical_F = 50;
 
 //-----------------------------------------------------------------
 
@@ -769,8 +788,8 @@ void loop() {
 
         // Animate oil pressure (0-150 PSI range)
         oil_pressure += random(-7, 8);
-        if (oil_pressure > 150) oil_pressure = 150;
-        if (oil_pressure < 0) oil_pressure = 0;
+        if (oil_pressure > OIL_PRESS_Max_PSI) oil_pressure = OIL_PRESS_Max_PSI;
+        if (oil_pressure < OIL_PRESS_Min_PSI) oil_pressure = OIL_PRESS_Min_PSI;
         
         // Smooth the animation for the oil pressure bar
         smooth_oil_pressure = smooth_oil_pressure * (1.0f - SMOOTH_FACTOR) + oil_pressure * SMOOTH_FACTOR;
@@ -779,7 +798,7 @@ void loop() {
         if (ui_OIL_PRESS_Bar) {
             lv_bar_set_value(ui_OIL_PRESS_Bar, smooth_oil_pressure, LV_ANIM_ON);
             // Color: red if <20 or >100, else orange
-            bool press_red = (oil_pressure < 20) || (oil_pressure > 100);
+            bool press_red = (oil_pressure < OIL_PRESS_ValueCriticalRPM) || (oil_pressure > OIL_PRESS_ValueCriticalAbsolute);
             lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar,
                 press_red ? lv_color_hex(0xFF0000) : lv_color_hex(0xFF4619),
                 LV_PART_INDICATOR);
@@ -807,7 +826,7 @@ void loop() {
         if (ui_OIL_TEMP_Bar) {
             // Bar range is 150-300°F
             lv_bar_set_value(ui_OIL_TEMP_Bar, temp_f, LV_ANIM_ON);
-            bool temp_red = (temp_f < 180) || (temp_f > 260);
+            bool temp_red = (temp_f > OIL_TEMP_ValueCriticalF);
             lv_obj_set_style_bg_color(ui_OIL_TEMP_Bar,
                 temp_red ? lv_color_hex(0xFF0000) : lv_color_hex(0xFF4619),
                 LV_PART_INDICATOR);
@@ -833,8 +852,7 @@ void loop() {
 
         #pragma region 
 
-        static int oil_temp_p = 100;
-        static int oil_temp_c = 100;
+
 
         #pragma endregion
 

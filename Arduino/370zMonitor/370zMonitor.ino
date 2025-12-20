@@ -379,28 +379,26 @@ static void shift_history(int32_t* history, int32_t new_value) {
 
 //-----------------------------
 
-#pragma region Triple-tap callback for utilities toggle
+#pragma region Double-tap callback for utilities toggle
 
-#define TRIPLE_TAP_TIMEOUT_MS 500  // Max time between taps
+#define DOUBLE_TAP_TIMEOUT_MS 500  // Max time between taps
 
-static void utilities_triple_tap_cb(lv_event_t * e) {
+static void utilities_double_tap_cb(lv_event_t * e) {
     static uint32_t last_tap_time = 0;
     static uint8_t tap_count = 0;
     
     uint32_t now = millis();
     
-    Serial.printf("[TAP] Event fired! tap_count=%d\n", tap_count + 1);  // Debug
-    
     // Reset count if too much time passed since last tap
-    if (now - last_tap_time > TRIPLE_TAP_TIMEOUT_MS) {
+    if (now - last_tap_time > DOUBLE_TAP_TIMEOUT_MS) {
         tap_count = 0;
     }
     
     tap_count++;
     last_tap_time = now;
     
-    if (tap_count >= 3) {
-        // Triple tap detected - toggle utilities visibility
+    if (tap_count >= 2) {
+        // Double tap detected - toggle utilities visibility
         utilities_visible = !utilities_visible;
         
         if (fps_label) {
@@ -419,11 +417,11 @@ static void utilities_triple_tap_cb(lv_event_t * e) {
         }
         
         Serial.printf("[UI] Utilities %s\n", utilities_visible ? "shown" : "hidden");
-        tap_count = 0;  // Reset for next triple-tap
+        tap_count = 0;  // Reset for next double-tap
     }
 }
 
-#pragma endregion Triple-tap callback for utilities toggle
+#pragma endregion
 
 //-----------------------------------------------------------------
 
@@ -503,13 +501,11 @@ void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
         data->state = LV_INDEV_STATE_PRESSED;
         
         // Calibration: map raw GT911 coordinates to screen coordinates
-        // Raw X: ~340 (left) to ~785 (right) -> Screen X: 0 to 800
-        // Raw Y: ~55 (top) to ~750 (bottom) -> Screen Y: 0 to 480
         int raw_x = touch.points[0].x;
         int raw_y = touch.points[0].y;
         
-        int screen_x = (raw_x - 340) * 800 / 445;  // 445 = 785 - 340
-        int screen_y = (raw_y - 55) * 480 / 695;   // 695 = 750 - 55
+        int screen_x = (raw_x - 350) * 800 / 420;
+        int screen_y = (raw_y - 30) * 480 / 745;
         
         // Clamp to valid range
         if (screen_x < 0) screen_x = 0;
@@ -519,14 +515,6 @@ void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
         
         data->point.x = screen_x;
         data->point.y = screen_y;
-        
-        // Debug: print touch coordinates
-        static uint32_t last_touch_print = 0;
-        if (millis() - last_touch_print > 200) {
-            Serial.printf("[TOUCH] raw(%d,%d) -> screen(%d,%d)\n", 
-                         raw_x, raw_y, screen_x, screen_y);
-            last_touch_print = millis();
-        }
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
@@ -688,11 +676,18 @@ void setup() {
     
     //-----------------------------
     
-    // Register triple-tap on FUEL_TRUST_Value to toggle utilities
-    if (ui_FUEL_TRUST_Value) {
-        lv_obj_add_flag(ui_FUEL_TRUST_Value, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(ui_FUEL_TRUST_Value, utilities_triple_tap_cb, LV_EVENT_CLICKED, NULL);
-        Serial.println("Triple-tap gesture registered on FUEL_TRUST_Value");
+    // Create invisible tap zone for double-tap to toggle FPS/CPU display
+    if (ui_Screen1) {
+        lv_obj_t * tap_zone = lv_obj_create(ui_Screen1);
+        lv_obj_set_size(tap_zone, 150, 80);
+        lv_obj_align(tap_zone, LV_ALIGN_BOTTOM_RIGHT, 0, 0);                // actual upper/right
+        //lv_obj_set_style_bg_color(tap_zone, lv_color_hex(0xFF0000), 0);   // Solid Red
+        //lv_obj_set_style_bg_opa(tap_zone, LV_OPA_COVER, 0);               // Fully opaque (not transparent)
+        lv_obj_set_style_bg_opa(tap_zone, LV_OPA_TRANSP, 0);                // Fully transparent
+        lv_obj_set_style_border_width(tap_zone, 0, 0);
+        lv_obj_add_flag(tap_zone, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(tap_zone, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(tap_zone, utilities_double_tap_cb, LV_EVENT_CLICKED, NULL);
     }
     
     //-----------------------------

@@ -31,9 +31,9 @@ __attribute__((constructor)) void configurePSRAM() {
 
 //-----------------------------------------------------------------
 
-// CH422 IO Expander
-#define CH422_ADDR_SYSTEM 0x24
-#define CH422_ADDR_IOWR   0x38
+// CH422 IO Expander (used for backlight ON/OFF and touch reset only - NOT for PWM brightness)
+#define CH422_ADDR_SYSTEM 0x24  // Mode register - DO NOT write brightness values here!
+#define CH422_ADDR_IOWR   0x38  // IO output register
 #define I2C_SDA 8
 #define I2C_SCL 9
 #define I2C_FREQ_HZ 100000
@@ -44,6 +44,9 @@ __attribute__((constructor)) void configurePSRAM() {
 
 static uint8_t g_exio_state = 0;
 static bool g_ioexp_ok = false;
+
+// Brightness control (0-255, controls LVGL overlay opacity)
+static uint8_t g_brightness_level = 255;  // Start at 100%
 
 //-----------------------------------------------------------------
 
@@ -286,14 +289,20 @@ TAMC_GT911 touch = TAMC_GT911(I2C_SDA, I2C_SCL, TOUCH_INT_PIN, -1, 800, 480);
 static uint32_t loop_count = 0;
 static uint32_t flush_count = 0;
 static uint32_t update_count = 0;
-static lv_obj_t * fps_label = NULL;
-static lv_obj_t * cpu_label = NULL;
 
 // CPU usage tracking
 static uint32_t cpu_busy_time = 0;  // Time spent working (not in delay)
 
-// Utilities visibility (FPS + CPU labels)
+// Combined utility box (FPS, CPU, Brightness)
+static lv_obj_t * utility_box = NULL;
+static lv_obj_t * g_dim_overlay = NULL;          // LVGL black overlay for "fake" brightness
+static lv_timer_t * g_util_single_tap_timer = NULL;  // used to disambiguate single vs double tap
+static lv_obj_t * utility_label = NULL;
 static bool utilities_visible = true;
+
+// Touch controller state (declared early for use in setBrightness)
+static uint32_t consecutive_invalid = 0;
+static uint32_t last_touch_reset = 0;
 
 // Chart series
 static lv_chart_series_t * chart_series_oil_press = NULL;
@@ -380,45 +389,59 @@ static void shift_history(int32_t* history, int32_t new_value) {
 
 //-----------------------------
 
-#pragma region Double-tap callback for utilities toggle
+#pragma region Utility box callbacks (single tap = brightness, double tap = hide/show)
 
-#define DOUBLE_TAP_TIMEOUT_MS 500  // Max time between taps
+#define DOUBLE_TAP_TIMEOUT_MS 300  // Max time between taps for double-tap
 
-static void utilities_double_tap_cb(lv_event_t * e) {
-    static uint32_t last_tap_time = 0;
-    static uint8_t tap_count = 0;
-    
-    uint32_t now = millis();
-    
-    // Reset count if too much time passed since last tap
-    if (now - last_tap_time > DOUBLE_TAP_TIMEOUT_MS) {
-        tap_count = 0;
+// We *delay* the single-tap action until the double-tap window expires.
+// That way: double-tap does NOT also change brightness on the first tap.
+static void utility_box_single_tap_cb(lv_timer_t * t) {
+    LV_UNUSED(t);
+    g_util_single_tap_timer = NULL;
+
+    // Toggle brightness: 100% <-> 35%
+    if (g_brightness_level == 255) {
+        setBrightness(89);   // 35% (good night mode dimming)
+    } else {
+        setBrightness(255);  // 100%
     }
-    
-    tap_count++;
-    last_tap_time = now;
-    
-    if (tap_count >= 2) {
-        // Double tap detected - toggle utilities visibility
+
+    Serial.printf("[UI] Single-tap: Brightness -> %d%%\n", (g_brightness_level * 100) / 255);
+}
+
+static void utility_box_tap_cb(lv_event_t * e) {
+    LV_UNUSED(e);
+
+    // Second tap arrived before the single-tap timer fired => treat as double tap
+    if (g_util_single_tap_timer) {
+        lv_timer_del(g_util_single_tap_timer);
+        g_util_single_tap_timer = NULL;
+
         utilities_visible = !utilities_visible;
-        
-        if (fps_label) {
+        if (utility_box) {
             if (utilities_visible) {
-                lv_obj_clear_flag(fps_label, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_style_opa(utility_box, LV_OPA_COVER, 0);      // visible
             } else {
-                lv_obj_add_flag(fps_label, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_style_opa(utility_box, LV_OPA_TRANSP, 0);     // hidden but still tappable
             }
         }
-        if (cpu_label) {
-            if (utilities_visible) {
-                lv_obj_clear_flag(cpu_label, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(cpu_label, LV_OBJ_FLAG_HIDDEN);
-            }
-        }
-        
-        Serial.printf("[UI] Utilities %s\n", utilities_visible ? "shown" : "hidden");
-        tap_count = 0;  // Reset for next double-tap
+
+        Serial.printf("[UI] Double-tap: Utility box %s\n", utilities_visible ? "shown" : "hidden");
+        return;
+    }
+
+    // First tap: arm a timer. If no 2nd tap arrives in time, it'll become a single tap.
+    g_util_single_tap_timer = lv_timer_create(utility_box_single_tap_cb, DOUBLE_TAP_TIMEOUT_MS, NULL);
+    lv_timer_set_repeat_count(g_util_single_tap_timer, 1);
+}
+
+// Update the combined utility label
+static void update_utility_label(int fps, int cpu_percent) {
+    if (utility_label) {
+        char buf[48];
+        int bri_percent = (g_brightness_level * 100) / 255;
+        snprintf(buf, sizeof(buf), "%3d FPS\n%3d%% CPU\n%3d%% BRI", fps, cpu_percent, bri_percent);
+        lv_label_set_text(utility_label, buf);
     }
 }
 
@@ -463,6 +486,51 @@ void setBacklight(bool on) {
     if (g_ioexp_ok) exio_set(EXIO_DISP, on);
 }
 
+void setBrightness(uint8_t brightness) {
+    // IMPORTANT:
+    // The CH422G on this Waveshare board is an IO expander used for reset/backlight ON/OFF.
+    // Writing "brightness" bytes to its 0x24 register was overwriting its MODE register,
+    // which breaks TP_RST/LCD_BL control and can make GT911 start returning 65535 -> "stuck".
+    //
+    // So: do NOT do PWM over CH422G.
+    // Instead we do "UI brightness": a full-screen black overlay with variable opacity.
+    // It looks like dimming, doesn't mess with I2C, and touch stays stable.
+
+    g_brightness_level = brightness;
+
+    // Create the overlay lazily (after LVGL is up)
+    if (!g_dim_overlay) {
+        lv_obj_t * top = lv_layer_top();
+        g_dim_overlay = lv_obj_create(top);
+        lv_obj_remove_style_all(g_dim_overlay);
+
+        int w = lv_disp_get_hor_res(NULL);
+        int h = lv_disp_get_ver_res(NULL);
+        lv_obj_set_size(g_dim_overlay, w, h);
+        lv_obj_set_pos(g_dim_overlay, 0, 0);
+
+        // Let touches pass through
+        lv_obj_clear_flag(g_dim_overlay, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(g_dim_overlay, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(g_dim_overlay, LV_OBJ_FLAG_IGNORE_LAYOUT);
+
+        lv_obj_set_style_bg_color(g_dim_overlay, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(g_dim_overlay, LV_OPA_TRANSP, 0);
+    }
+
+    if (brightness >= 250) {
+        lv_obj_add_flag(g_dim_overlay, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(g_dim_overlay, LV_OBJ_FLAG_HIDDEN);
+
+        // brightness: 255 = no dim, 0 = full black
+        uint8_t opa = (uint8_t)(255 - brightness);
+        lv_obj_set_style_bg_opa(g_dim_overlay, opa, 0);
+    }
+
+    Serial.printf("[BRIGHTNESS] UI dim -> %d%%\n", (brightness * 100) / 255);
+}
+
 #pragma endregion IO Expander Functions
 
 //-----------------------------
@@ -495,18 +563,54 @@ void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
 //-----------------------------
 
 #pragma region Touch Callbacks
+// Touch thresholds for detecting stuck controller
+#define MAX_CONSECUTIVE_INVALID 50  // Higher threshold since I2C issue is fixed
+#define TOUCH_RESET_COOLDOWN_MS 5000  // 5 seconds between resets (rarely needed now)
+
 void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
     touch.read();
     
+    static bool was_touched = false;
+    uint32_t now = millis();
+    
     if (touch.isTouched) {
-        data->state = LV_INDEV_STATE_PRESSED;
-        
-        // Calibration: map raw GT911 coordinates to screen coordinates
+        // Get raw GT911 coordinates
         int raw_x = touch.points[0].x;
         int raw_y = touch.points[0].y;
         
-        int screen_x = (raw_x - 350) * 800 / 420;
-        int screen_y = (raw_y - 30) * 480 / 745;
+        // Filter out invalid readings (GT911 returns 65535 on errors)
+        if (raw_x == 65535 || raw_y == 65535 || raw_x > 800 || raw_y > 800) {
+            consecutive_invalid++;
+            
+            // Safety: reset touch controller if truly stuck (should be rare now)
+            if (consecutive_invalid >= MAX_CONSECUTIVE_INVALID && 
+                (now - last_touch_reset) > TOUCH_RESET_COOLDOWN_MS) {
+                Serial.println("[TOUCH] Controller stuck - hardware reset");
+                exio_set(EXIO_TP_RST, false);  // Pull reset LOW
+                delay(10);
+                exio_set(EXIO_TP_RST, true);   // Release reset HIGH  
+                delay(50);                      // GT911 needs time to initialize
+                touch.begin();
+                touch.setRotation(0);
+                consecutive_invalid = 0;
+                last_touch_reset = now;
+            }
+            
+            data->state = LV_INDEV_STATE_RELEASED;
+            was_touched = false;
+            return;
+        }
+        
+        // Valid touch - reset counter
+        consecutive_invalid = 0;
+        was_touched = true;
+        data->state = LV_INDEV_STATE_PRESSED;
+        
+        // Touch calibration: X and Y are SWAPPED on this panel
+        // Raw Y: ~30 = LEFT, ~775 = RIGHT  -> maps to screen_x: 0 to 799
+        // Raw X: ~770 = TOP, ~350 = BOTTOM -> maps to screen_y: 0 to 479
+        int screen_x = (raw_y - 30) * 800 / 745;
+        int screen_y = (770 - raw_x) * 480 / 420;
         
         // Clamp to valid range
         if (screen_x < 0) screen_x = 0;
@@ -516,7 +620,19 @@ void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
         
         data->point.x = screen_x;
         data->point.y = screen_y;
+        
+        // Debug: print touch coordinates periodically
+        static uint32_t last_touch_debug = 0;
+        if (now - last_touch_debug > 200) {
+            Serial.printf("[TOUCH] raw(%d,%d) -> screen(%d,%d)\n", raw_x, raw_y, screen_x, screen_y);
+            last_touch_debug = now;
+        }
     } else {
+        consecutive_invalid = 0;  // Reset counter when not touched
+        if (was_touched) {
+            Serial.println("[TOUCH] Released");
+            was_touched = false;
+        }
         data->state = LV_INDEV_STATE_RELEASED;
     }
 }
@@ -659,37 +775,34 @@ void setup() {
 
     //-----------------------------
 
-    // Create FPS counter label
-    if (ui_Screen1 != NULL) {
-        fps_label = lv_label_create(ui_Screen1);
-        lv_obj_align(fps_label, LV_ALIGN_TOP_RIGHT, -10, 10);
-        lv_label_set_text(fps_label, "--- FPS");
-        lv_obj_set_style_text_color(fps_label, lv_color_hex(0x00FF00), LV_PART_MAIN);
-        lv_obj_set_style_text_font(fps_label, &lv_font_montserrat_20, LV_PART_MAIN);
-        
-        // Create CPU usage label below FPS
-        cpu_label = lv_label_create(ui_Screen1);
-        lv_obj_align(cpu_label, LV_ALIGN_TOP_RIGHT, -10, 35);
-        lv_label_set_text(cpu_label, "--- %");
-        lv_obj_set_style_text_color(cpu_label, lv_color_hex(0x00FF00), LV_PART_MAIN);
-        lv_obj_set_style_text_font(cpu_label, &lv_font_montserrat_20, LV_PART_MAIN);
-    }
-    
-    //-----------------------------
-    
-    // Create invisible tap zone for double-tap to toggle FPS/CPU display
+    // Create combined utility box (FPS, CPU, Brightness) - positioned at TOP-LEFT
     if (ui_Screen1) {
-        lv_obj_t * tap_zone = lv_obj_create(ui_Screen1);
-        lv_obj_set_size(tap_zone, 150, 80);
-        lv_obj_align(tap_zone, LV_ALIGN_BOTTOM_RIGHT, 0, 0);                // actual upper/right
-        //lv_obj_set_style_bg_color(tap_zone, lv_color_hex(0xFF0000), 0);   // Solid Red
-        //lv_obj_set_style_bg_opa(tap_zone, LV_OPA_COVER, 0);               // Fully opaque (not transparent)
-        lv_obj_set_style_bg_opa(tap_zone, LV_OPA_TRANSP, 0);                // Fully transparent
-        lv_obj_set_style_border_width(tap_zone, 0, 0);
-        lv_obj_add_flag(tap_zone, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_remove_flag(tap_zone, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_event_cb(tap_zone, utilities_double_tap_cb, LV_EVENT_CLICKED, NULL);
+        // Box container
+        utility_box = lv_obj_create(ui_Screen1);
+        lv_obj_set_size(utility_box, 105, 65);
+        lv_obj_align(utility_box, LV_ALIGN_TOP_LEFT, 5, 5);  // TOP-LEFT corner
+        lv_obj_set_style_bg_color(utility_box, lv_color_hex(0xff000c), 0);
+        lv_obj_set_style_bg_opa(utility_box, LV_OPA_70, 0);
+        lv_obj_set_style_border_color(utility_box, lv_color_hex(0x444444), 0);
+        lv_obj_set_style_border_width(utility_box, 1, 0);
+        lv_obj_set_style_radius(utility_box, 5, 0);
+        lv_obj_set_style_pad_all(utility_box, 5, 0);
+        lv_obj_add_flag(utility_box, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(utility_box, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(utility_box, utility_box_tap_cb, LV_EVENT_CLICKED, NULL);
+        
+        // Combined label for FPS, CPU, BRI
+        utility_label = lv_label_create(utility_box);
+        lv_label_set_text(utility_label, "--- FPS\n---% CPU\n---% BRI");
+        lv_obj_set_style_text_color(utility_label, lv_color_hex(0x00FF00), 0);
+        lv_obj_set_style_text_font(utility_label, &lv_font_montserrat_14, 0);
+        lv_obj_align(utility_label, LV_ALIGN_TOP_LEFT, 0, 0);
+        
+        Serial.println("[UI] Combined utility box created (tap=brightness, double-tap=hide)");
     }
+    
+    // Set initial brightness to 100%
+    setBrightness(255);
     
     //-----------------------------
 
@@ -786,24 +899,14 @@ void loop() {
     
     loop_count++;
     
-    // Status every 1 seconds
+    // Status every 1 second - update utility box
     if (now - last_status >= 1000) {
-        // Update FPS label
-        if (fps_label != NULL) {
-            char fps_buf[16];
-            snprintf(fps_buf, sizeof(fps_buf), "%3d FPS", flush_count);
-            lv_label_set_text(fps_label, fps_buf);
-        }
+        // Calculate CPU percentage
+        int cpu_percent = (cpu_busy_time * 100) / 1000;
+        if (cpu_percent > 100) cpu_percent = 100;
         
-        // Update CPU usage label (busy_time / total_time * 100)
-        if (cpu_label != NULL) {
-            // Total time for 1 second = 1000ms, cpu_busy_time is in ms
-            int cpu_percent = (cpu_busy_time * 100) / 1000;
-            if (cpu_percent > 100) cpu_percent = 100;
-            char cpu_buf[16];
-            snprintf(cpu_buf, sizeof(cpu_buf), "%3d %%", cpu_percent);
-            lv_label_set_text(cpu_label, cpu_buf);
-        }
+        // Update combined utility label (FPS, CPU, BRI)
+        update_utility_label(flush_count, cpu_percent);
         
         Serial.printf("[STATUS] loops=%u flushes=%u cpu=%u%% heap=%u psram=%u\n",
                       loop_count, flush_count, (cpu_busy_time * 100) / 1000,

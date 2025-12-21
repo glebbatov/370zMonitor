@@ -781,9 +781,9 @@ void setup() {
         utility_box = lv_obj_create(ui_Screen1);
         lv_obj_set_size(utility_box, 105, 65);
         lv_obj_align(utility_box, LV_ALIGN_TOP_LEFT, 5, 5);  // TOP-LEFT corner
-        lv_obj_set_style_bg_color(utility_box, lv_color_hex(0xff000c), 0);
+        lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x444444), 0);            // black
         lv_obj_set_style_bg_opa(utility_box, LV_OPA_70, 0);
-        lv_obj_set_style_border_color(utility_box, lv_color_hex(0x444444), 0);
+        lv_obj_set_style_border_color(utility_box, lv_color_hex(0x444444), 0);        // black
         lv_obj_set_style_border_width(utility_box, 1, 0);
         lv_obj_set_style_radius(utility_box, 5, 0);
         lv_obj_set_style_pad_all(utility_box, 5, 0);
@@ -794,7 +794,7 @@ void setup() {
         // Combined label for FPS, CPU, BRI
         utility_label = lv_label_create(utility_box);
         lv_label_set_text(utility_label, "--- FPS\n---% CPU\n---% BRI");
-        lv_obj_set_style_text_color(utility_label, lv_color_hex(0x00FF00), 0);
+        lv_obj_set_style_text_color(utility_label, lv_color_hex(0xffff00), 0);
         lv_obj_set_style_text_font(utility_label, &lv_font_montserrat_14, 0);
         lv_obj_align(utility_label, LV_ALIGN_TOP_LEFT, 0, 0);
         

@@ -1021,6 +1021,28 @@ void loop() {
             lv_label_set_text(ui_OIL_PRESS_Value, buf);
             last_displayed_pressure = display_pressure_label;
         }
+        
+        // Style the oil pressure value label based on critical state
+        if (ui_OIL_PRESS_Value) {
+            static bool was_value_critical = false;
+            bool value_critical = (oil_pressure < 20) || (oil_pressure > OIL_PRESS_ValueCriticalAbsolute);
+            
+            if (value_critical != was_value_critical) {
+                if (value_critical) {
+                    // Over min/max: black text on red background
+                    lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0x000000), 0);  // Black text
+                    lv_obj_set_style_bg_color(ui_OIL_PRESS_Value, lv_color_hex(0xFF0000), 0);   // Red background
+                    lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value, LV_OPA_COVER, 0);              // Background ON
+                    lv_obj_set_style_pad_all(ui_OIL_PRESS_Value, 4, 0);                        // Padding for visibility
+                } else {
+                    // Within min/max: white text, no background
+                    lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0xFFFFFF), 0);  // White text
+                    lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value, LV_OPA_TRANSP, 0);              // Background OFF
+                    lv_obj_set_style_pad_all(ui_OIL_PRESS_Value, 0, 0);                         // Remove padding
+                }
+                was_value_critical = value_critical;
+            }
+        }
 
         #pragma endregion oil pressure
 

@@ -320,7 +320,12 @@ static uint32_t temp_bucket_start = 0;
 // Chart history arrays for color lookup (stores actual values for each bar)
 #define CHART_POINTS 24
 static int32_t oil_press_history[CHART_POINTS] = {0};
-static int32_t oil_temp_history[CHART_POINTS] = {0};  // Stored in °C
+static int32_t oil_temp_history[CHART_POINTS] = {0};  // Stored in °F
+
+// Critical bar blinking state
+static bool g_critical_blink_phase = false;
+static uint32_t g_last_blink_toggle = 0;
+#define CHART_BLINK_INTERVAL_MS 200  // 200ms per phase (matches critical label)
 
 //=================================================================
 
@@ -338,7 +343,7 @@ static inline int OilPressMin_FromRPM()
 
 #pragma region Chart draw callbacks for bar coloring
 
-// Oil pressure: red < 20, orange 20-100, red > 100
+// Oil pressure: red < 20, orange 20-100, red > 100 (critical bars blink red/white)
 static void oil_press_chart_draw_cb(lv_event_t * e) {
     lv_draw_task_t * draw_task = lv_event_get_draw_task(e);
 
@@ -353,12 +358,17 @@ static void oil_press_chart_draw_cb(lv_event_t * e) {
     if(idx >= CHART_POINTS) return;
 
     int32_t psi = oil_press_history[idx];
-
-    bool is_red = (psi < 20) || (psi > 100);     // change this if you only want >100 to be red
-    fill_dsc->color = is_red ? lv_color_hex(hexRed) : lv_color_hex(hexOrange);
+    bool is_critical = (psi < 20) || (psi > 100);
+    
+    if (is_critical) {
+        // Blink red/white for visibility
+        fill_dsc->color = g_critical_blink_phase ? lv_color_hex(0xFFFFFF) : lv_color_hex(hexRed);
+    } else {
+        fill_dsc->color = lv_color_hex(hexOrange);
+    }
 }
 
-// Oil temp: red < 100°F or > 260°F, orange in between
+// Oil temp: critical if > 260°F (critical bars blink red/white)
 static void oil_temp_chart_draw_cb(lv_event_t * e) {
     lv_draw_task_t * draw_task = lv_event_get_draw_task(e);
 
@@ -371,10 +381,15 @@ static void oil_temp_chart_draw_cb(lv_event_t * e) {
     uint32_t idx = base_dsc->id2;  // Point index
     if(idx >= CHART_POINTS) return;
 
-    int32_t temp_c = oil_temp_history[idx];
-
-    bool is_red = (temp_c < W_TEMP_Min_F) || (temp_c > W_TEMP_Max_F);
-    fill_dsc->color = is_red ? lv_color_hex(hexRed) : lv_color_hex(hexOrange);
+    int32_t temp_f = oil_temp_history[idx];
+    bool is_critical = (temp_f > OIL_TEMP_ValueCriticalF);  // > 260°F
+    
+    if (is_critical) {
+        // Blink red/white for visibility
+        fill_dsc->color = g_critical_blink_phase ? lv_color_hex(0xFFFFFF) : lv_color_hex(hexRed);
+    } else {
+        fill_dsc->color = lv_color_hex(hexOrange);
+    }
 }
 
 // Helper to shift history array left and add new value
@@ -825,9 +840,14 @@ void setup() {
         // Add series
         chart_series_oil_press = lv_chart_add_series(ui_OIL_PRESS_CHART, lv_color_hex(hexOrange), LV_CHART_AXIS_PRIMARY_Y);
         
+        // Attach draw callback for per-bar coloring
+        lv_obj_add_event_cb(ui_OIL_PRESS_CHART, oil_press_chart_draw_cb, LV_EVENT_DRAW_TASK_ADDED, NULL);
+        lv_obj_add_flag(ui_OIL_PRESS_CHART, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
+        
         // Initialize with zeros
         for (int i = 0; i < 24; i++) {
             lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, -100);
+            oil_press_history[i] = 0;  // Initialize history
         }
         lv_chart_refresh(ui_OIL_PRESS_CHART);
         Serial.println("Oil pressure chart initialized (zeros)");
@@ -850,9 +870,14 @@ void setup() {
         // Add series
         chart_series_oil_temp = lv_chart_add_series(ui_OIL_TEMP_CHART, lv_color_hex(hexOrange), LV_CHART_AXIS_PRIMARY_Y);
         
+        // Attach draw callback for per-bar coloring
+        lv_obj_add_event_cb(ui_OIL_TEMP_CHART, oil_temp_chart_draw_cb, LV_EVENT_DRAW_TASK_ADDED, NULL);
+        lv_obj_add_flag(ui_OIL_TEMP_CHART, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
+        
         // Initialize with zeros
         for (int i = 0; i < 24; i++) {
             lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, -100);
+            oil_temp_history[i] = 0;  // Initialize history
         }
         lv_chart_refresh(ui_OIL_TEMP_CHART);
         Serial.println("Oil temp chart initialized (zeros)");
@@ -968,6 +993,11 @@ void loop() {
                         critical_visible = true;
                         lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 255, LV_PART_MAIN);
                         
+                        // Add black background for visibility over chart
+                        lv_obj_set_style_bg_color(ui_OIL_PRESS_VALUE_CRITICAL_Label, lv_color_hex(0x000000), LV_PART_MAIN);
+                        lv_obj_set_style_bg_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 225, LV_PART_MAIN);
+                        lv_obj_set_style_pad_all(ui_OIL_PRESS_VALUE_CRITICAL_Label, 4, LV_PART_MAIN);  // Padding around text
+                        
                         // Create blinking animation using LVGL's anim system
                         lv_anim_t anim;
                         lv_anim_init(&anim);
@@ -1003,6 +1033,7 @@ void loop() {
                         critical_visible = false;
                         lv_anim_delete(ui_OIL_PRESS_VALUE_CRITICAL_Label, NULL);
                         lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+                        lv_obj_set_style_bg_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);  // Hide background
                         critical_exit_time = 0;
                     }
                 }
@@ -1159,6 +1190,7 @@ void loop() {
             int32_t avg = (pressure_samples > 0) ? (pressure_sum / pressure_samples) : 0;
             if (avg < 0) avg = 0;
             if (avg > 150) avg = 150;
+            shift_history(oil_press_history, avg);  // Track value for color callback
             lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, avg);
             pressure_sum = 0;
             pressure_samples = 0;
@@ -1170,6 +1202,7 @@ void loop() {
             int32_t avg = (temp_samples > 0) ? (temp_sum / temp_samples) : 0;
             if (avg < 0) avg = 0;
             if (avg > 140) avg = 140;
+            shift_history(oil_temp_history, avg);  // Track value for color callback
             lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, avg);
             temp_sum = 0;
             temp_samples = 0;
@@ -1178,6 +1211,18 @@ void loop() {
         #endif
         
         last_update = now;
+    }
+    #endif
+    
+    // Update critical blink phase (for chart bar blinking)
+    #if ENABLE_CHARTS
+    if (now - g_last_blink_toggle >= CHART_BLINK_INTERVAL_MS) {
+        g_critical_blink_phase = !g_critical_blink_phase;
+        g_last_blink_toggle = now;
+        
+        // Invalidate charts to trigger redraw with new blink state
+        if (ui_OIL_PRESS_CHART) lv_obj_invalidate(ui_OIL_PRESS_CHART);
+        if (ui_OIL_TEMP_CHART) lv_obj_invalidate(ui_OIL_TEMP_CHART);
     }
     #endif
     

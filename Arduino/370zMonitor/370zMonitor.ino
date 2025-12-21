@@ -196,6 +196,7 @@ static int hexOrange = 0xFF4619;
 extern lv_obj_t * ui_OIL_PRESS_Bar;
 extern lv_obj_t * ui_OIL_PRESS_CHART;
 extern lv_obj_t * ui_OIL_PRESS_Value;
+extern lv_obj_t * ui_OIL_PRESS_VALUE_CRITICAL_Label;
 
 //OIL TEMP [Oil pan/C]
 extern lv_obj_t * ui_OIL_TEMP_Bar;
@@ -826,7 +827,7 @@ void loop() {
             static uint32_t oil_press_anim_start = 0;
             if (oil_press_anim_start == 0) oil_press_anim_start = now;
             
-            uint32_t cycle_ms = 8000;  // 8 second full cycle (5s up + 5s down)
+            uint32_t cycle_ms = 8000;  // 8 second full cycle (4s up + 4s down)
             uint32_t elapsed = (now - oil_press_anim_start) % cycle_ms;
             
             // Sine wave: starts at min, eases to max, eases back to min
@@ -843,9 +844,46 @@ void loop() {
         // Update pressure bar
         if (ui_OIL_PRESS_Bar) {
             lv_bar_set_value(ui_OIL_PRESS_Bar, smooth_oil_pressure, LV_ANIM_ON);
-            // Color: red if <20 or >100, else orange
-            bool press_red = (oil_pressure < OIL_PRESS_ValueCriticalRPM) || (oil_pressure > OIL_PRESS_ValueCriticalAbsolute);
-            lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar, press_red ? lv_color_hex(hexRed) : lv_color_hex(hexOrange), LV_PART_INDICATOR);
+            // Color: red if <20 or >120, else orange
+            bool press_critical = (oil_pressure < 20) || (oil_pressure > OIL_PRESS_ValueCriticalAbsolute);
+            lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar, press_critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange), LV_PART_INDICATOR);
+            
+            // Show/hide critical label with blinking animation
+            if (ui_OIL_PRESS_VALUE_CRITICAL_Label) {
+                static bool was_critical = false;
+                
+                if (press_critical && !was_critical) {
+                    // Entering critical state - show label and start blink animation
+                    lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 255, LV_PART_MAIN);
+                    
+                    // Create blinking animation using LVGL's anim system
+                    lv_anim_t anim;
+                    lv_anim_init(&anim);
+                    lv_anim_set_var(&anim, ui_OIL_PRESS_VALUE_CRITICAL_Label);
+                    lv_anim_set_values(&anim, 0, 255);
+                    lv_anim_set_duration(&anim, 200);               // 200ms per half-cycle (fast blink)
+                    lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
+                    lv_anim_set_playback_duration(&anim, 200);      // 200ms back
+                    lv_anim_set_exec_cb(&anim, [](void* obj, int32_t val) {
+                        lv_obj_t* label = (lv_obj_t*)obj;
+                        // val goes 0->255->0, use midpoint (128) as threshold for equal time
+                        if (val < 128) {
+                            lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);  // White
+                        }
+                        else {
+                            lv_obj_set_style_text_color(label, lv_color_hex(0x960000), LV_PART_MAIN);  // Dark Red
+                        }
+                    });
+                    lv_anim_start(&anim);
+                }
+                else if (!press_critical && was_critical) {
+                    // Leaving critical state - stop animation and hide label
+                    lv_anim_delete(ui_OIL_PRESS_VALUE_CRITICAL_Label, NULL);
+                    lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+                }
+                
+                was_critical = press_critical;
+            }
         }
 
         // Smooth the animation for the oil pressure label (only updating when the displayed value actually changes)

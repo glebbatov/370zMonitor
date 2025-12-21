@@ -930,7 +930,7 @@ void loop() {
             static uint32_t oil_press_anim_start = 0;
             if (oil_press_anim_start == 0) oil_press_anim_start = now;
             
-            uint32_t cycle_ms = 8000;  // 8 second full cycle (4s up + 4s down)
+            uint32_t cycle_ms = 16000;  // 16 second full cycle (8s up + 8s down)
             uint32_t elapsed = (now - oil_press_anim_start) % cycle_ms;
             
             // Sine wave: starts at min, eases to max, eases back to min
@@ -952,37 +952,59 @@ void loop() {
             lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar, press_critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange), LV_PART_INDICATOR);
             
             // Show/hide critical label with blinking animation
+            // Keep visible for 3 extra seconds after critical condition clears
             if (ui_OIL_PRESS_VALUE_CRITICAL_Label) {
                 static bool was_critical = false;
+                static bool critical_visible = false;     // Track if label is currently shown
+                static uint32_t critical_exit_time = 0;   // When critical condition ended
+                const uint32_t CRITICAL_LINGER_MS = 2000; // Keep visible for 2 seconds after exit
                 
-                if (press_critical && !was_critical) {
-                    // Entering critical state - show label and start blink animation
-                    lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 255, LV_PART_MAIN);
+                if (press_critical) {
+                    // Currently in critical state
+                    critical_exit_time = 0;  // Reset exit timer
                     
-                    // Create blinking animation using LVGL's anim system
-                    lv_anim_t anim;
-                    lv_anim_init(&anim);
-                    lv_anim_set_var(&anim, ui_OIL_PRESS_VALUE_CRITICAL_Label);
-                    lv_anim_set_values(&anim, 0, 255);
-                    lv_anim_set_duration(&anim, 200);               // 200ms per half-cycle (fast blink)
-                    lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
-                    lv_anim_set_playback_duration(&anim, 200);      // 200ms back
-                    lv_anim_set_exec_cb(&anim, [](void* obj, int32_t val) {
-                        lv_obj_t* label = (lv_obj_t*)obj;
-                        // val goes 0->255->0, use midpoint (128) as threshold for equal time
-                        if (val < 128) {
-                            lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);  // White
-                        }
-                        else {
-                            lv_obj_set_style_text_color(label, lv_color_hex(0x960000), LV_PART_MAIN);  // Dark Red
-                        }
-                    });
-                    lv_anim_start(&anim);
+                    if (!critical_visible) {
+                        // Start showing label and blinking animation
+                        critical_visible = true;
+                        lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 255, LV_PART_MAIN);
+                        
+                        // Create blinking animation using LVGL's anim system
+                        lv_anim_t anim;
+                        lv_anim_init(&anim);
+                        lv_anim_set_var(&anim, ui_OIL_PRESS_VALUE_CRITICAL_Label);
+                        lv_anim_set_values(&anim, 0, 255);
+                        lv_anim_set_duration(&anim, 200);               // 200ms per half-cycle (fast blink)
+                        lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
+                        lv_anim_set_playback_duration(&anim, 200);      // 200ms back
+                        lv_anim_set_exec_cb(&anim, [](void* obj, int32_t val) {
+                            lv_obj_t* label = (lv_obj_t*)obj;
+                            // val goes 0->255->0, use midpoint (128) as threshold for equal time
+                            if (val < 128) {
+                                lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);  // White
+                            }
+                            else {
+                                lv_obj_set_style_text_color(label, lv_color_hex(0x960000), LV_PART_MAIN);  // Dark Red
+                            }
+                        });
+                        lv_anim_start(&anim);
+                    }
                 }
-                else if (!press_critical && was_critical) {
-                    // Leaving critical state - stop animation and hide label
-                    lv_anim_delete(ui_OIL_PRESS_VALUE_CRITICAL_Label, NULL);
-                    lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+                else {
+                    // Not currently critical
+                    if (was_critical && critical_exit_time == 0) {
+                        // Just exited critical state - start the linger timer
+                        critical_exit_time = now;
+                    }
+                    
+                    // Check if linger period has elapsed
+                    if (critical_visible && critical_exit_time > 0 && 
+                        (now - critical_exit_time) >= CRITICAL_LINGER_MS) {
+                        // Linger period over - hide the label
+                        critical_visible = false;
+                        lv_anim_delete(ui_OIL_PRESS_VALUE_CRITICAL_Label, NULL);
+                        lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+                        critical_exit_time = 0;
+                    }
                 }
                 
                 was_critical = press_critical;

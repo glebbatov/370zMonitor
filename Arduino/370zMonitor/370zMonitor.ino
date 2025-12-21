@@ -769,7 +769,7 @@ void loop() {
     static uint32_t last_status = 0;
     static uint32_t last_update = 0;
 
-    static int oil_pressure = 40;
+    static int oil_pressure = 0;
     static int oil_temp_p = 180;
     static int oil_temp_c = 180;
     static int fuel_trust = 100;
@@ -821,14 +821,25 @@ void loop() {
 
         #pragma region oil pressure
 
-        // Animate oil pressure
-        oil_pressure += random(-7, 8);
-        if (oil_pressure > OIL_PRESS_Max_PSI) oil_pressure = OIL_PRESS_Max_PSI;
-        if (oil_pressure < OIL_PRESS_Min_PSI) oil_pressure = OIL_PRESS_Min_PSI;
+        // Animate oil pressure - sine wave oscillation: 1s up, 1s down (ease-in-out)
+        {
+            static uint32_t oil_press_anim_start = 0;
+            if (oil_press_anim_start == 0) oil_press_anim_start = now;
+            
+            uint32_t cycle_ms = 8000;  // 8 second full cycle (5s up + 5s down)
+            uint32_t elapsed = (now - oil_press_anim_start) % cycle_ms;
+            
+            // Sine wave: starts at min, eases to max, eases back to min
+            // sin() ranges -1 to 1, we shift to 0 to 1
+            float angle = (float)elapsed / (float)cycle_ms * 2.0f * PI;
+            float progress = (1.0f - cos(angle)) / 2.0f;  // 0 at start, 1 at middle, 0 at end
+            
+            oil_pressure = OIL_PRESS_Min_PSI + (int)(progress * (OIL_PRESS_Max_PSI - OIL_PRESS_Min_PSI) + 0.5f);
+        }
         
-        // Smooth the animation for the oil pressure bar
-        smooth_oil_pressure = smooth_oil_pressure * (1.0f - SMOOTH_FACTOR) + oil_pressure * SMOOTH_FACTOR;
-        int display_pressure = (int)(smooth_oil_pressure + 0.5f);
+        // Direct assignment for smooth sine animation (no additional smoothing needed)
+        smooth_oil_pressure = (float)oil_pressure;
+        int display_pressure = oil_pressure;
         // Update pressure bar
         if (ui_OIL_PRESS_Bar) {
             lv_bar_set_value(ui_OIL_PRESS_Bar, smooth_oil_pressure, LV_ANIM_ON);

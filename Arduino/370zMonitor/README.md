@@ -45,6 +45,8 @@ Make sure you have these installed via Arduino Library Manager:
 1. **Arduino_GFX** (by moononournation)
 2. **lvgl** (version 9.x)
 3. **TAMC_GT911** (GT911 touch driver)
+4. **SD** (built-in ESP32 SD library)
+5. **SPI** (built-in)
 
 ## Upload Instructions
 
@@ -116,6 +118,62 @@ The lv_conf.h file is already configured for:
 - Required fonts (Montserrat 14, 20, 26, 48)
 - All necessary widgets enabled
 - 60 FPS target (16ms refresh)
+
+## SD Card Data Logging
+
+The monitor includes SD card data logging functionality for recording all sensor data during track sessions.
+
+### Features
+- **Automatic Session Files:** Creates new LOG_NNNN.csv files each boot
+- **Configurable Write Rate:** Default 1Hz (1 sample/second), adjustable via `SD_WRITE_INTERVAL_MS`
+- **Buffered Writes:** Reduces SD card wear and improves reliability
+- **Safety Features:**
+  - Write retry on failure (3 attempts)
+  - Low space detection (pauses at <1MB free)
+  - Periodic flush to prevent data loss
+  - Error tracking and display
+
+### CSV Data Format
+Each log file contains:
+```
+timestamp_ms,elapsed_s,cpu_percent,mode,oil_press_psi,oil_press_valid,
+oil_temp_pan_f,oil_temp_cooled_f,oil_temp_valid,water_temp_hot_f,water_temp_cooled_f,
+water_temp_valid,trans_temp_hot_f,trans_temp_cooled_f,trans_temp_valid,
+steer_temp_hot_f,steer_temp_cooled_f,steer_temp_valid,diff_temp_hot_f,diff_temp_cooled_f,
+diff_temp_valid,fuel_trust_percent,fuel_trust_valid,rpm,rpm_valid
+```
+
+### SD Card Requirements
+- **Format:** FAT32 (recommended) or FAT16
+- **Size:** Any size supported, minimum 1MB free space required
+- **Speed:** Class 10 or faster recommended for reliable writes
+
+### SD Card Pins (Waveshare ESP32-S3 7")
+| Function | GPIO |
+|----------|------|
+| SCK | 12 |
+| MISO | 13 |
+| MOSI | 11 |
+| CS | IO Expander (EXIO4) |
+
+### Utility Box Display
+The utility box shows SD card status:
+- `SD: N/A` - No SD card detected
+- `SD: RDY` - Ready but not logging
+- `SD: ###KB` - Actively logging (shows bytes written)
+- `SD:PAUSE` - Logging paused (low space)
+- `SD:ERR#` - Write errors occurred
+
+### Test Write
+On startup, a test write is performed to verify SD card functionality:
+- Creates `/test_write.csv` with 10 sample entries
+- Reports file size and write speed
+- Helps diagnose SD card issues
+
+### Disabling SD Logging
+Set `ENABLE_SD_LOGGING` to `0` in the code to disable SD card functionality.
+
+---
 
 ## CAN Bus Integration (Future)
 

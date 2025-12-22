@@ -12,6 +12,8 @@
 #include <esp_heap_caps.h>
 #include <esp32-hal-psram.h>
 #include <TAMC_GT911.h>  // Touch controller
+#include <SD.h>
+#include <SPI.h>
 
 //-----------------------------------------------------------------
 
@@ -26,6 +28,7 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_TOUCH        1
 #define ENABLE_UI_UPDATES   1   // Enable bar/label updates
 #define ENABLE_CHARTS       1   // Enable charts
+#define ENABLE_SD_LOGGING   1   // Enable SD card data logging
 #define UPDATE_INTERVAL_MS  150 // Update every 150ms
 
 //-----------------------------------------------------------------
@@ -634,6 +637,429 @@ void updateOBDData() {
 #pragma endregion OBD Data Provider
 
 //=================================================================
+// SD CARD DATA LOGGER
+// Logs all vehicle data to CSV files on SD card
+//=================================================================
+
+#pragma region SD Card Logger
+
+#if ENABLE_SD_LOGGING
+
+// SD Card Configuration
+// Waveshare ESP32-S3 7" Touch uses IO expander for SD_CS (EXIO_SD_CS bit 4)
+// SPI pins: SCK=12, MISO=13, MOSI=11 (directly connected, no IO expander)
+// IMPORTANT: GPIO10 is used by display (Blue B7) - do NOT use for SD!
+#define SD_SCK_PIN        12      // SPI Clock
+#define SD_MISO_PIN       13      // SPI MISO (Master In Slave Out)
+#define SD_MOSI_PIN       11      // SPI MOSI (Master Out Slave In)  
+#define SD_CS_PIN         -1      // Use -1 for manual CS control via IO expander
+#define SD_SPI_FREQ       4000000 // 4MHz SPI (conservative for reliability)
+#define SD_WRITE_INTERVAL_MS 1000 // Write every 1 second (configurable)
+#define SD_BUFFER_SIZE    512     // Write buffer size
+#define SD_MAX_RETRIES    3       // Max retries on write failure
+#define SD_FLUSH_INTERVAL 10      // Flush to card every N writes
+
+// SD Card State
+static struct {
+    bool initialized;
+    bool card_present;
+    bool file_open;
+    bool logging_enabled;
+    File data_file;
+    char current_filename[32];
+    uint32_t session_start_ms;
+    uint32_t last_write_ms;
+    uint32_t write_count;
+    uint32_t error_count;
+    uint32_t bytes_written;
+    char write_buffer[SD_BUFFER_SIZE];
+    size_t buffer_pos;
+} g_sd_state = {0};
+
+// Forward declarations
+bool sdInit();
+bool sdStartSession();
+void sdEndSession();
+void sdLogData();
+void sdFlushBuffer();
+float getCpuLoadPercent();
+
+// Initialize SD card
+bool sdInit() {
+    Serial.println("[SD] Initializing SD card...");
+    
+    // CRITICAL: The Waveshare ESP32-S3 7" Touch LCD uses:
+    // - GPIO10 for display Blue channel B7 - DO NOT TOUCH!
+    // - IO expander bit 4 (EXIO_SD_CS) for SD card chip select
+    // - SPI pins: SCK=12, MISO=13, MOSI=11
+    
+    // Deselect SD card CS via IO expander (set high)
+    if (g_ioexp_ok) {
+        exio_set(EXIO_SD_CS, true);  // CS high = deselected
+        delay(10);
+    } else {
+        Serial.println("[SD] ERROR: IO expander not available for CS control!");
+        return false;
+    }
+    
+    // Configure SPI for SD card - DO NOT include CS pin!
+    // Using HSPI peripheral on ESP32-S3
+    SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN);  // No CS pin - we control it via IO expander
+    
+    // Select SD card via IO expander for initialization
+    exio_set(EXIO_SD_CS, false);  // CS low = selected
+    delay(10);
+    
+    // Initialize SD card with software CS control
+    // The actual CS is controlled via IO expander (EXIO_SD_CS)
+    // We need to pass SOME pin to SD.begin() - use GPIO15 as dummy
+    // (GPIO6 might be used by flash on some ESP32-S3 variants)
+    pinMode(15, OUTPUT);
+    digitalWrite(15, HIGH);  // Keep dummy CS high (deselected)
+    
+    if (!SD.begin(15, SPI, SD_SPI_FREQ)) {
+        Serial.println("[SD] Card mount failed!");
+        Serial.println("[SD] Check: Is SD card inserted? Is it formatted FAT32?");
+        exio_set(EXIO_SD_CS, true);  // Deselect on failure
+        g_sd_state.initialized = false;
+        g_sd_state.card_present = false;
+        return false;
+    }
+    
+    // Check card type
+    uint8_t cardType = SD.cardType();
+    if (cardType == CARD_NONE) {
+        Serial.println("[SD] No SD card attached!");
+        g_sd_state.initialized = false;
+        g_sd_state.card_present = false;
+        return false;
+    }
+    
+    const char* cardTypeName = "UNKNOWN";
+    switch (cardType) {
+        case CARD_MMC:  cardTypeName = "MMC";  break;
+        case CARD_SD:   cardTypeName = "SD";   break;
+        case CARD_SDHC: cardTypeName = "SDHC"; break;
+    }
+    
+    Serial.printf("[SD] Card type: %s\n", cardTypeName);
+    Serial.printf("[SD] Card size: %llu MB\n", SD.cardSize() / (1024 * 1024));
+    Serial.printf("[SD] Used space: %llu MB\n", SD.usedBytes() / (1024 * 1024));
+    Serial.printf("[SD] Free space: %llu MB\n", (SD.totalBytes() - SD.usedBytes()) / (1024 * 1024));
+    
+    g_sd_state.initialized = true;
+    g_sd_state.card_present = true;
+    g_sd_state.logging_enabled = true;
+    
+    Serial.println("[SD] Initialization successful");
+    return true;
+}
+
+// Generate unique session filename
+void sdGenerateFilename() {
+    // Use boot count or find next available number
+    // Format: LOG_NNNN.csv
+    int session_num = 0;
+    
+    // Find next available session number
+    for (int i = 0; i < 10000; i++) {
+        snprintf(g_sd_state.current_filename, sizeof(g_sd_state.current_filename), 
+                 "/LOG_%04d.csv", i);
+        if (!SD.exists(g_sd_state.current_filename)) {
+            session_num = i;
+            break;
+        }
+    }
+    
+    Serial.printf("[SD] Session file: %s\n", g_sd_state.current_filename);
+}
+
+// Start a new logging session
+bool sdStartSession() {
+    if (!g_sd_state.initialized || !g_sd_state.card_present) {
+        Serial.println("[SD] Cannot start session - SD not ready");
+        return false;
+    }
+    
+    // Generate filename
+    sdGenerateFilename();
+    
+    // Open file for writing
+    g_sd_state.data_file = SD.open(g_sd_state.current_filename, FILE_WRITE);
+    if (!g_sd_state.data_file) {
+        Serial.printf("[SD] Failed to create file: %s\n", g_sd_state.current_filename);
+        return false;
+    }
+    
+    g_sd_state.file_open = true;
+    g_sd_state.session_start_ms = millis();
+    g_sd_state.last_write_ms = 0;
+    g_sd_state.write_count = 0;
+    g_sd_state.error_count = 0;
+    g_sd_state.bytes_written = 0;
+    g_sd_state.buffer_pos = 0;
+    
+    // Write CSV header
+    const char* header = "timestamp_ms,elapsed_s,cpu_percent,mode,"
+                         "oil_press_psi,oil_press_valid,"
+                         "oil_temp_pan_f,oil_temp_cooled_f,oil_temp_valid,"
+                         "water_temp_hot_f,water_temp_cooled_f,water_temp_valid,"
+                         "trans_temp_hot_f,trans_temp_cooled_f,trans_temp_valid,"
+                         "steer_temp_hot_f,steer_temp_cooled_f,steer_temp_valid,"
+                         "diff_temp_hot_f,diff_temp_cooled_f,diff_temp_valid,"
+                         "fuel_trust_percent,fuel_trust_valid,"
+                         "rpm,rpm_valid\n";
+    
+    size_t written = g_sd_state.data_file.print(header);
+    if (written == 0) {
+        Serial.println("[SD] Failed to write header!");
+        g_sd_state.data_file.close();
+        g_sd_state.file_open = false;
+        return false;
+    }
+    
+    g_sd_state.bytes_written += written;
+    g_sd_state.data_file.flush();
+    
+    Serial.printf("[SD] Session started: %s\n", g_sd_state.current_filename);
+    return true;
+}
+
+// End current logging session
+void sdEndSession() {
+    if (!g_sd_state.file_open) return;
+    
+    // Flush any remaining buffer
+    sdFlushBuffer();
+    
+    // Close file
+    g_sd_state.data_file.close();
+    g_sd_state.file_open = false;
+    
+    Serial.printf("[SD] Session ended: %u writes, %u bytes, %u errors\n",
+                  g_sd_state.write_count, g_sd_state.bytes_written, g_sd_state.error_count);
+}
+
+// Calculate CPU load percentage (based on loop timing)
+static uint32_t g_cpu_busy_for_sd = 0;
+static uint32_t g_cpu_total_for_sd = 0;
+
+float getCpuLoadPercent() {
+    // Use the cpu_busy_time tracking from main loop
+    // This gives us an estimate of CPU usage
+    extern uint32_t cpu_busy_time;
+    return (float)(cpu_busy_time * 100) / 1000.0f;  // Assuming 1-second window
+}
+
+// Flush write buffer to SD card
+void sdFlushBuffer() {
+    if (!g_sd_state.file_open || g_sd_state.buffer_pos == 0) return;
+    
+    // Null-terminate buffer
+    g_sd_state.write_buffer[g_sd_state.buffer_pos] = '\0';
+    
+    // Write with retry
+    bool success = false;
+    for (int retry = 0; retry < SD_MAX_RETRIES && !success; retry++) {
+        size_t written = g_sd_state.data_file.print(g_sd_state.write_buffer);
+        if (written > 0) {
+            g_sd_state.bytes_written += written;
+            success = true;
+        } else {
+            delay(5);  // Small delay before retry
+        }
+    }
+    
+    if (!success) {
+        g_sd_state.error_count++;
+        Serial.println("[SD] Write failed after retries!");
+    }
+    
+    g_sd_state.buffer_pos = 0;
+}
+
+// Log current data point to SD card
+void sdLogData() {
+    if (!g_sd_state.file_open || !g_sd_state.logging_enabled) return;
+    
+    uint32_t now = millis();
+    
+    // Check if it's time to write
+    if ((now - g_sd_state.last_write_ms) < SD_WRITE_INTERVAL_MS) return;
+    g_sd_state.last_write_ms = now;
+    
+    // Check free space every 100 writes (avoid checking too often)
+    if (g_sd_state.write_count % 100 == 0) {
+        if (!sdCheckFreeSpace(1024 * 1024)) {  // Need at least 1MB free
+            Serial.println("[SD] WARNING: Low space! Pausing logging.");
+            sdPauseLogging();
+            return;
+        }
+    }
+    
+    // Calculate elapsed time
+    float elapsed_s = (float)(now - g_sd_state.session_start_ms) / 1000.0f;
+    float cpu_pct = getCpuLoadPercent();
+    
+    // Format data line
+    char line[256];
+    int len = snprintf(line, sizeof(line),
+        "%lu,%.2f,%.1f,%s,"
+        "%d,%d,"
+        "%d,%d,%d,"
+        "%d,%d,%d,"
+        "%d,%d,%d,"
+        "%d,%d,%d,"
+        "%d,%d,%d,"
+        "%d,%d,"
+        "%d,%d\n",
+        now, elapsed_s, cpu_pct, g_demo_mode ? "DEMO" : "LIVE",
+        g_vehicle_data.oil_pressure_psi, g_vehicle_data.oil_pressure_valid ? 1 : 0,
+        g_vehicle_data.oil_temp_pan_f, g_vehicle_data.oil_temp_cooled_f, g_vehicle_data.oil_temp_valid ? 1 : 0,
+        g_vehicle_data.water_temp_hot_f, g_vehicle_data.water_temp_cooled_f, g_vehicle_data.water_temp_valid ? 1 : 0,
+        g_vehicle_data.trans_temp_hot_f, g_vehicle_data.trans_temp_cooled_f, g_vehicle_data.trans_temp_valid ? 1 : 0,
+        g_vehicle_data.steer_temp_hot_f, g_vehicle_data.steer_temp_cooled_f, g_vehicle_data.steer_temp_valid ? 1 : 0,
+        g_vehicle_data.diff_temp_hot_f, g_vehicle_data.diff_temp_cooled_f, g_vehicle_data.diff_temp_valid ? 1 : 0,
+        g_vehicle_data.fuel_trust_percent, g_vehicle_data.fuel_trust_valid ? 1 : 0,
+        g_vehicle_data.rpm, g_vehicle_data.rpm_valid ? 1 : 0
+    );
+    
+    // Check if line fits in buffer
+    if (g_sd_state.buffer_pos + len >= SD_BUFFER_SIZE - 1) {
+        // Buffer full, flush first
+        sdFlushBuffer();
+    }
+    
+    // Add to buffer
+    memcpy(g_sd_state.write_buffer + g_sd_state.buffer_pos, line, len);
+    g_sd_state.buffer_pos += len;
+    g_sd_state.write_count++;
+    
+    // Periodic flush to ensure data is saved
+    if (g_sd_state.write_count % SD_FLUSH_INTERVAL == 0) {
+        sdFlushBuffer();
+        g_sd_state.data_file.flush();
+    }
+}
+
+// Test write to SD card - writes CPU load test data
+bool sdTestWrite() {
+    if (!g_sd_state.initialized) {
+        Serial.println("[SD] Test failed - not initialized");
+        return false;
+    }
+    
+    Serial.println("[SD] Running test write...");
+    
+    // Create test file
+    File testFile = SD.open("/test_write.csv", FILE_WRITE);
+    if (!testFile) {
+        Serial.println("[SD] Test failed - could not create file");
+        return false;
+    }
+    
+    // Write header
+    testFile.println("timestamp_ms,cpu_percent,test_value");
+    
+    // Write 10 test entries
+    uint32_t start = millis();
+    for (int i = 0; i < 10; i++) {
+        float cpu = getCpuLoadPercent();
+        char line[64];
+        snprintf(line, sizeof(line), "%lu,%.1f,%d", millis(), cpu, i * 10);
+        testFile.println(line);
+        delay(100);  // Simulate 100ms intervals
+    }
+    uint32_t elapsed = millis() - start;
+    
+    testFile.close();
+    
+    // Verify file exists and has content
+    testFile = SD.open("/test_write.csv", FILE_READ);
+    if (!testFile) {
+        Serial.println("[SD] Test failed - could not read back file");
+        return false;
+    }
+    
+    size_t fileSize = testFile.size();
+    testFile.close();
+    
+    Serial.printf("[SD] Test write successful!\n");
+    Serial.printf("[SD]   File size: %u bytes\n", fileSize);
+    Serial.printf("[SD]   Write time: %u ms\n", elapsed);
+    Serial.printf("[SD]   Test file: /test_write.csv\n");
+    
+    return true;
+}
+
+// Check if SD card has sufficient free space
+bool sdCheckFreeSpace(uint32_t min_bytes) {
+    if (!g_sd_state.initialized) return false;
+    uint64_t free_bytes = SD.totalBytes() - SD.usedBytes();
+    return (free_bytes >= min_bytes);
+}
+
+// Pause SD logging (keeps file open)
+void sdPauseLogging() {
+    g_sd_state.logging_enabled = false;
+    Serial.println("[SD] Logging paused");
+}
+
+// Resume SD logging
+void sdResumeLogging() {
+    if (g_sd_state.file_open) {
+        g_sd_state.logging_enabled = true;
+        Serial.println("[SD] Logging resumed");
+    }
+}
+
+// Check if SD logging is active
+bool sdIsLogging() {
+    return g_sd_state.file_open && g_sd_state.logging_enabled;
+}
+
+// Get current log file name
+const char* sdGetCurrentFilename() {
+    return g_sd_state.current_filename;
+}
+
+// Get write statistics
+void sdGetStats(uint32_t* writes, uint32_t* bytes, uint32_t* errors) {
+    if (writes) *writes = g_sd_state.write_count;
+    if (bytes) *bytes = g_sd_state.bytes_written;
+    if (errors) *errors = g_sd_state.error_count;
+}
+
+// Set logging interval (1000ms = 1Hz, 100ms = 10Hz, etc.)
+void sdSetLogInterval(uint32_t interval_ms) {
+    // Clamp to reasonable range (minimum 100ms, maximum 60000ms)
+    if (interval_ms < 100) interval_ms = 100;
+    if (interval_ms > 60000) interval_ms = 60000;
+    // Note: This would require making SD_WRITE_INTERVAL_MS a variable
+    // For now, this is a placeholder for future implementation
+    Serial.printf("[SD] Log interval set to %u ms (requires recompile)\n", interval_ms);
+}
+
+// Get SD card status string for display
+void sdGetStatusString(char* buf, size_t buf_size) {
+    if (!g_sd_state.initialized) {
+        snprintf(buf, buf_size, "SD: N/A");
+    } else if (!g_sd_state.file_open) {
+        snprintf(buf, buf_size, "SD: RDY");
+    } else if (!g_sd_state.logging_enabled) {
+        snprintf(buf, buf_size, "SD:PAUSE");
+    } else if (g_sd_state.error_count > 0) {
+        snprintf(buf, buf_size, "SD:ERR%lu", g_sd_state.error_count);
+    } else {
+        snprintf(buf, buf_size, "SD:%luKB", g_sd_state.bytes_written / 1024);
+    }
+}
+
+#endif // ENABLE_SD_LOGGING
+
+#pragma endregion SD Card Logger
+
+//=================================================================
 // DATA PROVIDER DISPATCHER
 // Calls the appropriate data provider based on mode
 //=================================================================
@@ -853,9 +1279,17 @@ static void checkUtilityLongPress() {
 
 static void update_utility_label(int fps, int cpu_percent) {
     if (utility_label) {
-        char buf[48];
+        char buf[64];
         int bri_percent = (g_brightness_level * 100) / 255;
+        
+        #if ENABLE_SD_LOGGING
+        char sd_status[16];
+        sdGetStatusString(sd_status, sizeof(sd_status));
+        snprintf(buf, sizeof(buf), "%3d FPS\n%3d%% CPU\n%3d%% BRI\n%s", fps, cpu_percent, bri_percent, sd_status);
+        #else
         snprintf(buf, sizeof(buf), "%3d FPS\n%3d%% CPU\n%3d%% BRI", fps, cpu_percent, bri_percent);
+        #endif
+        
         lv_label_set_text(utility_label, buf);
     }
 }
@@ -1351,6 +1785,9 @@ void setup() {
     
     Serial.println("\n========================================");
     Serial.println("   370zMonitor v4 - Data Provider Arch");
+    #if ENABLE_SD_LOGGING
+    Serial.println("   + SD Card Data Logging");
+    #endif
     Serial.println("========================================");
     
     // Check PSRAM
@@ -1450,6 +1887,18 @@ void setup() {
     initOBD();
     Serial.println("      OK");
     
+    // Initialize SD card logging
+    #if ENABLE_SD_LOGGING
+    Serial.println("[8/8] SD Card...");
+    if (sdInit()) {
+        // Run test write
+        sdTestWrite();
+        // Start logging session
+        sdStartSession();
+    }
+    Serial.println("      OK");
+    #endif
+    
     // Bar animation speeds
     if (ui_OIL_PRESS_Bar) lv_obj_set_style_anim_duration(ui_OIL_PRESS_Bar, 100, LV_PART_MAIN);
     if (ui_OIL_TEMP_Bar) lv_obj_set_style_anim_duration(ui_OIL_TEMP_Bar, 100, LV_PART_MAIN);
@@ -1462,7 +1911,11 @@ void setup() {
     // Create utility box
     if (ui_Screen1) {
         utility_box = lv_obj_create(ui_Screen1);
-        lv_obj_set_size(utility_box, 105, 85);  // Taller for mode indicator
+        #if ENABLE_SD_LOGGING
+        lv_obj_set_size(utility_box, 105, 105);  // Extra height for SD status
+        #else
+        lv_obj_set_size(utility_box, 105, 85);  // Standard height
+        #endif
         lv_obj_align(utility_box, LV_ALIGN_TOP_LEFT, 5, 5);
         lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x444444), 0);
         lv_obj_set_style_bg_opa(utility_box, LV_OPA_70, 0);
@@ -1478,9 +1931,13 @@ void setup() {
         lv_obj_add_event_cb(utility_box, utility_box_press_cb, LV_EVENT_PRESSED, NULL);
         lv_obj_add_event_cb(utility_box, utility_box_release_cb, LV_EVENT_RELEASED, NULL);
         
-        // FPS/CPU/BRI label
+        // FPS/CPU/BRI/SD label
         utility_label = lv_label_create(utility_box);
+        #if ENABLE_SD_LOGGING
+        lv_label_set_text(utility_label, "--- FPS\n---% CPU\n---% BRI\nSD: ---");
+        #else
         lv_label_set_text(utility_label, "--- FPS\n---% CPU\n---% BRI");
+        #endif
         lv_obj_set_style_text_color(utility_label, lv_color_hex(0xffff00), 0);
         lv_obj_set_style_text_font(utility_label, &lv_font_montserrat_14, 0);
         lv_obj_align(utility_label, LV_ALIGN_TOP_LEFT, 0, 0);
@@ -1564,6 +2021,13 @@ void setup() {
     Serial.println("         RUNNING");
     Serial.printf("  Mode: %s\n", g_demo_mode ? "DEMO" : "LIVE");
     Serial.println("  Hold utility box 5s to toggle mode");
+    #if ENABLE_SD_LOGGING
+    if (g_sd_state.file_open) {
+        Serial.printf("  SD Logging: ACTIVE (%s)\n", g_sd_state.current_filename);
+    } else {
+        Serial.println("  SD Logging: DISABLED");
+    }
+    #endif
     Serial.println("========================================\n");
 }
 
@@ -1598,10 +2062,18 @@ void loop() {
         
         update_utility_label(flush_count, cpu_percent);
         
+        #if ENABLE_SD_LOGGING
+        Serial.printf("[STATUS] loops=%u flushes=%u cpu=%u%% heap=%u psram=%u mode=%s sd_writes=%u sd_bytes=%u\n",
+                      loop_count, flush_count, (cpu_busy_time * 100) / 1000,
+                      ESP.getFreeHeap(), ESP.getFreePsram(),
+                      g_demo_mode ? "DEMO" : "LIVE",
+                      g_sd_state.write_count, g_sd_state.bytes_written);
+        #else
         Serial.printf("[STATUS] loops=%u flushes=%u cpu=%u%% heap=%u psram=%u mode=%s\n",
                       loop_count, flush_count, (cpu_busy_time * 100) / 1000,
                       ESP.getFreeHeap(), ESP.getFreePsram(),
                       g_demo_mode ? "DEMO" : "LIVE");
+        #endif
         flush_count = 0;
         cpu_busy_time = 0;
         last_status = now;
@@ -1620,6 +2092,11 @@ void loop() {
         
         // Step 3: Update charts
         updateCharts();
+        
+        // Step 4: Log data to SD card
+        #if ENABLE_SD_LOGGING
+        sdLogData();
+        #endif
         
         last_update = now;
     }

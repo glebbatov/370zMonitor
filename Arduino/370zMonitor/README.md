@@ -124,14 +124,19 @@ The lv_conf.h file is already configured for:
 The monitor includes SD card data logging functionality for recording all sensor data during track sessions.
 
 ### Features
-- **Automatic Session Files:** Creates new LOG_NNNN.csv files each boot
+- **Session-Based Files:** Creates `SESS_NNNNN.csv` files based on boot counter
+- **Boot Counter Persistence:** Stored in `/.bootcount` on SD card
 - **Configurable Write Rate:** Default 1Hz (1 sample/second), adjustable via `SD_WRITE_INTERVAL_MS`
-- **Buffered Writes:** Reduces SD card wear and improves reliability
-- **Safety Features:**
+- **Corruption Prevention:**
+  - Immediate flush after every write
+  - File opened in append mode
+  - No buffering (direct writes)
   - Write retry on failure (3 attempts)
-  - Low space detection (pauses at <1MB free)
-  - Periodic flush to prevent data loss
-  - Error tracking and display
+- **Automatic Space Management:**
+  - Keeps at least 5% free space (configurable via `SD_FREE_SPACE_PERCENT`)
+  - Automatically deletes oldest session files when space is low
+  - Space check every 60 writes (~1 minute at 1Hz)
+- **RTC Detection:** Auto-detects DS3231 RTC module for real timestamps (optional)
 
 ### CSV Data Format
 Each log file contains:
@@ -143,35 +148,55 @@ steer_temp_hot_f,steer_temp_cooled_f,steer_temp_valid,diff_temp_hot_f,diff_temp_
 diff_temp_valid,fuel_trust_percent,fuel_trust_valid,rpm,rpm_valid
 ```
 
+### File Naming
+- **Without RTC:** Files are named `SESS_00001.csv`, `SESS_00002.csv`, etc. based on boot counter
+- **With DS3231 RTC:** (Future) Files will be named `YYYY-MM-DD_HH-MM-SS.csv`
+
 ### SD Card Requirements
 - **Format:** FAT32 (recommended) or FAT16
 - **Size:** Any size supported, minimum 1MB free space required
 - **Speed:** Class 10 or faster recommended for reliable writes
 
 ### SD Card Pins (Waveshare ESP32-S3 7")
-| Function | GPIO |
-|----------|------|
-| SCK | 12 |
-| MISO | 13 |
-| MOSI | 11 |
-| CS | IO Expander (EXIO4) |
+| Function | Pin |
+|----------|-----|
+| SCK | GPIO 12 |
+| MISO | GPIO 13 |
+| MOSI | GPIO 11 |
+| CS | IO Expander bit 4 (EXIO_SD_CS) |
+
+**WARNING:** GPIO10 is used for display Blue channel - do NOT use for SD!
 
 ### Utility Box Display
 The utility box shows SD card status:
-- `SD: N/A` - No SD card detected
-- `SD: RDY` - Ready but not logging
-- `SD: ###KB` - Actively logging (shows bytes written)
-- `SD:PAUSE` - Logging paused (low space)
-- `SD:ERR#` - Write errors occurred
+- `SD:NONE` - No SD card detected
+- `SD:READY` - Ready but not logging
+- `SD:###K` or `SD:###M` - Actively logging (shows bytes written)
+- `SD:PAUSE` - Logging paused
+- `SD:E#` - Write errors occurred
 
-### Test Write
-On startup, a test write is performed to verify SD card functionality:
-- Creates `/test_write.csv` with 10 sample entries
-- Reports file size and write speed
-- Helps diagnose SD card issues
+### Adding Real Timestamps (DS3231 RTC)
+To get real date/time on your log files:
+1. Connect a DS3231 RTC module to I2C (SDA=GPIO8, SCL=GPIO9)
+2. The module shares I2C with the touch controller and IO expander
+3. Set the time once (code to be added)
+4. Files will automatically use real timestamps
 
 ### Disabling SD Logging
-Set `ENABLE_SD_LOGGING` to `0` in the code to disable SD card functionality.
+Set `#define ENABLE_SD_LOGGING 0` in the code to disable SD card functionality.
+
+---
+
+## USB Mass Storage Mode (Future)
+
+The ESP32-S3 supports USB Mass Storage (MSC) mode, which would allow the board to appear as a USB drive when connected to a computer. This is **not yet implemented** but is possible:
+
+**What's needed:**
+1. TinyUSB library with MSC class
+2. Mode switch at boot (e.g., hold button to enter USB drive mode)
+3. Exclusive mode - can't use Serial debug and MSC simultaneously
+
+**Current workaround:** Remove the SD card and use a card reader to access files.
 
 ---
 

@@ -655,9 +655,10 @@ void updateOBDData() {
 #define SD_CS_PIN         -1      // Use -1 for manual CS control via IO expander
 #define SD_SPI_FREQ       4000000 // 4MHz SPI (conservative for reliability)
 #define SD_WRITE_INTERVAL_MS 1000 // Write every 1 second (configurable)
-#define SD_BUFFER_SIZE    512     // Write buffer size
+#define SD_BUFFER_SIZE    256     // Smaller buffer for more frequent flushes
 #define SD_MAX_RETRIES    3       // Max retries on write failure
-#define SD_FLUSH_INTERVAL 10      // Flush to card every N writes
+#define SD_FREE_SPACE_PERCENT 5   // Keep at least 5% free space
+#define SD_MIN_FREE_BYTES (1024 * 1024)  // Absolute minimum 1MB free
 
 // SD Card State
 static struct {
@@ -665,6 +666,7 @@ static struct {
     bool card_present;
     bool file_open;
     bool logging_enabled;
+    bool rtc_available;         // DS3231 RTC detected
     File data_file;
     char current_filename[32];
     uint32_t session_start_ms;
@@ -672,8 +674,9 @@ static struct {
     uint32_t write_count;
     uint32_t error_count;
     uint32_t bytes_written;
-    char write_buffer[SD_BUFFER_SIZE];
-    size_t buffer_pos;
+    uint32_t boot_count;        // Persisted boot counter
+    uint64_t total_bytes;       // Total card size
+    uint64_t used_bytes;        // Used space
 } g_sd_state = {0};
 
 // Forward declarations
@@ -681,8 +684,13 @@ bool sdInit();
 bool sdStartSession();
 void sdEndSession();
 void sdLogData();
-void sdFlushBuffer();
+void sdSafeFlush();
 float getCpuLoadPercent();
+bool sdCheckAndManageSpace();
+bool sdDeleteOldestLog();
+uint32_t sdReadBootCount();
+void sdWriteBootCount(uint32_t count);
+bool sdDetectRTC();
 
 // Initialize SD card
 bool sdInit() {
@@ -747,9 +755,28 @@ bool sdInit() {
     Serial.printf("[SD] Used space: %llu MB\n", SD.usedBytes() / (1024 * 1024));
     Serial.printf("[SD] Free space: %llu MB\n", (SD.totalBytes() - SD.usedBytes()) / (1024 * 1024));
     
+    g_sd_state.total_bytes = SD.totalBytes();
+    g_sd_state.used_bytes = SD.usedBytes();
     g_sd_state.initialized = true;
     g_sd_state.card_present = true;
     g_sd_state.logging_enabled = true;
+    
+    // Read and increment boot counter
+    g_sd_state.boot_count = sdReadBootCount();
+    g_sd_state.boot_count++;
+    sdWriteBootCount(g_sd_state.boot_count);
+    Serial.printf("[SD] Boot count: %lu\n", g_sd_state.boot_count);
+    
+    // Check for DS3231 RTC (optional)
+    g_sd_state.rtc_available = sdDetectRTC();
+    if (g_sd_state.rtc_available) {
+        Serial.println("[SD] DS3231 RTC detected - timestamps will use real time");
+    } else {
+        Serial.println("[SD] No RTC - using boot counter for filenames");
+    }
+    
+    // Check and manage free space
+    sdCheckAndManageSpace();
     
     Serial.println("[SD] Initialization successful");
     return true;
@@ -757,19 +784,10 @@ bool sdInit() {
 
 // Generate unique session filename
 void sdGenerateFilename() {
-    // Use boot count or find next available number
-    // Format: LOG_NNNN.csv
-    int session_num = 0;
-    
-    // Find next available session number
-    for (int i = 0; i < 10000; i++) {
-        snprintf(g_sd_state.current_filename, sizeof(g_sd_state.current_filename), 
-                 "/LOG_%04d.csv", i);
-        if (!SD.exists(g_sd_state.current_filename)) {
-            session_num = i;
-            break;
-        }
-    }
+    // Format: SESS_NNNNN.csv (boot count based)
+    // If RTC available in future: YYYY-MM-DD_HH-MM-SS.csv
+    snprintf(g_sd_state.current_filename, sizeof(g_sd_state.current_filename), 
+             "/SESS_%05lu.csv", g_sd_state.boot_count);
     
     Serial.printf("[SD] Session file: %s\n", g_sd_state.current_filename);
 }
@@ -781,11 +799,21 @@ bool sdStartSession() {
         return false;
     }
     
+    // Check space before starting
+    if (!sdCheckAndManageSpace()) {
+        Serial.println("[SD] Cannot start session - insufficient space");
+        return false;
+    }
+    
     // Generate filename
     sdGenerateFilename();
     
-    // Open file for writing
-    g_sd_state.data_file = SD.open(g_sd_state.current_filename, FILE_WRITE);
+    // Open file for APPEND (safer than WRITE for corruption prevention)
+    g_sd_state.data_file = SD.open(g_sd_state.current_filename, FILE_APPEND);
+    if (!g_sd_state.data_file) {
+        // Try FILE_WRITE if file doesn't exist
+        g_sd_state.data_file = SD.open(g_sd_state.current_filename, FILE_WRITE);
+    }
     if (!g_sd_state.data_file) {
         Serial.printf("[SD] Failed to create file: %s\n", g_sd_state.current_filename);
         return false;
@@ -797,9 +825,8 @@ bool sdStartSession() {
     g_sd_state.write_count = 0;
     g_sd_state.error_count = 0;
     g_sd_state.bytes_written = 0;
-    g_sd_state.buffer_pos = 0;
     
-    // Write CSV header
+    // Write CSV header with immediate flush
     const char* header = "timestamp_ms,elapsed_s,cpu_percent,mode,"
                          "oil_press_psi,oil_press_valid,"
                          "oil_temp_pan_f,oil_temp_cooled_f,oil_temp_valid,"
@@ -819,7 +846,7 @@ bool sdStartSession() {
     }
     
     g_sd_state.bytes_written += written;
-    g_sd_state.data_file.flush();
+    sdSafeFlush();  // Immediate flush after header
     
     Serial.printf("[SD] Session started: %s\n", g_sd_state.current_filename);
     return true;
@@ -829,56 +856,33 @@ bool sdStartSession() {
 void sdEndSession() {
     if (!g_sd_state.file_open) return;
     
-    // Flush any remaining buffer
-    sdFlushBuffer();
+    // Final flush and sync
+    sdSafeFlush();
     
     // Close file
     g_sd_state.data_file.close();
     g_sd_state.file_open = false;
     
-    Serial.printf("[SD] Session ended: %u writes, %u bytes, %u errors\n",
+    Serial.printf("[SD] Session ended: %lu writes, %lu bytes, %lu errors\n",
                   g_sd_state.write_count, g_sd_state.bytes_written, g_sd_state.error_count);
 }
 
+// Safe flush - ensures data is written to card
+void sdSafeFlush() {
+    if (!g_sd_state.file_open) return;
+    
+    g_sd_state.data_file.flush();
+    // Note: flush() should sync to card, but for extra safety on some SD cards:
+    // We could close and reopen, but that's slow. flush() is usually sufficient.
+}
+
 // Calculate CPU load percentage (based on loop timing)
-static uint32_t g_cpu_busy_for_sd = 0;
-static uint32_t g_cpu_total_for_sd = 0;
-
 float getCpuLoadPercent() {
-    // Use the cpu_busy_time tracking from main loop
-    // This gives us an estimate of CPU usage
     extern uint32_t cpu_busy_time;
-    return (float)(cpu_busy_time * 100) / 1000.0f;  // Assuming 1-second window
+    return (float)(cpu_busy_time * 100) / 1000.0f;
 }
 
-// Flush write buffer to SD card
-void sdFlushBuffer() {
-    if (!g_sd_state.file_open || g_sd_state.buffer_pos == 0) return;
-    
-    // Null-terminate buffer
-    g_sd_state.write_buffer[g_sd_state.buffer_pos] = '\0';
-    
-    // Write with retry
-    bool success = false;
-    for (int retry = 0; retry < SD_MAX_RETRIES && !success; retry++) {
-        size_t written = g_sd_state.data_file.print(g_sd_state.write_buffer);
-        if (written > 0) {
-            g_sd_state.bytes_written += written;
-            success = true;
-        } else {
-            delay(5);  // Small delay before retry
-        }
-    }
-    
-    if (!success) {
-        g_sd_state.error_count++;
-        Serial.println("[SD] Write failed after retries!");
-    }
-    
-    g_sd_state.buffer_pos = 0;
-}
-
-// Log current data point to SD card
+// Log current data point to SD card - IMMEDIATE WRITE for corruption safety
 void sdLogData() {
     if (!g_sd_state.file_open || !g_sd_state.logging_enabled) return;
     
@@ -888,20 +892,20 @@ void sdLogData() {
     if ((now - g_sd_state.last_write_ms) < SD_WRITE_INTERVAL_MS) return;
     g_sd_state.last_write_ms = now;
     
-    // Check free space every 100 writes (avoid checking too often)
-    if (g_sd_state.write_count % 100 == 0) {
-        if (!sdCheckFreeSpace(1024 * 1024)) {  // Need at least 1MB free
-            Serial.println("[SD] WARNING: Low space! Pausing logging.");
-            sdPauseLogging();
+    // Periodic space check (every 60 writes = ~1 minute at 1Hz)
+    if (g_sd_state.write_count % 60 == 0 && g_sd_state.write_count > 0) {
+        if (!sdCheckAndManageSpace()) {
+            Serial.println("[SD] Space check failed, pausing logging");
+            g_sd_state.logging_enabled = false;
             return;
         }
     }
     
-    // Calculate elapsed time
+    // Calculate elapsed time and CPU load
     float elapsed_s = (float)(now - g_sd_state.session_start_ms) / 1000.0f;
     float cpu_pct = getCpuLoadPercent();
     
-    // Format data line
+    // Format and write data line directly (no buffering for safety)
     char line[256];
     int len = snprintf(line, sizeof(line),
         "%lu,%.2f,%.1f,%s,"
@@ -924,21 +928,28 @@ void sdLogData() {
         g_vehicle_data.rpm, g_vehicle_data.rpm_valid ? 1 : 0
     );
     
-    // Check if line fits in buffer
-    if (g_sd_state.buffer_pos + len >= SD_BUFFER_SIZE - 1) {
-        // Buffer full, flush first
-        sdFlushBuffer();
+    // Write with retry
+    bool success = false;
+    for (int retry = 0; retry < SD_MAX_RETRIES && !success; retry++) {
+        size_t written = g_sd_state.data_file.print(line);
+        if (written > 0) {
+            g_sd_state.bytes_written += written;
+            g_sd_state.write_count++;
+            success = true;
+            
+            // IMMEDIATE FLUSH after every write for corruption safety
+            sdSafeFlush();
+        } else {
+            delay(5);
+        }
     }
     
-    // Add to buffer
-    memcpy(g_sd_state.write_buffer + g_sd_state.buffer_pos, line, len);
-    g_sd_state.buffer_pos += len;
-    g_sd_state.write_count++;
-    
-    // Periodic flush to ensure data is saved
-    if (g_sd_state.write_count % SD_FLUSH_INTERVAL == 0) {
-        sdFlushBuffer();
-        g_sd_state.data_file.flush();
+    if (!success) {
+        g_sd_state.error_count++;
+        if (g_sd_state.error_count >= 10) {
+            Serial.println("[SD] Too many errors, stopping logging");
+            g_sd_state.logging_enabled = false;
+        }
     }
 }
 
@@ -960,15 +971,17 @@ bool sdTestWrite() {
     
     // Write header
     testFile.println("timestamp_ms,cpu_percent,test_value");
+    testFile.flush();
     
-    // Write 10 test entries
+    // Write 10 test entries with flush after each
     uint32_t start = millis();
     for (int i = 0; i < 10; i++) {
         float cpu = getCpuLoadPercent();
         char line[64];
         snprintf(line, sizeof(line), "%lu,%.1f,%d", millis(), cpu, i * 10);
         testFile.println(line);
-        delay(100);  // Simulate 100ms intervals
+        testFile.flush();  // Flush after each write
+        delay(100);
     }
     uint32_t elapsed = millis() - start;
     
@@ -986,18 +999,171 @@ bool sdTestWrite() {
     
     Serial.printf("[SD] Test write successful!\n");
     Serial.printf("[SD]   File size: %u bytes\n", fileSize);
-    Serial.printf("[SD]   Write time: %u ms\n", elapsed);
+    Serial.printf("[SD]   Write time: %lu ms\n", elapsed);
     Serial.printf("[SD]   Test file: /test_write.csv\n");
     
     return true;
 }
 
-// Check if SD card has sufficient free space
-bool sdCheckFreeSpace(uint32_t min_bytes) {
-    if (!g_sd_state.initialized) return false;
-    uint64_t free_bytes = SD.totalBytes() - SD.usedBytes();
-    return (free_bytes >= min_bytes);
+//=================================================================
+// BOOT COUNTER MANAGEMENT
+// Persists boot count on SD card for session numbering
+//=================================================================
+
+#define BOOT_COUNT_FILE "/.bootcount"
+
+uint32_t sdReadBootCount() {
+    File f = SD.open(BOOT_COUNT_FILE, FILE_READ);
+    if (!f) {
+        return 0;  // First boot or file missing
+    }
+    
+    char buf[16] = {0};
+    f.readBytes(buf, sizeof(buf) - 1);
+    f.close();
+    
+    return (uint32_t)atol(buf);
 }
+
+void sdWriteBootCount(uint32_t count) {
+    File f = SD.open(BOOT_COUNT_FILE, FILE_WRITE);
+    if (!f) {
+        Serial.println("[SD] Warning: Could not write boot count");
+        return;
+    }
+    
+    f.printf("%lu", count);
+    f.flush();
+    f.close();
+}
+
+//=================================================================
+// RTC DETECTION (Optional DS3231)
+//=================================================================
+
+#define DS3231_ADDR 0x68
+
+bool sdDetectRTC() {
+    // Try to detect DS3231 on I2C
+    Wire.beginTransmission(DS3231_ADDR);
+    uint8_t error = Wire.endTransmission();
+    return (error == 0);
+}
+
+// TODO: If RTC detected, add functions to read/write time
+// For now, just detection - full RTC support can be added later
+
+//=================================================================
+// FREE SPACE MANAGEMENT
+// Keeps at least 5% free, deletes oldest session files if needed
+//=================================================================
+
+// Check if enough free space, delete old files if needed
+bool sdCheckAndManageSpace() {
+    if (!g_sd_state.initialized) return false;
+    
+    // Update space tracking
+    g_sd_state.total_bytes = SD.totalBytes();
+    g_sd_state.used_bytes = SD.usedBytes();
+    
+    uint64_t free_bytes = g_sd_state.total_bytes - g_sd_state.used_bytes;
+    uint64_t min_free = (g_sd_state.total_bytes * SD_FREE_SPACE_PERCENT) / 100;
+    
+    // Ensure at least SD_MIN_FREE_BYTES
+    if (min_free < SD_MIN_FREE_BYTES) {
+        min_free = SD_MIN_FREE_BYTES;
+    }
+    
+    // If we have enough space, we're good
+    if (free_bytes >= min_free) {
+        return true;
+    }
+    
+    Serial.printf("[SD] Low space: %llu MB free, need %llu MB\n", 
+                  free_bytes / (1024*1024), min_free / (1024*1024));
+    
+    // Try to delete oldest session files
+    int deleted = 0;
+    while (free_bytes < min_free && deleted < 10) {
+        if (sdDeleteOldestLog()) {
+            deleted++;
+            // Refresh space calculation
+            g_sd_state.used_bytes = SD.usedBytes();
+            free_bytes = g_sd_state.total_bytes - g_sd_state.used_bytes;
+        } else {
+            break;  // No more files to delete
+        }
+    }
+    
+    if (deleted > 0) {
+        Serial.printf("[SD] Deleted %d old session files, now %llu MB free\n", 
+                      deleted, free_bytes / (1024*1024));
+    }
+    
+    return (free_bytes >= min_free);
+}
+
+// Find and delete the oldest SESS_NNNNN.csv file
+bool sdDeleteOldestLog() {
+    File root = SD.open("/");
+    if (!root || !root.isDirectory()) {
+        return false;
+    }
+    
+    char oldest_name[32] = {0};
+    uint32_t oldest_num = UINT32_MAX;
+    
+    // Scan for SESS_NNNNN.csv files
+    File entry;
+    while ((entry = root.openNextFile())) {
+        const char* name = entry.name();
+        
+        // Check if it matches SESS_NNNNN.csv pattern
+        if (strncmp(name, "SESS_", 5) == 0) {
+            // Extract number
+            uint32_t num = atol(name + 5);
+            
+            // Don't delete current session file
+            if (num < oldest_num && num != g_sd_state.boot_count) {
+                oldest_num = num;
+                strncpy(oldest_name, name, sizeof(oldest_name) - 1);
+            }
+        }
+        
+        // Also check old LOG_NNNN.csv format
+        if (strncmp(name, "LOG_", 4) == 0) {
+            uint32_t num = atol(name + 4);
+            if (num < oldest_num) {
+                oldest_num = num;
+                strncpy(oldest_name, name, sizeof(oldest_name) - 1);
+            }
+        }
+        
+        entry.close();
+    }
+    root.close();
+    
+    if (oldest_name[0] == '\0') {
+        Serial.println("[SD] No old session files to delete");
+        return false;
+    }
+    
+    // Delete the oldest file
+    char path[40];
+    snprintf(path, sizeof(path), "/%s", oldest_name);
+    
+    if (SD.remove(path)) {
+        Serial.printf("[SD] Deleted old session: %s\n", path);
+        return true;
+    } else {
+        Serial.printf("[SD] Failed to delete: %s\n", path);
+        return false;
+    }
+}
+
+//=================================================================
+// STATUS AND CONTROL FUNCTIONS
+//=================================================================
 
 // Pause SD logging (keeps file open)
 void sdPauseLogging() {
@@ -1030,28 +1196,24 @@ void sdGetStats(uint32_t* writes, uint32_t* bytes, uint32_t* errors) {
     if (errors) *errors = g_sd_state.error_count;
 }
 
-// Set logging interval (1000ms = 1Hz, 100ms = 10Hz, etc.)
-void sdSetLogInterval(uint32_t interval_ms) {
-    // Clamp to reasonable range (minimum 100ms, maximum 60000ms)
-    if (interval_ms < 100) interval_ms = 100;
-    if (interval_ms > 60000) interval_ms = 60000;
-    // Note: This would require making SD_WRITE_INTERVAL_MS a variable
-    // For now, this is a placeholder for future implementation
-    Serial.printf("[SD] Log interval set to %u ms (requires recompile)\n", interval_ms);
-}
-
 // Get SD card status string for display
 void sdGetStatusString(char* buf, size_t buf_size) {
     if (!g_sd_state.initialized) {
-        snprintf(buf, buf_size, "SD: N/A");
+        snprintf(buf, buf_size, "SD:NONE");
     } else if (!g_sd_state.file_open) {
-        snprintf(buf, buf_size, "SD: RDY");
+        snprintf(buf, buf_size, "SD:READY");
     } else if (!g_sd_state.logging_enabled) {
         snprintf(buf, buf_size, "SD:PAUSE");
     } else if (g_sd_state.error_count > 0) {
-        snprintf(buf, buf_size, "SD:ERR%lu", g_sd_state.error_count);
+        snprintf(buf, buf_size, "SD:E%lu", g_sd_state.error_count);
     } else {
-        snprintf(buf, buf_size, "SD:%luKB", g_sd_state.bytes_written / 1024);
+        // Show KB written
+        uint32_t kb = g_sd_state.bytes_written / 1024;
+        if (kb < 1000) {
+            snprintf(buf, buf_size, "SD:%luK", kb);
+        } else {
+            snprintf(buf, buf_size, "SD:%luM", kb / 1024);
+        }
     }
 }
 

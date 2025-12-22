@@ -187,16 +187,62 @@ Set `#define ENABLE_SD_LOGGING 0` in the code to disable SD card functionality.
 
 ---
 
-## USB Mass Storage Mode (Future)
+## USB Mass Storage Mode
 
-The ESP32-S3 supports USB Mass Storage (MSC) mode, which would allow the board to appear as a USB drive when connected to a computer. This is **not yet implemented** but is possible:
+The ESP32-S3's native USB allows the SD card to appear as a USB flash drive when connected to a computer.
 
-**What's needed:**
-1. TinyUSB library with MSC class
-2. Mode switch at boot (e.g., hold button to enter USB drive mode)
-3. Exclusive mode - can't use Serial debug and MSC simultaneously
+### How to Enter USB MSC Mode
+1. **Hold the BOOT button** while powering on the board
+2. Keep holding until you see "USB MASS STORAGE MODE" in serial monitor
+3. Connect USB-C cable to your computer
+4. The SD card will appear as a removable drive named "370zMon SD Card"
 
-**Current workaround:** Remove the SD card and use a card reader to access files.
+### Exiting USB MSC Mode
+- **Power cycle** the board (unplug and replug power)
+- Normal monitor mode will start automatically if BOOT button is not held
+
+### Important Notes
+- **Exclusive mode**: You cannot use Serial debugging AND USB Mass Storage at the same time
+- **Safely eject**: Always "Safely Remove" the drive before unplugging
+- **FAT32 format**: SD card must be FAT32 formatted
+- **Read/Write access**: Full read/write access to SD card contents
+
+### Troubleshooting
+| Issue | Solution |
+|-------|----------|
+| Drive not appearing | Try different USB-C cable, ensure it's data-capable |
+| Drive appears but empty | Check SD card is inserted and FAT32 formatted |
+| Errors during file copy | Try slower transfer, check SD card health |
+| Can't exit USB mode | Must power cycle, there's no software exit |
+
+### Pin Configuration
+- **BOOT button**: GPIO0 (active LOW when pressed)
+- **USB-C**: Native USB OTG on ESP32-S3
+
+---
+
+## DS3231 RTC Module (Optional)
+
+For real timestamps on log files (instead of boot-counter based names), add a DS3231 RTC module.
+
+### Connection
+| DS3231 Pin | ESP32-S3 Pin |
+|------------|-------------|
+| VCC | 3.3V |
+| GND | GND |
+| SDA | GPIO 8 |
+| SCL | GPIO 9 |
+
+### Features
+- Battery-backed real-time clock
+- Automatic detection at boot
+- Log files named: `YYYY-MM-DD_HH-MM-SS.csv`
+- Temperature-compensated crystal (±2ppm accuracy)
+
+### Cost & Overhead
+- Module cost: ~$2
+- Power: ~1.5mA (from coin cell, not ESP32)
+- CPU overhead: Negligible (single I2C read at boot)
 
 ---
 

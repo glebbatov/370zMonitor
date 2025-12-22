@@ -4,6 +4,9 @@
  * 370zMonitor v4 - Data Provider Architecture
  * Supports Demo Mode (animated values) and Live Mode (sensor/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ * 
+ * USB Mass Storage Mode: Hold BOOT button during power-on to enter
+ * USB drive mode (SD card accessible via USB-C)
  */
 
 #include <Arduino_GFX_Library.h>
@@ -14,6 +17,8 @@
 #include <TAMC_GT911.h>  // Touch controller
 #include <SD.h>
 #include <SPI.h>
+#include "USB.h"        // ESP32-S3 native USB
+#include "USBMSC.h"     // USB Mass Storage Class
 
 //-----------------------------------------------------------------
 
@@ -29,7 +34,11 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_UI_UPDATES   1   // Enable bar/label updates
 #define ENABLE_CHARTS       1   // Enable charts
 #define ENABLE_SD_LOGGING   1   // Enable SD card data logging
+#define ENABLE_USB_MSC      1   // Enable USB Mass Storage mode (hold BOOT at startup)
 #define UPDATE_INTERVAL_MS  150 // Update every 150ms
+
+// USB MSC Configuration
+#define USB_MSC_BOOT_PIN    0   // GPIO0 = BOOT button on most ESP32-S3 boards
 
 //-----------------------------------------------------------------
 
@@ -125,7 +134,7 @@ static uint8_t g_brightness_level = 255;
 int OIL_PRESS_Min_PSI = 0;
 int OIL_PRESS_Max_PSI = 150;
 int OIL_PRESS_ValueCriticalAbsolute = 120;
-int OIL_PRESS_ValueCriticalLow = 20;
+int OIL_PRESS_ValueCriticalLow = 10;
 
 // OIL TEMP: 150-300°F, Critical: >=260°F
 int OIL_TEMP_Min_F = 150;
@@ -208,35 +217,41 @@ extern lv_obj_t * ui_OIL_TEMP_Bar;
 extern lv_obj_t * ui_OIL_TEMP_CHART;
 extern lv_obj_t * ui_OIL_TEMP_Value_P;
 extern lv_obj_t * ui_OIL_TEMP_Value_C;
+extern lv_obj_t * ui_OIL_TEMP_VALUE_CRITICAL_Label;
 
 //WATER TEMP [H/C]
 extern lv_obj_t * ui_W_TEMP_Bar;
 extern lv_obj_t * ui_W_TEMP_CHART;
 extern lv_obj_t * ui_W_TEMP_Value_H;
-extern lv_obj_t * ui_W_TEMP_Value_C;
+extern lv_obj_t * ui_W_TEMP_Value_c;
+extern lv_obj_t * ui_W_TEMP_VALUE_CRITICAL_Label;
 
 //TRAN TEMP [H/C]
 extern lv_obj_t * ui_TRAN_TEMP_Bar;
 extern lv_obj_t * ui_TRAN_TEMP_CHART;
 extern lv_obj_t * ui_TRAN_TEMP_Value_H;
 extern lv_obj_t * ui_TRAN_TEMP_Value_C;
+extern lv_obj_t * ui_TRAN_TEMP_VALUE_CRITICAL_Label;
 
 //STEER TEMP [H/C]
 extern lv_obj_t * ui_STEER_TEMP_Bar;
 extern lv_obj_t * ui_STEER_TEMP_CHART;
 extern lv_obj_t * ui_STEER_TEMP_Value_H;
 extern lv_obj_t * ui_STEER_TEMP_Value_C;
+extern lv_obj_t* ui_STEER_TEMP_VALUE_CRITICAL_Label;
 
 //DIFF TEMP [H/C]
 extern lv_obj_t * ui_DIFF_TEMP_Bar;
 extern lv_obj_t * ui_DIFF_TEMP_CHART;
 extern lv_obj_t * ui_DIFF_TEMP_Value_H;
 extern lv_obj_t * ui_DIFF_TEMP_Value_C;
+extern lv_obj_t * ui_DIFF_TEMP_VALUE_CRITICAL_Label;
 
 //FUEL TRUST
 extern lv_obj_t * ui_FUEL_TRUST_Bar;
 extern lv_obj_t * ui_FUEL_TRUST_CHART;
 extern lv_obj_t * ui_FUEL_TRUST_Value;
+extern lv_obj_t * ui_FUEL_TRUST_VALUE_CRITICAL_Label;
 
 #pragma endregion UI Objects
 
@@ -311,19 +326,52 @@ static bool g_utility_long_press_triggered = false;
 // Chart series
 static lv_chart_series_t * chart_series_oil_press = NULL;
 static lv_chart_series_t * chart_series_oil_temp = NULL;
+static lv_chart_series_t * chart_series_water_temp = NULL;
+static lv_chart_series_t * chart_series_transmission_temp = NULL;
+static lv_chart_series_t * chart_series_steering_temp = NULL;
+static lv_chart_series_t * chart_series_differencial_temp = NULL;
+static lv_chart_series_t * chart_series_fuel_trust = NULL;
 
 // Chart history
-static int32_t pressure_sum = 0;
-static uint32_t pressure_samples = 0;
-static uint32_t pressure_bucket_start = 0;
-static int32_t temp_sum = 0;
-static uint32_t temp_samples = 0;
-static uint32_t temp_bucket_start = 0;
+// oil_press
+static int32_t oil_pressure_sum = 0;
+static uint32_t oil_pressure_samples = 0;
+static uint32_t oil_pressure_bucket_start = 0;
+// oil_temp
+static int32_t oil_temp_sum = 0;
+static uint32_t oil_temp_samples = 0;
+static uint32_t oil_temp_bucket_start = 0;
+// water_temp
+static int32_t water_temp_sum = 0;
+static uint32_t water_temp_samples = 0;
+static uint32_t water_temp_bucket_start = 0;
+// transmission_temp
+static int32_t transmission_temp_sum = 0;
+static uint32_t transmission_temp_samples = 0;
+static uint32_t transmission_temp_bucket_start = 0;
+// steering_temp
+static int32_t steering_temp_sum = 0;
+static uint32_t steering_temp_samples = 0;
+static uint32_t steering_temp_bucket_start = 0;
+// differencial_temp
+static int32_t differencial_temp_sum = 0;
+static uint32_t differencial_temp_samples = 0;
+static uint32_t differencial_temp_bucket_start = 0;
+// fuel_trust
+static int32_t fuel_trust_sum = 0;
+static uint32_t fuel_trust_samples = 0;
+static uint32_t fuel_trust_start = 0;
+
 #define CHART_BUCKET_MS 5000
 
 #define CHART_POINTS 24
 static int32_t oil_press_history[CHART_POINTS] = {0};
 static int32_t oil_temp_history[CHART_POINTS] = {0};
+static int32_t water_temp_history[CHART_POINTS] = {0};
+static int32_t transmission_temp_history[CHART_POINTS] = {0};
+static int32_t steering_temp_history[CHART_POINTS] = {0};
+static int32_t differencial_temp_history[CHART_POINTS] = {0};
+static int32_t fuel_trust_history[CHART_POINTS] = {0};
 
 // Critical bar blinking
 static bool g_critical_blink_phase = false;
@@ -395,7 +443,6 @@ void resetCharts() {
         lv_chart_set_all_value(ui_OIL_PRESS_CHART, chart_series_oil_press, -100);
         lv_chart_refresh(ui_OIL_PRESS_CHART);
     }
-    
     // Reset oil temp chart
     if (ui_OIL_TEMP_CHART && chart_series_oil_temp) {
         for (int i = 0; i < CHART_POINTS; i++) {
@@ -404,14 +451,77 @@ void resetCharts() {
         lv_chart_set_all_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, -100);
         lv_chart_refresh(ui_OIL_TEMP_CHART);
     }
+    // Reset water temp chart
+    if (ui_W_TEMP_CHART && chart_series_water_temp) {
+        for (int i = 0; i < CHART_POINTS; i++) {
+            water_temp_history[i] = 0;
+        }
+        lv_chart_set_all_value(ui_W_TEMP_CHART, chart_series_water_temp, -100);
+        lv_chart_refresh(ui_W_TEMP_CHART);
+    }
+    // Reset transmission temp chart
+    if (ui_TRAN_TEMP_CHART && chart_series_transmission_temp) {
+        for (int i = 0; i < CHART_POINTS; i++) {
+            transmission_temp_history[i] = 0;
+        }
+        lv_chart_set_all_value(ui_TRAN_TEMP_CHART, chart_series_transmission_temp, -100);
+        lv_chart_refresh(ui_TRAN_TEMP_CHART);
+    }
+    // Reset steering temp chart
+    if (ui_STEER_TEMP_CHART && chart_series_steering_temp) {
+        for (int i = 0; i < CHART_POINTS; i++) {
+            steering_temp_history[i] = 0;
+        }
+        lv_chart_set_all_value(ui_STEER_TEMP_CHART, chart_series_steering_temp, -100);
+        lv_chart_refresh(ui_STEER_TEMP_CHART);
+    }
+    // Reset differencial temp chart
+    if (ui_DIFF_TEMP_CHART && chart_series_differencial_temp) {
+        for (int i = 0; i < CHART_POINTS; i++) {
+            differencial_temp_history[i] = 0;
+        }
+        lv_chart_set_all_value(ui_DIFF_TEMP_CHART, chart_series_differencial_temp, -100);
+        lv_chart_refresh(ui_DIFF_TEMP_CHART);
+    }
+    // Reset fuel trust chart
+    if (ui_FUEL_TRUST_CHART && chart_series_fuel_trust) {
+        for (int i = 0; i < CHART_POINTS; i++) {
+            fuel_trust_history[i] = 0;
+        }
+        lv_chart_set_all_value(ui_FUEL_TRUST_CHART, chart_series_fuel_trust, -100);
+        lv_chart_refresh(ui_FUEL_TRUST_CHART);
+    }
     
     // Reset chart accumulation state
-    pressure_sum = 0;
-    pressure_samples = 0;
-    pressure_bucket_start = 0;
-    temp_sum = 0;
-    temp_samples = 0;
-    temp_bucket_start = 0;
+    // oil_press
+    oil_pressure_sum = 0;
+    oil_pressure_samples = 0;
+    oil_pressure_bucket_start = 0;
+    // oil_temp
+    oil_temp_sum = 0;
+    oil_temp_samples = 0;
+    oil_temp_bucket_start = 0;
+    // water_temp
+    water_temp_sum = 0;
+    water_temp_samples = 0;
+    water_temp_bucket_start = 0;
+    // transmission_temp
+    transmission_temp_sum = 0;
+    transmission_temp_samples = 0;
+    transmission_temp_bucket_start = 0;
+    // steering_temp
+    steering_temp_sum = 0;
+    steering_temp_samples = 0;
+    steering_temp_bucket_start = 0;
+    // differencial_temp
+    differencial_temp_sum = 0;
+    differencial_temp_samples = 0;
+    differencial_temp_bucket_start = 0;
+    // fuel_trust
+    fuel_trust_sum = 0;
+    fuel_trust_samples = 0;
+    fuel_trust_start = 0;
+
     #endif
 }
 
@@ -441,12 +551,12 @@ static struct {
 void resetDemoState() {
     memset(&g_demo_state, 0, sizeof(g_demo_state));
     // Set reasonable starting values for demo
-    g_demo_state.oil_temp = 210;
-    g_demo_state.water_temp = 195;
-    g_demo_state.trans_temp = 180;
-    g_demo_state.steer_temp = 140;
-    g_demo_state.diff_temp = 160;
-    g_demo_state.rpm = 750;
+    g_demo_state.oil_temp = 0;
+    g_demo_state.water_temp = 0;
+    g_demo_state.trans_temp = 0;
+    g_demo_state.steer_temp = 0;
+    g_demo_state.diff_temp = 0;
+    g_demo_state.rpm = 0;
 }
 
 void updateDemoData() {
@@ -456,14 +566,11 @@ void updateDemoData() {
     if (g_demo_state.oil_press_anim_start == 0) {
         g_demo_state.oil_press_anim_start = now;
     }
-    
-    uint32_t cycle_ms = 16000;  // 16 second full cycle
-    uint32_t elapsed = (now - g_demo_state.oil_press_anim_start) % cycle_ms;
-    float angle = (float)elapsed / (float)cycle_ms * 2.0f * PI;
-    float progress = (1.0f - cos(angle)) / 2.0f;
-    
-    g_vehicle_data.oil_pressure_psi = OIL_PRESS_Min_PSI + 
-        (int)(progress * (OIL_PRESS_Max_PSI - OIL_PRESS_Min_PSI) + 0.5f);
+    uint32_t oil_pressure_cycle_ms = 16000;  // 16 second full cycle
+    uint32_t oil_pressure_elapsed = (now - g_demo_state.oil_press_anim_start) % oil_pressure_cycle_ms;
+    float oil_pressure_angle = (float)oil_pressure_elapsed / (float)oil_pressure_cycle_ms * 2.0f * PI;
+    float oil_pressure_progress = (1.0f - cos(oil_pressure_angle)) / 2.0f;
+    g_vehicle_data.oil_pressure_psi = OIL_PRESS_Min_PSI + (int)(oil_pressure_progress * (OIL_PRESS_Max_PSI - OIL_PRESS_Min_PSI) + 0.5f);
     g_vehicle_data.oil_pressure_valid = true;
     
     // ----- Oil Temperature: Random walk -----
@@ -472,7 +579,7 @@ void updateDemoData() {
     if (g_demo_state.oil_temp < OIL_TEMP_Min_F) g_demo_state.oil_temp = OIL_TEMP_Min_F;
     
     g_vehicle_data.oil_temp_pan_f = g_demo_state.oil_temp;
-    g_vehicle_data.oil_temp_cooled_f = g_demo_state.oil_temp - 15;
+    g_vehicle_data.oil_temp_cooled_f = g_demo_state.oil_temp - 20;
     g_vehicle_data.oil_temp_valid = true;
     
     // ----- Water Temperature: Random walk -----
@@ -1222,6 +1329,350 @@ void sdGetStatusString(char* buf, size_t buf_size) {
 #pragma endregion SD Card Logger
 
 //=================================================================
+// USB MASS STORAGE MODE
+// Allows SD card to be accessed via USB-C as a flash drive
+// Enter by holding BOOT button during power-on
+//=================================================================
+
+#pragma region USB Mass Storage
+
+#if ENABLE_USB_MSC && ENABLE_SD_LOGGING
+
+// USB MSC for SD Card access via SPI
+// Provides raw sector read/write for USB mass storage
+
+static USBMSC msc;
+static bool g_usb_msc_mode = false;
+
+// SD card info
+static uint32_t g_sd_sector_count = 0;
+static const uint16_t g_sd_sector_size = 512;
+
+// SPI transaction helpers for raw SD access
+static uint8_t spiTransfer(uint8_t data) {
+    return SPI.transfer(data);
+}
+
+static void spiReadBuffer(uint8_t* buf, size_t len) {
+    SPI.transfer(buf, len);
+}
+
+static void sdSelect() {
+    exio_set(EXIO_SD_CS, false);  // CS low = selected
+}
+
+static void sdDeselect() {
+    exio_set(EXIO_SD_CS, true);   // CS high = deselected
+}
+
+// Wait for SD card to be ready
+static bool sdWaitReady(uint32_t timeout_ms) {
+    uint32_t start = millis();
+    while ((millis() - start) < timeout_ms) {
+        if (spiTransfer(0xFF) == 0xFF) return true;
+    }
+    return false;
+}
+
+// Send SD command
+static uint8_t sdCommand(uint8_t cmd, uint32_t arg) {
+    sdWaitReady(500);
+    
+    spiTransfer(0x40 | cmd);           // Command
+    spiTransfer((arg >> 24) & 0xFF);   // Argument
+    spiTransfer((arg >> 16) & 0xFF);
+    spiTransfer((arg >> 8) & 0xFF);
+    spiTransfer(arg & 0xFF);
+    
+    // CRC (required for some commands)
+    uint8_t crc = 0xFF;
+    if (cmd == 0) crc = 0x95;   // CMD0
+    if (cmd == 8) crc = 0x87;   // CMD8
+    spiTransfer(crc);
+    
+    // Wait for response
+    uint8_t response;
+    for (int i = 0; i < 10; i++) {
+        response = spiTransfer(0xFF);
+        if (!(response & 0x80)) break;
+    }
+    return response;
+}
+
+// Read single sector (512 bytes) from SD card
+static bool sdReadSector(uint32_t sector, uint8_t* buffer) {
+    sdSelect();
+    
+    // CMD17 - READ_SINGLE_BLOCK
+    if (sdCommand(17, sector) != 0x00) {
+        sdDeselect();
+        return false;
+    }
+    
+    // Wait for data token
+    uint32_t start = millis();
+    while ((millis() - start) < 500) {
+        uint8_t token = spiTransfer(0xFF);
+        if (token == 0xFE) break;  // Data token
+        if (token != 0xFF) {
+            sdDeselect();
+            return false;  // Error token
+        }
+    }
+    
+    // Read data
+    for (int i = 0; i < 512; i++) {
+        buffer[i] = spiTransfer(0xFF);
+    }
+    
+    // Read CRC (discard)
+    spiTransfer(0xFF);
+    spiTransfer(0xFF);
+    
+    sdDeselect();
+    spiTransfer(0xFF);  // Extra clock
+    return true;
+}
+
+// Write single sector (512 bytes) to SD card
+static bool sdWriteSector(uint32_t sector, const uint8_t* buffer) {
+    sdSelect();
+    
+    // CMD24 - WRITE_BLOCK
+    if (sdCommand(24, sector) != 0x00) {
+        sdDeselect();
+        return false;
+    }
+    
+    // Send data token
+    spiTransfer(0xFF);  // Gap
+    spiTransfer(0xFE);  // Data token
+    
+    // Send data
+    for (int i = 0; i < 512; i++) {
+        spiTransfer(buffer[i]);
+    }
+    
+    // Send dummy CRC
+    spiTransfer(0xFF);
+    spiTransfer(0xFF);
+    
+    // Check response
+    uint8_t response = spiTransfer(0xFF);
+    if ((response & 0x1F) != 0x05) {
+        sdDeselect();
+        return false;  // Write rejected
+    }
+    
+    // Wait for write to complete
+    while (spiTransfer(0xFF) == 0x00) {
+        // Card is busy
+    }
+    
+    sdDeselect();
+    spiTransfer(0xFF);  // Extra clock
+    return true;
+}
+
+// USB MSC callbacks
+static int32_t onMscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
+    uint32_t sectors = bufsize / g_sd_sector_size;
+    if (sectors == 0) sectors = 1;
+    
+    for (uint32_t i = 0; i < sectors; i++) {
+        if (!sdReadSector(lba + i, (uint8_t*)buffer + (i * 512))) {
+            Serial.printf("[USB MSC] Read error: sector %lu\n", lba + i);
+            return -1;
+        }
+    }
+    return bufsize;
+}
+
+static int32_t onMscWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
+    uint32_t sectors = bufsize / g_sd_sector_size;
+    if (sectors == 0) sectors = 1;
+    
+    for (uint32_t i = 0; i < sectors; i++) {
+        if (!sdWriteSector(lba + i, buffer + (i * 512))) {
+            Serial.printf("[USB MSC] Write error: sector %lu\n", lba + i);
+            return -1;
+        }
+    }
+    return bufsize;
+}
+
+static bool onMscStartStop(uint8_t power_condition, bool start, bool load_eject) {
+    Serial.printf("[USB MSC] Start/Stop: power=%d start=%d eject=%d\n", 
+                  power_condition, start, load_eject);
+    if (load_eject) {
+        Serial.println("[USB MSC] Eject requested - safe to remove");
+    }
+    return true;
+}
+
+// Check if we should enter USB MSC mode (BOOT button held at startup)
+bool checkUSBMSCMode() {
+    // Check GPIO0 (BOOT button) immediately - before any other init
+    // BOOT button is active LOW (pressed = LOW)
+    pinMode(USB_MSC_BOOT_PIN, INPUT_PULLUP);
+    delay(50);  // Short debounce
+    
+    // Check multiple times for reliability
+    int pressed = 0;
+    for (int i = 0; i < 10; i++) {
+        if (digitalRead(USB_MSC_BOOT_PIN) == LOW) pressed++;
+        delay(20);
+    }
+    
+    // Need at least 7/10 reads as LOW to trigger
+    if (pressed >= 7) {
+        return true;
+    }
+    return false;
+}
+
+// Initialize and run USB Mass Storage mode (never returns)
+void runUSBMSCMode() {
+    g_usb_msc_mode = true;
+    
+    // =========================================================
+    // VISUAL FEEDBACK - Initialize display to show USB MSC mode
+    // Serial won't work when USB is in MSC mode!
+    // =========================================================
+    
+    // Initialize I2C for IO expander
+    Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ_HZ);
+    Wire.setTimeOut(50);
+    delay(50);
+    
+    // Initialize IO expander
+    g_ioexp_ok = initIOExtension();
+    if (!g_ioexp_ok) {
+        // Can't do much without IO expander - just hang
+        while(1) { delay(1000); }
+    }
+    
+    // Turn on backlight
+    setBacklight(true);
+    
+    // Initialize display for visual feedback
+    gfx->begin();
+    gfx->fillScreen(0x001F);  // Blue background = USB MSC mode
+    
+    // Draw text on display (simple, no LVGL needed)
+    gfx->setTextSize(3);
+    gfx->setTextColor(0xFFFF);  // White text
+    gfx->setCursor(150, 180);
+    gfx->print("USB MASS STORAGE MODE");
+    gfx->setTextSize(2);
+    gfx->setCursor(200, 240);
+    gfx->print("SD Card accessible via USB-C");
+    gfx->setCursor(220, 280);
+    gfx->print("Power cycle to exit");
+    gfx->setCursor(180, 340);
+    gfx->setTextColor(0xFFE0);  // Yellow
+    gfx->print("Initializing SD card...");
+    
+    // Initialize SPI for SD card
+    SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN);
+    SPI.setFrequency(SD_SPI_FREQ);
+    
+    // Use GPIO15 as dummy CS for SD library init
+    pinMode(15, OUTPUT);
+    digitalWrite(15, HIGH);
+    
+    // Select SD card via IO expander
+    sdDeselect();
+    delay(10);
+    
+    // Initialize SD card using Arduino library (for card info)
+    if (!SD.begin(15, SPI, SD_SPI_FREQ)) {
+        // SD init failed - show error
+        gfx->fillRect(100, 330, 600, 40, 0x001F);  // Clear status area
+        gfx->setCursor(180, 340);
+        gfx->setTextColor(0xF800);  // Red
+        gfx->print("ERROR: SD card not found!");
+        gfx->setCursor(180, 380);
+        gfx->print("Insert SD card and power cycle");
+        while(1) { delay(500); }
+    }
+    
+    // Get SD card info
+    uint8_t cardType = SD.cardType();
+    if (cardType == CARD_NONE) {
+        gfx->fillRect(100, 330, 600, 40, 0x001F);
+        gfx->setCursor(180, 340);
+        gfx->setTextColor(0xF800);
+        gfx->print("ERROR: No SD card detected!");
+        while(1) { delay(1000); }
+    }
+    
+    const char* cardTypeName = "UNKNOWN";
+    switch(cardType) {
+        case CARD_MMC:  cardTypeName = "MMC"; break;
+        case CARD_SD:   cardTypeName = "SD"; break;
+        case CARD_SDHC: cardTypeName = "SDHC"; break;
+    }
+    
+    uint64_t cardSize = SD.cardSize();
+    g_sd_sector_count = cardSize / g_sd_sector_size;
+    
+    // Update display with card info
+    gfx->fillRect(100, 330, 600, 80, 0x001F);
+    gfx->setCursor(180, 340);
+    gfx->setTextColor(0x07E0);  // Green
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Card: %s  Size: %llu MB", cardTypeName, cardSize / (1024*1024));
+    gfx->print(buf);
+    gfx->setCursor(180, 380);
+    gfx->setTextColor(0xFFFF);
+    gfx->print("Connect USB-C to computer now");
+    
+    // End SD library (release file system) so we can use raw sector access
+    SD.end();
+    
+    // Re-initialize for raw access
+    sdDeselect();
+    delay(10);
+    
+    // Initialize USB Mass Storage
+    msc.vendorID("370zMon");
+    msc.productID("SD Card");
+    msc.productRevision("1.0");
+    msc.onStartStop(onMscStartStop);
+    msc.onRead(onMscRead);
+    msc.onWrite(onMscWrite);
+    msc.mediaPresent(true);
+    msc.begin(g_sd_sector_count, g_sd_sector_size);
+    
+    // Start USB
+    USB.begin();
+    
+    // Update display - ready
+    gfx->fillRect(100, 410, 600, 40, 0x001F);
+    gfx->setCursor(250, 420);
+    gfx->setTextColor(0x07E0);  // Green
+    gfx->print("USB Ready!");
+    
+    // Stay in USB MSC mode forever (until power cycle)
+    // Blink a pixel to show we're alive
+    bool blink = false;
+    while(1) {
+        delay(500);
+        blink = !blink;
+        gfx->fillRect(780, 460, 10, 10, blink ? 0x07E0 : 0x001F);  // Green blink
+    }
+}
+
+#else
+// Stubs when USB MSC is disabled
+bool checkUSBMSCMode() { return false; }
+void runUSBMSCMode() { }
+#endif // ENABLE_USB_MSC && ENABLE_SD_LOGGING
+
+#pragma endregion USB Mass Storage
+
+//=================================================================
 // DATA PROVIDER DISPATCHER
 // Calls the appropriate data provider based on mode
 //=================================================================
@@ -1890,40 +2341,40 @@ void updateCharts() {
     
     // Accumulate samples
     if (g_vehicle_data.oil_pressure_valid) {
-        pressure_sum += g_vehicle_data.oil_pressure_psi;
-        pressure_samples++;
+        oil_pressure_sum += g_vehicle_data.oil_pressure_psi;
+        oil_pressure_samples++;
     }
     if (g_vehicle_data.oil_temp_valid) {
-        temp_sum += g_vehicle_data.oil_temp_pan_f;
-        temp_samples++;
+        oil_temp_sum += g_vehicle_data.oil_temp_pan_f;
+        oil_temp_samples++;
     }
     
     // Initialize bucket start times
-    if (pressure_bucket_start == 0) pressure_bucket_start = now;
-    if (temp_bucket_start == 0) temp_bucket_start = now;
+    if (oil_pressure_bucket_start == 0) oil_pressure_bucket_start = now;
+    if (oil_temp_bucket_start == 0) oil_temp_bucket_start = now;
     
     // Push to pressure chart every CHART_BUCKET_MS
-    if ((now - pressure_bucket_start) >= CHART_BUCKET_MS && chart_series_oil_press) {
-        int32_t avg = (pressure_samples > 0) ? (pressure_sum / pressure_samples) : 0;
+    if ((now - oil_pressure_bucket_start) >= CHART_BUCKET_MS && chart_series_oil_press) {
+        int32_t avg = (oil_pressure_samples > 0) ? (oil_pressure_sum / oil_pressure_samples) : 0;
         if (avg < 0) avg = 0;
         if (avg > 150) avg = 150;
         shift_history(oil_press_history, avg);
         lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, avg);
-        pressure_sum = 0;
-        pressure_samples = 0;
-        pressure_bucket_start = now;
+        oil_pressure_sum = 0;
+        oil_pressure_samples = 0;
+        oil_pressure_bucket_start = now;
     }
     
     // Push to temp chart every CHART_BUCKET_MS
-    if ((now - temp_bucket_start) >= CHART_BUCKET_MS && chart_series_oil_temp) {
-        int32_t avg = (temp_samples > 0) ? (temp_sum / temp_samples) : 0;
+    if ((now - oil_temp_bucket_start) >= CHART_BUCKET_MS && chart_series_oil_temp) {
+        int32_t avg = (oil_temp_samples > 0) ? (oil_temp_sum / oil_temp_samples) : 0;
         if (avg < 0) avg = 0;
         if (avg > OIL_TEMP_Max_F) avg = OIL_TEMP_Max_F;
         shift_history(oil_temp_history, avg);
         lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, avg);
-        temp_sum = 0;
-        temp_samples = 0;
-        temp_bucket_start = now;
+        oil_temp_sum = 0;
+        oil_temp_samples = 0;
+        oil_temp_bucket_start = now;
     }
     
     // Update blink phase for critical bars
@@ -1942,6 +2393,17 @@ void updateCharts() {
 //=================================================================
 
 void setup() {
+    // =========================================================
+    // CHECK FOR USB MSC MODE FIRST - before anything else!
+    // Hold BOOT button (GPIO0) during power-on to enter USB drive mode
+    // =========================================================
+    #if ENABLE_USB_MSC
+    if (checkUSBMSCMode()) {
+        runUSBMSCMode();  // Never returns - shows display feedback
+    }
+    #endif
+    
+    // Normal boot continues here...
     Serial.begin(115200);
     delay(1000);
     
@@ -1949,6 +2411,9 @@ void setup() {
     Serial.println("   370zMonitor v4 - Data Provider Arch");
     #if ENABLE_SD_LOGGING
     Serial.println("   + SD Card Data Logging");
+    #endif
+    #if ENABLE_USB_MSC
+    Serial.println("   + USB MSC (hold BOOT at startup)");
     #endif
     Serial.println("========================================");
     

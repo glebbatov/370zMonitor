@@ -1338,8 +1338,10 @@ void sdGetStatusString(char* buf, size_t buf_size) {
 
 #if ENABLE_USB_MSC && ENABLE_SD_LOGGING
 
-// USB MSC for SD Card access via SPI
-// Provides raw sector read/write for USB mass storage
+// USB MSC for SD Card access
+// Uses SD library's internal sdcard functions
+
+#include "sd_diskio.h"  // ESP32 SD diskio functions
 
 static USBMSC msc;
 static bool g_usb_msc_mode = false;
@@ -1347,141 +1349,18 @@ static bool g_usb_msc_mode = false;
 // SD card info
 static uint32_t g_sd_sector_count = 0;
 static const uint16_t g_sd_sector_size = 512;
-
-// SPI transaction helpers for raw SD access
-static uint8_t spiTransfer(uint8_t data) {
-    return SPI.transfer(data);
-}
-
-static void spiReadBuffer(uint8_t* buf, size_t len) {
-    SPI.transfer(buf, len);
-}
-
-static void sdSelect() {
-    exio_set(EXIO_SD_CS, false);  // CS low = selected
-}
-
-static void sdDeselect() {
-    exio_set(EXIO_SD_CS, true);   // CS high = deselected
-}
-
-// Wait for SD card to be ready
-static bool sdWaitReady(uint32_t timeout_ms) {
-    uint32_t start = millis();
-    while ((millis() - start) < timeout_ms) {
-        if (spiTransfer(0xFF) == 0xFF) return true;
-    }
-    return false;
-}
-
-// Send SD command
-static uint8_t sdCommand(uint8_t cmd, uint32_t arg) {
-    sdWaitReady(500);
-    
-    spiTransfer(0x40 | cmd);           // Command
-    spiTransfer((arg >> 24) & 0xFF);   // Argument
-    spiTransfer((arg >> 16) & 0xFF);
-    spiTransfer((arg >> 8) & 0xFF);
-    spiTransfer(arg & 0xFF);
-    
-    // CRC (required for some commands)
-    uint8_t crc = 0xFF;
-    if (cmd == 0) crc = 0x95;   // CMD0
-    if (cmd == 8) crc = 0x87;   // CMD8
-    spiTransfer(crc);
-    
-    // Wait for response
-    uint8_t response;
-    for (int i = 0; i < 10; i++) {
-        response = spiTransfer(0xFF);
-        if (!(response & 0x80)) break;
-    }
-    return response;
-}
-
-// Read single sector (512 bytes) from SD card
-static bool sdReadSector(uint32_t sector, uint8_t* buffer) {
-    sdSelect();
-    
-    // CMD17 - READ_SINGLE_BLOCK
-    if (sdCommand(17, sector) != 0x00) {
-        sdDeselect();
-        return false;
-    }
-    
-    // Wait for data token
-    uint32_t start = millis();
-    while ((millis() - start) < 500) {
-        uint8_t token = spiTransfer(0xFF);
-        if (token == 0xFE) break;  // Data token
-        if (token != 0xFF) {
-            sdDeselect();
-            return false;  // Error token
-        }
-    }
-    
-    // Read data
-    for (int i = 0; i < 512; i++) {
-        buffer[i] = spiTransfer(0xFF);
-    }
-    
-    // Read CRC (discard)
-    spiTransfer(0xFF);
-    spiTransfer(0xFF);
-    
-    sdDeselect();
-    spiTransfer(0xFF);  // Extra clock
-    return true;
-}
-
-// Write single sector (512 bytes) to SD card
-static bool sdWriteSector(uint32_t sector, const uint8_t* buffer) {
-    sdSelect();
-    
-    // CMD24 - WRITE_BLOCK
-    if (sdCommand(24, sector) != 0x00) {
-        sdDeselect();
-        return false;
-    }
-    
-    // Send data token
-    spiTransfer(0xFF);  // Gap
-    spiTransfer(0xFE);  // Data token
-    
-    // Send data
-    for (int i = 0; i < 512; i++) {
-        spiTransfer(buffer[i]);
-    }
-    
-    // Send dummy CRC
-    spiTransfer(0xFF);
-    spiTransfer(0xFF);
-    
-    // Check response
-    uint8_t response = spiTransfer(0xFF);
-    if ((response & 0x1F) != 0x05) {
-        sdDeselect();
-        return false;  // Write rejected
-    }
-    
-    // Wait for write to complete
-    while (spiTransfer(0xFF) == 0x00) {
-        // Card is busy
-    }
-    
-    sdDeselect();
-    spiTransfer(0xFF);  // Extra clock
-    return true;
-}
+static uint8_t g_sd_pdrv = 0xFF;  // Physical drive number
 
 // USB MSC callbacks
 static int32_t onMscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
+    if (g_sd_pdrv == 0xFF) return -1;
+    
     uint32_t sectors = bufsize / g_sd_sector_size;
     if (sectors == 0) sectors = 1;
     
+    // Read sectors one at a time
     for (uint32_t i = 0; i < sectors; i++) {
-        if (!sdReadSector(lba + i, (uint8_t*)buffer + (i * 512))) {
-            Serial.printf("[USB MSC] Read error: sector %lu\n", lba + i);
+        if (!sd_read_raw(g_sd_pdrv, (uint8_t*)buffer + (i * 512), lba + i)) {
             return -1;
         }
     }
@@ -1489,12 +1368,14 @@ static int32_t onMscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t b
 }
 
 static int32_t onMscWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
+    if (g_sd_pdrv == 0xFF) return -1;
+    
     uint32_t sectors = bufsize / g_sd_sector_size;
     if (sectors == 0) sectors = 1;
     
+    // Write sectors one at a time
     for (uint32_t i = 0; i < sectors; i++) {
-        if (!sdWriteSector(lba + i, buffer + (i * 512))) {
-            Serial.printf("[USB MSC] Write error: sector %lu\n", lba + i);
+        if (!sd_write_raw(g_sd_pdrv, buffer + (i * 512), lba + i)) {
             return -1;
         }
     }
@@ -1502,11 +1383,6 @@ static int32_t onMscWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32
 }
 
 static bool onMscStartStop(uint8_t power_condition, bool start, bool load_eject) {
-    Serial.printf("[USB MSC] Start/Stop: power=%d start=%d eject=%d\n", 
-                  power_condition, start, load_eject);
-    if (load_eject) {
-        Serial.println("[USB MSC] Eject requested - safe to remove");
-    }
     return true;
 }
 
@@ -1577,13 +1453,14 @@ void runUSBMSCMode() {
     SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN);
     SPI.setFrequency(SD_SPI_FREQ);
     
-    // Use GPIO15 as dummy CS for SD library init
-    pinMode(15, OUTPUT);
-    digitalWrite(15, HIGH);
-    
-    // Select SD card via IO expander
-    sdDeselect();
+    // CRITICAL: Select SD card via IO expander BEFORE SD.begin()
+    // The IO expander controls the real CS pin, not GPIO15
+    exio_set(EXIO_SD_CS, false);  // CS LOW = selected
     delay(10);
+    
+    // Use GPIO15 as dummy CS for SD library (not physically connected)
+    pinMode(15, OUTPUT);
+    digitalWrite(15, HIGH);  // Keep dummy high
     
     // Initialize SD card using Arduino library (for card info)
     if (!SD.begin(15, SPI, SD_SPI_FREQ)) {
@@ -1628,12 +1505,9 @@ void runUSBMSCMode() {
     gfx->setTextColor(0xFFFF);
     gfx->print("Connect USB-C to computer now");
     
-    // End SD library (release file system) so we can use raw sector access
-    SD.end();
-    
-    // Re-initialize for raw access
-    sdDeselect();
-    delay(10);
+    // IMPORTANT: Do NOT call SD.end() - we need the SD driver to stay active!
+    // Set the physical drive number for raw access (typically 0 for first SD)
+    g_sd_pdrv = 0;  // First SD card is always pdrv 0
     
     // Initialize USB Mass Storage
     msc.vendorID("370zMon");

@@ -1343,17 +1343,20 @@ void sdGetStatusString(char* buf, size_t buf_size) {
 
 #include "sd_diskio.h"  // ESP32 SD diskio functions
 
-static USBMSC msc;
+static USBMSC msc;  // device that pretends to be a storage drive over Universal Serial Bus
 static bool g_usb_msc_mode = false;
 
 // SD card info
 static uint32_t g_sd_sector_count = 0;
 static const uint16_t g_sd_sector_size = 512;
-static uint8_t g_sd_pdrv = 0xFF;  // Physical drive number
+static uint8_t g_sd_pdrv = 0xFF;  // physical drive number (0xFF means “not ready”)
 
 // USB MSC callbacks
 static int32_t onMscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
     if (g_sd_pdrv == 0xFF) return -1;
+    
+    // Reject partial-sector requests (offset must be 0)
+    if (offset != 0) return -1;
     
     uint32_t sectors = bufsize / g_sd_sector_size;
     if (sectors == 0) sectors = 1;
@@ -1369,6 +1372,9 @@ static int32_t onMscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t b
 
 static int32_t onMscWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
     if (g_sd_pdrv == 0xFF) return -1;
+    
+    // Reject partial-sector requests (offset must be 0)
+    if (offset != 0) return -1;
     
     uint32_t sectors = bufsize / g_sd_sector_size;
     if (sectors == 0) sectors = 1;
@@ -1530,7 +1536,7 @@ void runUSBMSCMode() {
     msc.mediaPresent(true);
     msc.begin(g_sd_sector_count, g_sd_sector_size);
     
-    // Start USB
+    // Start USB, money line
     USB.begin();
     
     // Update display - ready

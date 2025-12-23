@@ -189,35 +189,50 @@ Set `#define ENABLE_SD_LOGGING 0` in the code to disable SD card functionality.
 
 ## USB Mass Storage Mode
 
-The ESP32-S3's native USB allows the SD card to appear as a USB flash drive when connected to a computer.
+The ESP32-S3's native USB allows the SD card to appear as a USB flash drive when connected to a computer. This provides convenient access to log files without removing the SD card.
 
 ### How to Enter USB MSC Mode
-1. **Hold the BOOT button** while powering on the board
-2. Keep holding until you see "USB MASS STORAGE MODE" in serial monitor
-3. Connect USB-C cable to your computer
-4. The SD card will appear as a removable drive named "370zMon SD Card"
+1. **Connect USB-C** cable to power the board
+2. **Wait** for the normal monitor UI to appear on display
+3. **Press RESET button**, then **immediately hold BOOT button**
+4. Keep holding BOOT until the green "USB MASS STORAGE MODE" screen appears
+5. The SD card will appear as a removable drive (E:, F:, etc.) on your computer
+
+**Note:** First access may take 15-20 seconds while Windows scans the filesystem.
+
+### What You'll See
+- **Green screen** with "USB MASS STORAGE MODE" text
+- **Card info:** Type (SDHC) and size displayed
+- **"USB Ready!"** message when ready for computer connection
+- **Red blinking dot** in bottom-right corner (heartbeat indicator)
 
 ### Exiting USB MSC Mode
-- **Power cycle** the board (unplug and replug power)
-- Normal monitor mode will start automatically if BOOT button is not held
+- **Power cycle** the board (unplug and replug USB-C)
+- Normal monitor mode will start automatically
+- There is no software exit - power cycle is required
 
 ### Important Notes
-- **Exclusive mode**: You cannot use Serial debugging AND USB Mass Storage at the same time
-- **Safely eject**: Always "Safely Remove" the drive before unplugging
-- **FAT32 format**: SD card must be FAT32 formatted
-- **Read/Write access**: Full read/write access to SD card contents
+- **Exclusive mode:** Serial debugging is NOT available in USB MSC mode
+- **Safely eject:** Always "Safely Remove Hardware" before unplugging
+- **FAT32 format:** SD card must be FAT32 formatted
+- **Full access:** Read/write access to all SD card contents
+- **Data integrity:** All session files remain intact after USB access
 
 ### Troubleshooting
 | Issue | Solution |
 |-------|----------|
-| Drive not appearing | Try different USB-C cable, ensure it's data-capable |
-| Drive appears but empty | Check SD card is inserted and FAT32 formatted |
-| Errors during file copy | Try slower transfer, check SD card health |
-| Can't exit USB mode | Must power cycle, there's no software exit |
+| Green screen shows "SD card not found" | Ensure SD card is inserted before entering USB mode |
+| Drive not appearing on PC | Wait 15-20 seconds; try different USB-C cable (must be data-capable) |
+| "Insert disk" or "Format disk" prompt | SD card read failed - check card is FAT32 and healthy |
+| Windows Explorer freezes | Normal on first access - wait 15-20 seconds |
+| Can't enter USB mode | Make sure to press RESET first, then hold BOOT immediately |
+| Screen flickers green/black | Release BOOT button - mode entry failed, try again |
 
-### Pin Configuration
-- **BOOT button**: GPIO0 (active LOW when pressed)
-- **USB-C**: Native USB OTG on ESP32-S3
+### Technical Details
+- **BOOT button:** GPIO0 (directly on ESP32-S3, active LOW)
+- **USB interface:** Native USB OTG on ESP32-S3
+- **Sector access:** Uses ESP32 SD library's `sd_read_raw()` / `sd_write_raw()`
+- **Drive label:** "370zMon" with product ID "SD Card"
 
 ---
 

@@ -1411,6 +1411,17 @@ bool checkUSBMSCMode() {
 void runUSBMSCMode() {
     g_usb_msc_mode = true;
     
+    const uint16_t GRAY_BG = 0x0842;
+    const uint16_t GREEN = 0x001F;
+    const uint16_t WHITE = 0xFFFF;
+
+    const uint16_t BLACK = 0x0000;
+    const uint16_t PINK = 0x07E0;
+    const uint16_t BLUE = 0xF800;
+    const uint16_t YELLOW = 0x07FF;
+    const uint16_t AQUA = 0xF81F;
+    const uint16_t PURPLE = 0xFFE0;
+
     // =========================================================
     // VISUAL FEEDBACK - Initialize display to show USB MSC mode
     // Serial won't work when USB is in MSC mode!
@@ -1433,20 +1444,20 @@ void runUSBMSCMode() {
     
     // Initialize display for visual feedback
     gfx->begin();
-    gfx->fillScreen(0x001F);  // Blue background = USB MSC mode
-    
+    gfx->fillScreen(0x0842);
+
     // Draw text on display (simple, no LVGL needed)
     gfx->setTextSize(3);
-    gfx->setTextColor(0xFFFF);  // White text
-    gfx->setCursor(150, 180);
+    gfx->setTextColor(WHITE);
+    gfx->setCursor(211, 112);
     gfx->print("USB MASS STORAGE MODE");
     gfx->setTextSize(2);
-    gfx->setCursor(200, 240);
+    gfx->setCursor(232, 172);
     gfx->print("SD Card accessible via USB-C");
-    gfx->setCursor(220, 280);
+    gfx->setCursor(286, 212);
     gfx->print("Power cycle to exit");
-    gfx->setCursor(180, 340);
-    gfx->setTextColor(0xFFE0);  // Yellow
+    gfx->setCursor(262, 272);
+    gfx->setTextColor(WHITE);
     gfx->print("Initializing SD card...");
     
     // Initialize SPI for SD card
@@ -1465,11 +1476,11 @@ void runUSBMSCMode() {
     // Initialize SD card using Arduino library (for card info)
     if (!SD.begin(15, SPI, SD_SPI_FREQ)) {
         // SD init failed - show error
-        gfx->fillRect(100, 330, 600, 40, 0x001F);  // Clear status area
-        gfx->setCursor(180, 340);
-        gfx->setTextColor(0xF800);  // Red
+        gfx->fillRect(100, 262, 600, 40, GRAY_BG);  // Clear status area
+        gfx->setCursor(250, 272);
+        gfx->setTextColor(0x07E0);  // Red
         gfx->print("ERROR: SD card not found!");
-        gfx->setCursor(180, 380);
+        gfx->setCursor(220, 312);
         gfx->print("Insert SD card and power cycle");
         while(1) { delay(500); }
     }
@@ -1477,9 +1488,9 @@ void runUSBMSCMode() {
     // Get SD card info
     uint8_t cardType = SD.cardType();
     if (cardType == CARD_NONE) {
-        gfx->fillRect(100, 330, 600, 40, 0x001F);
-        gfx->setCursor(180, 340);
-        gfx->setTextColor(0xF800);
+        gfx->fillRect(100, 262, 600, 40, GRAY_BG);
+        gfx->setCursor(238, 272);
+        gfx->setTextColor(0x07E0);  // Red
         gfx->print("ERROR: No SD card detected!");
         while(1) { delay(1000); }
     }
@@ -1495,14 +1506,14 @@ void runUSBMSCMode() {
     g_sd_sector_count = cardSize / g_sd_sector_size;
     
     // Update display with card info
-    gfx->fillRect(100, 330, 600, 80, 0x001F);
-    gfx->setCursor(180, 340);
-    gfx->setTextColor(0x07E0);  // Green
+    gfx->fillRect(100, 262, 600, 80, GRAY_BG);
+    gfx->setCursor(235, 272);
+    gfx->setTextColor(WHITE);
     char buf[64];
-    snprintf(buf, sizeof(buf), "Card: %s  Size: %llu MB", cardTypeName, cardSize / (1024*1024));
+    snprintf(buf, sizeof(buf), "Card: %s    Size: %llu MB", cardTypeName, cardSize / (1024*1024));
     gfx->print(buf);
-    gfx->setCursor(180, 380);
-    gfx->setTextColor(0xFFFF);
+    gfx->setCursor(226, 312);
+    gfx->setTextColor(WHITE);
     gfx->print("Connect USB-C to computer now");
     
     // IMPORTANT: Do NOT call SD.end() - we need the SD driver to stay active!
@@ -1523,18 +1534,24 @@ void runUSBMSCMode() {
     USB.begin();
     
     // Update display - ready
-    gfx->fillRect(100, 410, 600, 40, 0x001F);
-    gfx->setCursor(250, 420);
-    gfx->setTextColor(0x07E0);  // Green
+    gfx->fillRect(100, 342, 600, 40, GRAY_BG);
+    gfx->setCursor(340, 352);
+    gfx->setTextColor(GRAY_BG);
     gfx->print("USB Ready!");
     
-    // Stay in USB MSC mode forever (until power cycle)
-    // Blink a pixel to show we're alive
+    // Update display - ready blinking
     bool blink = false;
-    while(1) {
+    while (1) {
         delay(500);
         blink = !blink;
-        gfx->fillRect(780, 460, 10, 10, blink ? 0x07E0 : 0x001F);  // Green blink
+
+        // clear just the "USB Ready!" strip
+        gfx->fillRect(100, 342, 600, 40, GRAY_BG);
+
+        // force solid overwrite: foreground + background
+        gfx->setCursor(340, 352);
+        gfx->setTextColor(blink ? WHITE : GRAY_BG, GRAY_BG);
+        gfx->print("USB Ready!");
     }
 }
 

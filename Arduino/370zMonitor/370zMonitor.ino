@@ -1,12 +1,18 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v4 - Data Provider Architecture
- * Supports Demo Mode (animated values) and Live Mode (sensor/OBD data)
+ * 370zMonitor v4.1 - Data Provider Architecture
+ * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
  * 
- * USB Mass Storage Mode: Hold BOOT button during power-on to enter
- * USB drive mode (SD card accessible via USB-C)
+ * v4.1 Changes:
+ * - Fixed live mode startup (shows "---" until data arrives)
+ * - Fixed demo mode (all values use simple sine wave oscillation)
+ * - Added unit conversion (C/F for temps, PSI/Bar/kPa for pressure)
+ * - Added tap-to-cycle units with persistent preferences
+ * 
+ * Firmware download mode: Hold BOOT, then RESET
+ * USB Mass Storage Mode: Hold BOOT button during power-on to enter [press RESET, then BOOT right away] (USB drive mode (SD card accessible via USB-C))
  */
 
 #include <Arduino_GFX_Library.h>
@@ -17,6 +23,7 @@
 #include <TAMC_GT911.h>  // Touch controller
 #include <SD.h>
 #include <SPI.h>
+#include <Preferences.h>  // For persistent unit preferences
 #include "USB.h"        // ESP32-S3 native USB
 #include "USBMSC.h"     // USB Mass Storage Class
 
@@ -42,36 +49,148 @@ __attribute__((constructor)) void configurePSRAM() {
 
 //-----------------------------------------------------------------
 
+// ===== UNIT TYPES =====
+enum TempUnit { TEMP_FAHRENHEIT = 0, TEMP_CELSIUS = 1 };
+enum PressureUnit { PRESS_PSI = 0, PRESS_BAR = 1, PRESS_KPA = 2 };
+
+// Preferences for persistent storage
+Preferences g_prefs;
+
+// Current display units (loaded from/saved to flash)
+static TempUnit g_temp_unit = TEMP_FAHRENHEIT;
+static PressureUnit g_pressure_unit = PRESS_PSI;
+
+// Source data unit assumptions (what the sensors output)
+// These can be changed if your sensors output different units
+static TempUnit g_sensor_temp_unit = TEMP_CELSIUS;      // Most temp sensors output Celsius
+static PressureUnit g_sensor_pressure_unit = PRESS_PSI; // Most pressure sensors output PSI
+
+//-----------------------------------------------------------------
+
+// ===== UNIT CONVERSION FUNCTIONS =====
+
+// Temperature conversions
+float celsiusToFahrenheit(float c) { return c * 9.0f / 5.0f + 32.0f; }
+float fahrenheitToCelsius(float f) { return (f - 32.0f) * 5.0f / 9.0f; }
+
+// Convert from source unit to internal storage (Fahrenheit)
+float tempToInternal(float value, TempUnit source_unit) {
+    if (source_unit == TEMP_CELSIUS) {
+        return celsiusToFahrenheit(value);
+    }
+    return value; // Already Fahrenheit
+}
+
+// Convert from internal (Fahrenheit) to display unit
+float tempToDisplay(float value_f, TempUnit display_unit) {
+    if (display_unit == TEMP_CELSIUS) {
+        return fahrenheitToCelsius(value_f);
+    }
+    return value_f; // Already Fahrenheit
+}
+
+// Pressure conversions
+float psiToBar(float psi) { return psi * 0.0689476f; }
+float psiToKpa(float psi) { return psi * 6.89476f; }
+float barToPsi(float bar) { return bar / 0.0689476f; }
+float kpaToPsi(float kpa) { return kpa / 6.89476f; }
+
+// Convert from source unit to internal storage (PSI)
+float pressToInternal(float value, PressureUnit source_unit) {
+    switch (source_unit) {
+        case PRESS_BAR: return barToPsi(value);
+        case PRESS_KPA: return kpaToPsi(value);
+        default: return value; // Already PSI
+    }
+}
+
+// Convert from internal (PSI) to display unit
+float pressToDisplay(float value_psi, PressureUnit display_unit) {
+    switch (display_unit) {
+        case PRESS_BAR: return psiToBar(value_psi);
+        case PRESS_KPA: return psiToKpa(value_psi);
+        default: return value_psi; // Already PSI
+    }
+}
+
+// Get unit suffix strings
+const char* getTempUnitStr(TempUnit unit) {
+    return (unit == TEMP_CELSIUS) ? "C" : "F";
+}
+
+const char* getPressureUnitStr(PressureUnit unit) {
+    switch (unit) {
+        case PRESS_BAR: return "BAR";
+        case PRESS_KPA: return "kPa";
+        default: return "PSI";
+    }
+}
+
+// Save/Load unit preferences
+void saveUnitPreferences() {
+    g_prefs.begin("units", false);
+    g_prefs.putUChar("temp", (uint8_t)g_temp_unit);
+    g_prefs.putUChar("press", (uint8_t)g_pressure_unit);
+    g_prefs.end();
+    Serial.printf("[PREFS] Saved: Temp=%s, Press=%s\n", 
+                  getTempUnitStr(g_temp_unit), getPressureUnitStr(g_pressure_unit));
+}
+
+void loadUnitPreferences() {
+    g_prefs.begin("units", true);
+    g_temp_unit = (TempUnit)g_prefs.getUChar("temp", TEMP_FAHRENHEIT);
+    g_pressure_unit = (PressureUnit)g_prefs.getUChar("press", PRESS_PSI);
+    g_prefs.end();
+    Serial.printf("[PREFS] Loaded: Temp=%s, Press=%s\n", 
+                  getTempUnitStr(g_temp_unit), getPressureUnitStr(g_pressure_unit));
+}
+
+// Cycle to next unit
+void cycleTemperatureUnit() {
+    g_temp_unit = (g_temp_unit == TEMP_FAHRENHEIT) ? TEMP_CELSIUS : TEMP_FAHRENHEIT;
+    saveUnitPreferences();
+    Serial.printf("[UNITS] Temperature unit changed to %s\n", getTempUnitStr(g_temp_unit));
+}
+
+void cyclePressureUnit() {
+    g_pressure_unit = (PressureUnit)((g_pressure_unit + 1) % 3);
+    saveUnitPreferences();
+    Serial.printf("[UNITS] Pressure unit changed to %s\n", getPressureUnitStr(g_pressure_unit));
+}
+
+//-----------------------------------------------------------------
+
 // ===== DATA PROVIDER ARCHITECTURE =====
 // This structure holds all vehicle data from either demo or real sources
 // The UI layer reads from this - it doesn't care where the data comes from
+// All values stored internally in base units: Fahrenheit for temp, PSI for pressure
 
 struct VehicleData {
-    // Oil Pressure
+    // Oil Pressure (stored in PSI internally)
     int oil_pressure_psi;
     bool oil_pressure_valid;
     
-    // Oil Temperature (dual sensor: pan and cooled line)
+    // Oil Temperature (stored in Fahrenheit internally)
     int oil_temp_pan_f;
     int oil_temp_cooled_f;
     bool oil_temp_valid;
     
-    // Water/Coolant Temperature (dual sensor: hot and cooled)
+    // Water/Coolant Temperature (stored in Fahrenheit internally)
     int water_temp_hot_f;
     int water_temp_cooled_f;
     bool water_temp_valid;
     
-    // Transmission Temperature (dual sensor)
+    // Transmission Temperature (stored in Fahrenheit internally)
     int trans_temp_hot_f;
     int trans_temp_cooled_f;
     bool trans_temp_valid;
     
-    // Power Steering Temperature (dual sensor)
+    // Power Steering Temperature (stored in Fahrenheit internally)
     int steer_temp_hot_f;
     int steer_temp_cooled_f;
     bool steer_temp_valid;
     
-    // Differential Temperature (dual sensor)
+    // Differential Temperature (stored in Fahrenheit internally)
     int diff_temp_hot_f;
     int diff_temp_cooled_f;
     bool diff_temp_valid;
@@ -83,6 +202,10 @@ struct VehicleData {
     // OBD Data
     int rpm;
     bool rpm_valid;
+    
+    // Flag to track if ANY valid data has ever been received
+    // Used to determine if UI should show "---" or actual values
+    bool has_received_data;
 };
 
 // Global vehicle data - updated by data providers, read by UI
@@ -95,6 +218,7 @@ static bool g_demo_mode = false;  // Start in LIVE mode (default)
 void resetVehicleData() {
     memset(&g_vehicle_data, 0, sizeof(g_vehicle_data));
     // All _valid flags are now false
+    // has_received_data is now false
 }
 
 // Forward declarations for reset functions (defined after variables)
@@ -174,18 +298,26 @@ int FUEL_TRUST_ValueCritical = 50;
 
 // Smoothed display values (for UI animation)
 // These get reset when switching modes
-static float smooth_oil_pressure = 0.0f;
-static float smooth_oil_temp_f = 0.0f;
-static float smooth_fuel_trust = 0.0f;
+static float smooth_oil_pressure = -1.0f;  // -1 = uninitialized/no data
+static float smooth_oil_temp_f = -1.0f;
+static float smooth_water_temp_f = -1.0f;
+static float smooth_trans_temp_f = -1.0f;
+static float smooth_steer_temp_f = -1.0f;
+static float smooth_diff_temp_f = -1.0f;
+static float smooth_fuel_trust = -1.0f;
 
 // Smoothing factor: 0.3 = responsive, 0.1 = very smooth
 #define SMOOTH_FACTOR 0.3f
 
 // Reset smoothing variables (must be after variable declarations)
 void resetSmoothingState() {
-    smooth_oil_pressure = 0.0f;
-    smooth_oil_temp_f = 0.0f;
-    smooth_fuel_trust = 0.0f;
+    smooth_oil_pressure = -1.0f;
+    smooth_oil_temp_f = -1.0f;
+    smooth_water_temp_f = -1.0f;
+    smooth_trans_temp_f = -1.0f;
+    smooth_steer_temp_f = -1.0f;
+    smooth_diff_temp_f = -1.0f;
+    smooth_fuel_trust = -1.0f;
 }
 
 #pragma endregion Animation/Smoothing
@@ -393,18 +525,39 @@ void resetUIElements() {
     if (ui_DIFF_TEMP_Bar) lv_bar_set_value(ui_DIFF_TEMP_Bar, 0, LV_ANIM_OFF);
     if (ui_FUEL_TRUST_Bar) lv_bar_set_value(ui_FUEL_TRUST_Bar, 0, LV_ANIM_OFF);
     
-    // Reset all labels to "---"
-    if (ui_OIL_PRESS_Value) lv_label_set_text(ui_OIL_PRESS_Value, "--- PSI");
-    if (ui_OIL_TEMP_Value_P) lv_label_set_text(ui_OIL_TEMP_Value_P, "---°F [P]");
-    if (ui_OIL_TEMP_Value_C) lv_label_set_text(ui_OIL_TEMP_Value_C, "---°F [C]");
-    if (ui_W_TEMP_Value_H) lv_label_set_text(ui_W_TEMP_Value_H, "---°F [H]");
-    if (ui_W_TEMP_Value_C) lv_label_set_text(ui_W_TEMP_Value_C, "---°F [C]");
-    if (ui_TRAN_TEMP_Value_H) lv_label_set_text(ui_TRAN_TEMP_Value_H, "---°F [H]");
-    if (ui_TRAN_TEMP_Value_C) lv_label_set_text(ui_TRAN_TEMP_Value_C, "---°F [C]");
-    if (ui_STEER_TEMP_Value_H) lv_label_set_text(ui_STEER_TEMP_Value_H, "---°F [H]");
-    if (ui_STEER_TEMP_Value_C) lv_label_set_text(ui_STEER_TEMP_Value_C, "---°F [C]");
-    if (ui_DIFF_TEMP_Value_H) lv_label_set_text(ui_DIFF_TEMP_Value_H, "---°F [H]");
-    if (ui_DIFF_TEMP_Value_C) lv_label_set_text(ui_DIFF_TEMP_Value_C, "---°F [C]");
+    // Reset all labels to "---" with appropriate unit suffix
+    const char* tempUnit = getTempUnitStr(g_temp_unit);
+    const char* pressUnit = getPressureUnitStr(g_pressure_unit);
+    char buf[32];
+    
+    snprintf(buf, sizeof(buf), "--- %s", pressUnit);
+    if (ui_OIL_PRESS_Value) lv_label_set_text(ui_OIL_PRESS_Value, buf);
+    
+    snprintf(buf, sizeof(buf), "---°%s [P]", tempUnit);
+    if (ui_OIL_TEMP_Value_P) lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
+    snprintf(buf, sizeof(buf), "---°%s [C]", tempUnit);
+    if (ui_OIL_TEMP_Value_C) lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
+    
+    snprintf(buf, sizeof(buf), "---°%s [H]", tempUnit);
+    if (ui_W_TEMP_Value_H) lv_label_set_text(ui_W_TEMP_Value_H, buf);
+    snprintf(buf, sizeof(buf), "---°%s [C]", tempUnit);
+    if (ui_W_TEMP_Value_C) lv_label_set_text(ui_W_TEMP_Value_C, buf);
+    
+    snprintf(buf, sizeof(buf), "---°%s [H]", tempUnit);
+    if (ui_TRAN_TEMP_Value_H) lv_label_set_text(ui_TRAN_TEMP_Value_H, buf);
+    snprintf(buf, sizeof(buf), "---°%s [C]", tempUnit);
+    if (ui_TRAN_TEMP_Value_C) lv_label_set_text(ui_TRAN_TEMP_Value_C, buf);
+    
+    snprintf(buf, sizeof(buf), "---°%s [H]", tempUnit);
+    if (ui_STEER_TEMP_Value_H) lv_label_set_text(ui_STEER_TEMP_Value_H, buf);
+    snprintf(buf, sizeof(buf), "---°%s [C]", tempUnit);
+    if (ui_STEER_TEMP_Value_C) lv_label_set_text(ui_STEER_TEMP_Value_C, buf);
+    
+    snprintf(buf, sizeof(buf), "---°%s [H]", tempUnit);
+    if (ui_DIFF_TEMP_Value_H) lv_label_set_text(ui_DIFF_TEMP_Value_H, buf);
+    snprintf(buf, sizeof(buf), "---°%s [C]", tempUnit);
+    if (ui_DIFF_TEMP_Value_C) lv_label_set_text(ui_DIFF_TEMP_Value_C, buf);
+    
     if (ui_FUEL_TRUST_Value) lv_label_set_text(ui_FUEL_TRUST_Value, "--- %");
     
     // Reset oil pressure label styling to default
@@ -414,11 +567,23 @@ void resetUIElements() {
         lv_obj_set_style_pad_all(ui_OIL_PRESS_Value, 0, 0);
     }
     
-    // Hide critical label
-    if (ui_OIL_PRESS_VALUE_CRITICAL_Label) {
-        lv_anim_delete(ui_OIL_PRESS_VALUE_CRITICAL_Label, NULL);
-        lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+    // Hide all critical labels
+    lv_obj_t* critical_labels[] = {
+        ui_OIL_PRESS_VALUE_CRITICAL_Label,
+        ui_OIL_TEMP_VALUE_CRITICAL_Label,
+        ui_W_TEMP_VALUE_CRITICAL_Label,
+        ui_TRAN_TEMP_VALUE_CRITICAL_Label,
+        ui_STEER_TEMP_VALUE_CRITICAL_Label,
+        ui_DIFF_TEMP_VALUE_CRITICAL_Label,
+        ui_FUEL_TRUST_VALUE_CRITICAL_Label
+    };
+    
+    for (int i = 0; i < 7; i++) {
+        if (critical_labels[i]) {
+            lv_anim_delete(critical_labels[i], NULL);
+            lv_obj_set_style_text_opa(critical_labels[i], 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(critical_labels[i], 0, LV_PART_MAIN);
+        }
     }
     
     // Reset all bar colors to default orange
@@ -440,7 +605,7 @@ void resetCharts() {
             oil_press_history[i] = 0;
         }
         // Clear all points by setting to below range
-        lv_chart_set_all_value(ui_OIL_PRESS_CHART, chart_series_oil_press, -100);
+        lv_chart_set_all_value(ui_OIL_PRESS_CHART, chart_series_oil_press, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_OIL_PRESS_CHART);
     }
     // Reset oil temp chart
@@ -448,7 +613,7 @@ void resetCharts() {
         for (int i = 0; i < CHART_POINTS; i++) {
             oil_temp_history[i] = 0;
         }
-        lv_chart_set_all_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, -100);
+        lv_chart_set_all_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_OIL_TEMP_CHART);
     }
     // Reset water temp chart
@@ -456,7 +621,7 @@ void resetCharts() {
         for (int i = 0; i < CHART_POINTS; i++) {
             water_temp_history[i] = 0;
         }
-        lv_chart_set_all_value(ui_W_TEMP_CHART, chart_series_water_temp, -100);
+        lv_chart_set_all_value(ui_W_TEMP_CHART, chart_series_water_temp, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_W_TEMP_CHART);
     }
     // Reset transmission temp chart
@@ -464,7 +629,7 @@ void resetCharts() {
         for (int i = 0; i < CHART_POINTS; i++) {
             transmission_temp_history[i] = 0;
         }
-        lv_chart_set_all_value(ui_TRAN_TEMP_CHART, chart_series_transmission_temp, -100);
+        lv_chart_set_all_value(ui_TRAN_TEMP_CHART, chart_series_transmission_temp, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_TRAN_TEMP_CHART);
     }
     // Reset steering temp chart
@@ -472,7 +637,7 @@ void resetCharts() {
         for (int i = 0; i < CHART_POINTS; i++) {
             steering_temp_history[i] = 0;
         }
-        lv_chart_set_all_value(ui_STEER_TEMP_CHART, chart_series_steering_temp, -100);
+        lv_chart_set_all_value(ui_STEER_TEMP_CHART, chart_series_steering_temp, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_STEER_TEMP_CHART);
     }
     // Reset differencial temp chart
@@ -480,7 +645,7 @@ void resetCharts() {
         for (int i = 0; i < CHART_POINTS; i++) {
             differencial_temp_history[i] = 0;
         }
-        lv_chart_set_all_value(ui_DIFF_TEMP_CHART, chart_series_differencial_temp, -100);
+        lv_chart_set_all_value(ui_DIFF_TEMP_CHART, chart_series_differencial_temp, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_DIFF_TEMP_CHART);
     }
     // Reset fuel trust chart
@@ -488,7 +653,7 @@ void resetCharts() {
         for (int i = 0; i < CHART_POINTS; i++) {
             fuel_trust_history[i] = 0;
         }
-        lv_chart_set_all_value(ui_FUEL_TRUST_CHART, chart_series_fuel_trust, -100);
+        lv_chart_set_all_value(ui_FUEL_TRUST_CHART, chart_series_fuel_trust, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_FUEL_TRUST_CHART);
     }
     
@@ -527,140 +692,91 @@ void resetCharts() {
 
 //=================================================================
 // DEMO DATA PROVIDER
-// Generates animated/simulated values for testing and spectacle
+// Generates animated/simulated values for testing
+// All values use simple sine wave oscillation (min to max and back)
 //=================================================================
 
 #pragma region Demo Data Provider
 
-// Demo animation state
+// Demo animation state - each value has its own cycle timing for visual variety
 static struct {
-    uint32_t oil_press_anim_start;
-    uint32_t fuel_trust_dip_time;
-    bool fuel_trust_dipping;
-    int oil_temp;
-    int water_temp;
-    int trans_temp;
-    int steer_temp;
-    int diff_temp;
-    int rpm;
-    uint32_t next_rev_time;
-    bool revving;
+    uint32_t start_time;  // When demo mode started
 } g_demo_state = {0};
+
+// Demo cycle durations (different periods for visual interest)
+#define DEMO_CYCLE_OIL_PRESS_MS   16000   // 16 seconds
+#define DEMO_CYCLE_OIL_TEMP_MS    20000   // 20 seconds
+#define DEMO_CYCLE_WATER_TEMP_MS  18000   // 18 seconds
+#define DEMO_CYCLE_TRANS_TEMP_MS  22000   // 22 seconds
+#define DEMO_CYCLE_STEER_TEMP_MS  19000   // 19 seconds
+#define DEMO_CYCLE_DIFF_TEMP_MS   21000   // 21 seconds
+#define DEMO_CYCLE_FUEL_TRUST_MS  14000   // 14 seconds
+#define DEMO_CYCLE_RPM_MS         10000   // 10 seconds
 
 // Reset demo state to initial values
 void resetDemoState() {
-    memset(&g_demo_state, 0, sizeof(g_demo_state));
-    // Set reasonable starting values for demo
-    g_demo_state.oil_temp = 0;
-    g_demo_state.water_temp = 0;
-    g_demo_state.trans_temp = 0;
-    g_demo_state.steer_temp = 0;
-    g_demo_state.diff_temp = 0;
-    g_demo_state.rpm = 0;
+    g_demo_state.start_time = millis();
+}
+
+// Calculate sine wave value between min and max with given cycle time
+// Uses (1 - cos) / 2 for smooth "slow at edges" effect
+int calcDemoValue(int min_val, int max_val, uint32_t cycle_ms, uint32_t offset_ms = 0) {
+    uint32_t now = millis();
+    uint32_t elapsed = (now - g_demo_state.start_time + offset_ms) % cycle_ms;
+    float angle = (float)elapsed / (float)cycle_ms * 2.0f * PI;
+    float progress = (1.0f - cos(angle)) / 2.0f;  // 0 to 1 with slow at edges
+    return min_val + (int)(progress * (max_val - min_val) + 0.5f);
 }
 
 void updateDemoData() {
-    uint32_t now = millis();
-    
-    // ----- Oil Pressure: Sine wave oscillation -----
-    if (g_demo_state.oil_press_anim_start == 0) {
-        g_demo_state.oil_press_anim_start = now;
+    // Initialize start time if needed
+    if (g_demo_state.start_time == 0) {
+        g_demo_state.start_time = millis();
     }
-    uint32_t oil_pressure_cycle_ms = 16000;  // 16 second full cycle
-    uint32_t oil_pressure_elapsed = (now - g_demo_state.oil_press_anim_start) % oil_pressure_cycle_ms;
-    float oil_pressure_angle = (float)oil_pressure_elapsed / (float)oil_pressure_cycle_ms * 2.0f * PI;
-    float oil_pressure_progress = (1.0f - cos(oil_pressure_angle)) / 2.0f;
-    g_vehicle_data.oil_pressure_psi = OIL_PRESS_Min_PSI + (int)(oil_pressure_progress * (OIL_PRESS_Max_PSI - OIL_PRESS_Min_PSI) + 0.5f);
+    
+    // Mark that we have data (for UI to know to show values instead of "---")
+    g_vehicle_data.has_received_data = true;
+    
+    // ----- Oil Pressure: Simple sine wave 0-150 PSI -----
+    g_vehicle_data.oil_pressure_psi = calcDemoValue(OIL_PRESS_Min_PSI, OIL_PRESS_Max_PSI, DEMO_CYCLE_OIL_PRESS_MS);
     g_vehicle_data.oil_pressure_valid = true;
     
-    // ----- Oil Temperature: Random walk -----
-    g_demo_state.oil_temp += random(-2, 3);
-    if (g_demo_state.oil_temp > OIL_TEMP_Max_F) g_demo_state.oil_temp = OIL_TEMP_Max_F;
-    if (g_demo_state.oil_temp < OIL_TEMP_Min_F) g_demo_state.oil_temp = OIL_TEMP_Min_F;
-    
-    g_vehicle_data.oil_temp_pan_f = g_demo_state.oil_temp;
-    g_vehicle_data.oil_temp_cooled_f = g_demo_state.oil_temp - 20;
+    // ----- Oil Temperature: Simple sine wave 150-300°F -----
+    int oil_temp_main = calcDemoValue(OIL_TEMP_Min_F, OIL_TEMP_Max_F, DEMO_CYCLE_OIL_TEMP_MS);
+    g_vehicle_data.oil_temp_pan_f = oil_temp_main;
+    g_vehicle_data.oil_temp_cooled_f = oil_temp_main - 20;  // Cooled line is ~20°F lower
     g_vehicle_data.oil_temp_valid = true;
     
-    // ----- Water Temperature: Random walk -----
-    g_demo_state.water_temp += random(-1, 2);
-    if (g_demo_state.water_temp > W_TEMP_Max_F) g_demo_state.water_temp = W_TEMP_Max_F;
-    if (g_demo_state.water_temp < W_TEMP_Min_F) g_demo_state.water_temp = W_TEMP_Min_F;
-    
-    g_vehicle_data.water_temp_hot_f = g_demo_state.water_temp;
-    g_vehicle_data.water_temp_cooled_f = g_demo_state.water_temp - 20;
+    // ----- Water Temperature: Simple sine wave 100-260°F -----
+    int water_temp_main = calcDemoValue(W_TEMP_Min_F, W_TEMP_Max_F, DEMO_CYCLE_WATER_TEMP_MS);
+    g_vehicle_data.water_temp_hot_f = water_temp_main;
+    g_vehicle_data.water_temp_cooled_f = water_temp_main - 20;
     g_vehicle_data.water_temp_valid = true;
     
-    // ----- Trans Temperature: Random walk -----
-    g_demo_state.trans_temp += random(-1, 2);
-    if (g_demo_state.trans_temp > TRAN_TEMP_Max_F) g_demo_state.trans_temp = TRAN_TEMP_Max_F;
-    if (g_demo_state.trans_temp < TRAN_TEMP_Min_F) g_demo_state.trans_temp = TRAN_TEMP_Min_F;
-    
-    g_vehicle_data.trans_temp_hot_f = g_demo_state.trans_temp;
-    g_vehicle_data.trans_temp_cooled_f = g_demo_state.trans_temp - 25;
+    // ----- Trans Temperature: Simple sine wave 80-280°F -----
+    int trans_temp_main = calcDemoValue(TRAN_TEMP_Min_F, TRAN_TEMP_Max_F, DEMO_CYCLE_TRANS_TEMP_MS);
+    g_vehicle_data.trans_temp_hot_f = trans_temp_main;
+    g_vehicle_data.trans_temp_cooled_f = trans_temp_main - 25;
     g_vehicle_data.trans_temp_valid = true;
     
-    // ----- Steering Temperature: Random walk -----
-    g_demo_state.steer_temp += random(-1, 2);
-    if (g_demo_state.steer_temp > STEER_TEMP_Max_F) g_demo_state.steer_temp = STEER_TEMP_Max_F;
-    if (g_demo_state.steer_temp < STEER_TEMP_Min_F) g_demo_state.steer_temp = STEER_TEMP_Min_F;
-    
-    g_vehicle_data.steer_temp_hot_f = g_demo_state.steer_temp;
-    g_vehicle_data.steer_temp_cooled_f = g_demo_state.steer_temp - 20;
+    // ----- Steering Temperature: Simple sine wave 60-300°F -----
+    int steer_temp_main = calcDemoValue(STEER_TEMP_Min_F, STEER_TEMP_Max_F, DEMO_CYCLE_STEER_TEMP_MS);
+    g_vehicle_data.steer_temp_hot_f = steer_temp_main;
+    g_vehicle_data.steer_temp_cooled_f = steer_temp_main - 20;
     g_vehicle_data.steer_temp_valid = true;
     
-    // ----- Diff Temperature: Random walk -----
-    g_demo_state.diff_temp += random(-1, 2);
-    if (g_demo_state.diff_temp > DIFF_TEMP_Max_F) g_demo_state.diff_temp = DIFF_TEMP_Max_F;
-    if (g_demo_state.diff_temp < DIFF_TEMP_Min_F) g_demo_state.diff_temp = DIFF_TEMP_Min_F;
-    
-    g_vehicle_data.diff_temp_hot_f = g_demo_state.diff_temp;
-    g_vehicle_data.diff_temp_cooled_f = g_demo_state.diff_temp - 30;
+    // ----- Diff Temperature: Simple sine wave 60-320°F -----
+    int diff_temp_main = calcDemoValue(DIFF_TEMP_Min_F, DIFF_TEMP_Max_F, DEMO_CYCLE_DIFF_TEMP_MS);
+    g_vehicle_data.diff_temp_hot_f = diff_temp_main;
+    g_vehicle_data.diff_temp_cooled_f = diff_temp_main - 30;
     g_vehicle_data.diff_temp_valid = true;
     
-    // ----- Fuel Trust: Periodic dips -----
-    if (!g_demo_state.fuel_trust_dipping) {
-        g_vehicle_data.fuel_trust_percent = 95 + random(0, 6);  // 95-100%
-        
-        if (g_demo_state.fuel_trust_dip_time == 0) {
-            g_demo_state.fuel_trust_dip_time = now + random(5000, 20001);
-        }
-        
-        if (now >= g_demo_state.fuel_trust_dip_time) {
-            g_demo_state.fuel_trust_dipping = true;
-            g_vehicle_data.fuel_trust_percent = 40 + random(0, 35);  // Dip to 40-75%
-        }
-    } else {
-        g_vehicle_data.fuel_trust_percent += random(10, 20);  // Fast recovery
-        
-        if (g_vehicle_data.fuel_trust_percent >= 95) {
-            g_vehicle_data.fuel_trust_percent = 95 + random(0, 6);
-            g_demo_state.fuel_trust_dipping = false;
-            g_demo_state.fuel_trust_dip_time = now + random(5000, 20001);
-        }
-    }
+    // ----- Fuel Trust: Simple sine wave 0-100% -----
+    g_vehicle_data.fuel_trust_percent = calcDemoValue(FUEL_TRUST_Min, FUEL_TRUST_Max, DEMO_CYCLE_FUEL_TRUST_MS);
     g_vehicle_data.fuel_trust_valid = true;
     
-    // ----- RPM: Simulated idle with occasional revs -----
-    if (!g_demo_state.revving) {
-        g_demo_state.rpm = 700 + random(0, 100);  // Idle: 700-800
-        if (g_demo_state.next_rev_time == 0) {
-            g_demo_state.next_rev_time = now + random(8000, 15001);
-        }
-        if (now >= g_demo_state.next_rev_time) {
-            g_demo_state.revving = true;
-            g_demo_state.rpm = 2500 + random(0, 2000);  // Rev up
-        }
-    } else {
-        g_demo_state.rpm -= random(200, 400);
-        if (g_demo_state.rpm <= 800) {
-            g_demo_state.rpm = 750;
-            g_demo_state.revving = false;
-            g_demo_state.next_rev_time = now + random(8000, 15001);
-        }
-    }
-    
-    g_vehicle_data.rpm = g_demo_state.rpm;
+    // ----- RPM: Simple sine wave 700-6500 -----
+    g_vehicle_data.rpm = calcDemoValue(700, 6500, DEMO_CYCLE_RPM_MS);
     g_vehicle_data.rpm_valid = true;
 }
 
@@ -688,16 +804,21 @@ void updateSensorData() {
     // TODO: Read from actual sensors and populate g_vehicle_data
     //
     // Example implementation:
-    // int raw_oil_press = analogRead(OIL_PRESS_PIN);
-    // g_vehicle_data.oil_pressure_psi = mapOilPressure(raw_oil_press);
+    // float raw_oil_press = analogRead(OIL_PRESS_PIN);
+    // float sensor_value = mapToSensorUnits(raw_oil_press);
+    // // Convert from sensor units to internal (PSI)
+    // g_vehicle_data.oil_pressure_psi = (int)pressToInternal(sensor_value, g_sensor_pressure_unit);
     // g_vehicle_data.oil_pressure_valid = true;
+    // g_vehicle_data.has_received_data = true;
     //
-    // int raw_oil_temp = analogRead(OIL_TEMP_PIN);
-    // g_vehicle_data.oil_temp_pan_f = thermistorToFahrenheit(raw_oil_temp);
+    // float raw_oil_temp = analogRead(OIL_TEMP_PIN);
+    // float temp_sensor = thermistorToValue(raw_oil_temp);  // Returns in sensor unit
+    // // Convert from sensor units to internal (Fahrenheit)
+    // g_vehicle_data.oil_temp_pan_f = (int)tempToInternal(temp_sensor, g_sensor_temp_unit);
     // g_vehicle_data.oil_temp_valid = true;
     
     // For now, mark all sensor data as invalid (no readings)
-    // This will cause the UI to show "---" or similar
+    // This will cause the UI to show "---" 
     g_vehicle_data.oil_pressure_valid = false;
     g_vehicle_data.oil_temp_valid = false;
     g_vehicle_data.water_temp_valid = false;
@@ -876,13 +997,7 @@ bool sdInit() {
     
     // Check for DS3231 RTC (optional)
     g_sd_state.rtc_available = sdDetectRTC();
-    if (g_sd_state.rtc_available) {
-        Serial.println("[SD] DS3231 RTC detected - timestamps will use real time");
-    } else {
-        Serial.println("[SD] No RTC - using boot counter for filenames");
-    }
     
-    // Check and manage free space
     sdCheckAndManageSpace();
     
     Serial.println("[SD] Initialization successful");
@@ -969,9 +1084,8 @@ void sdEndSession() {
     // Close file
     g_sd_state.data_file.close();
     g_sd_state.file_open = false;
-    
-    Serial.printf("[SD] Session ended: %lu writes, %lu bytes, %lu errors\n",
-                  g_sd_state.write_count, g_sd_state.bytes_written, g_sd_state.error_count);
+    Serial.printf("[SD] Session ended: %lu writes, %lu bytes\n",
+                  g_sd_state.write_count, g_sd_state.bytes_written);
 }
 
 // Safe flush - ensures data is written to card
@@ -1090,25 +1204,10 @@ bool sdTestWrite() {
         testFile.flush();  // Flush after each write
         delay(100);
     }
-    uint32_t elapsed = millis() - start;
     
     testFile.close();
     
-    // Verify file exists and has content
-    testFile = SD.open("/test_write.csv", FILE_READ);
-    if (!testFile) {
-        Serial.println("[SD] Test failed - could not read back file");
-        return false;
-    }
-    
-    size_t fileSize = testFile.size();
-    testFile.close();
-    
-    Serial.printf("[SD] Test write successful!\n");
-    Serial.printf("[SD]   File size: %u bytes\n", fileSize);
-    Serial.printf("[SD]   Write time: %lu ms\n", elapsed);
-    Serial.printf("[SD]   Test file: /test_write.csv\n");
-    
+    Serial.println("[SD] Test write successful!");
     return true;
 }
 
@@ -1153,8 +1252,7 @@ void sdWriteBootCount(uint32_t count) {
 bool sdDetectRTC() {
     // Try to detect DS3231 on I2C
     Wire.beginTransmission(DS3231_ADDR);
-    uint8_t error = Wire.endTransmission();
-    return (error == 0);
+    return (Wire.endTransmission() == 0);
 }
 
 // TODO: If RTC detected, add functions to read/write time
@@ -1213,9 +1311,7 @@ bool sdCheckAndManageSpace() {
 // Find and delete the oldest SESS_NNNNN.csv file
 bool sdDeleteOldestLog() {
     File root = SD.open("/");
-    if (!root || !root.isDirectory()) {
-        return false;
-    }
+    if (!root || !root.isDirectory()) return false;
     
     char oldest_name[32] = {0};
     uint32_t oldest_num = UINT32_MAX;
@@ -1450,7 +1546,7 @@ void runUSBMSCMode() {
     
     // Initialize display for visual feedback
     gfx->begin();
-    gfx->fillScreen(0x0842);
+    gfx->fillScreen(GRAY_BG);
 
     // Draw text on display (simple, no LVGL needed)
     gfx->setTextSize(3);
@@ -1501,13 +1597,6 @@ void runUSBMSCMode() {
         while(1) { delay(1000); }
     }
     
-    const char* cardTypeName = "UNKNOWN";
-    switch(cardType) {
-        case CARD_MMC:  cardTypeName = "MMC"; break;
-        case CARD_SD:   cardTypeName = "SD"; break;
-        case CARD_SDHC: cardTypeName = "SDHC"; break;
-    }
-    
     uint64_t cardSize = SD.cardSize();
     g_sd_sector_count = cardSize / g_sd_sector_size;
     
@@ -1539,13 +1628,6 @@ void runUSBMSCMode() {
     // Start USB, money line
     USB.begin();
     
-    // Update display - ready
-    gfx->fillRect(100, 342, 600, 40, GRAY_BG);
-    gfx->setCursor(340, 352);
-    gfx->setTextColor(GRAY_BG);
-    gfx->print("USB Ready!");
-    
-    // Update display - ready blinking
     bool blink = false;
     while (1) {
         delay(500);
@@ -1632,7 +1714,7 @@ static void oil_press_chart_draw_cb(lv_event_t * e) {
     int32_t psi = oil_press_history[idx];
     bool is_critical = (psi < OIL_PRESS_ValueCriticalLow) || (psi > OIL_PRESS_ValueCriticalAbsolute);
     
-    if (is_critical) {
+    if (is_critical && psi > 0) {
         fill_dsc->color = g_critical_blink_phase ? lv_color_hex(0xFFFFFF) : lv_color_hex(hexRed);
     } else {
         fill_dsc->color = lv_color_hex(hexOrange);
@@ -1652,6 +1734,65 @@ static void oil_temp_chart_draw_cb(lv_event_t * e) {
 
     int32_t temp_f = oil_temp_history[idx];
     bool is_critical = (temp_f > OIL_TEMP_ValueCriticalF);
+    
+    if (is_critical && temp_f > 0) {
+        fill_dsc->color = g_critical_blink_phase ? lv_color_hex(0xFFFFFF) : lv_color_hex(hexRed);
+    } else {
+        fill_dsc->color = lv_color_hex(hexOrange);
+    }
+}
+
+// Generic chart draw callback for critical values (temperature based)
+static void generic_temp_chart_draw_cb(lv_event_t * e, int32_t* history, int critical_threshold) {
+    lv_draw_task_t * draw_task = lv_event_get_draw_task(e);
+    lv_draw_fill_dsc_t * fill_dsc = lv_draw_task_get_fill_dsc(draw_task);
+    if(fill_dsc == NULL) return;
+
+    lv_draw_dsc_base_t * base_dsc = (lv_draw_dsc_base_t *)fill_dsc;
+    if(base_dsc->part != LV_PART_ITEMS) return;
+
+    uint32_t idx = base_dsc->id2;
+    if(idx >= CHART_POINTS) return;
+
+    int32_t temp_f = history[idx];
+    bool is_critical = (temp_f > critical_threshold);
+    
+    if (is_critical && temp_f > 0) {
+        fill_dsc->color = g_critical_blink_phase ? lv_color_hex(0xFFFFFF) : lv_color_hex(hexRed);
+    } else {
+        fill_dsc->color = lv_color_hex(hexOrange);
+    }
+}
+
+static void water_temp_chart_draw_cb(lv_event_t * e) {
+    generic_temp_chart_draw_cb(e, water_temp_history, W_TEMP_ValueCritical_F);
+}
+
+static void trans_temp_chart_draw_cb(lv_event_t * e) {
+    generic_temp_chart_draw_cb(e, transmission_temp_history, TRAN_TEMP_ValueCritical_F);
+}
+
+static void steer_temp_chart_draw_cb(lv_event_t * e) {
+    generic_temp_chart_draw_cb(e, steering_temp_history, STEER_TEMP_ValueCritical_F);
+}
+
+static void diff_temp_chart_draw_cb(lv_event_t * e) {
+    generic_temp_chart_draw_cb(e, differencial_temp_history, DIFF_TEMP_ValueCritical_F);
+}
+
+static void fuel_trust_chart_draw_cb(lv_event_t * e) {
+    lv_draw_task_t * draw_task = lv_event_get_draw_task(e);
+    lv_draw_fill_dsc_t * fill_dsc = lv_draw_task_get_fill_dsc(draw_task);
+    if(fill_dsc == NULL) return;
+
+    lv_draw_dsc_base_t * base_dsc = (lv_draw_dsc_base_t *)fill_dsc;
+    if(base_dsc->part != LV_PART_ITEMS) return;
+
+    uint32_t idx = base_dsc->id2;
+    if(idx >= CHART_POINTS) return;
+
+    int32_t trust = fuel_trust_history[idx];
+    bool is_critical = (trust < FUEL_TRUST_ValueCritical) && (trust > 0);
     
     if (is_critical) {
         fill_dsc->color = g_critical_blink_phase ? lv_color_hex(0xFFFFFF) : lv_color_hex(hexRed);
@@ -1687,7 +1828,7 @@ static void utility_box_single_tap_cb(lv_timer_t * t) {
 
     // Toggle brightness: 100% <-> 35%
     if (g_brightness_level == 255) {
-        setBrightness(89);
+        setBrightness(90);
     } else {
         setBrightness(255);
     }
@@ -1805,6 +1946,61 @@ static void update_utility_label(int fps, int cpu_percent) {
 }
 
 #pragma endregion Utility Box Callbacks
+
+//-----------------------------------------------------------------
+
+#pragma region Unit Tap Callbacks
+
+// Tap callback for pressure value (cycles PSI/Bar/kPa)
+static void pressure_tap_cb(lv_event_t * e) {
+    LV_UNUSED(e);
+    cyclePressureUnit();
+    // Force UI update on next cycle
+    smooth_oil_pressure = -1.0f;
+}
+
+// Tap callback for any temperature value (cycles F/C for ALL temps)
+static void temperature_tap_cb(lv_event_t * e) {
+    LV_UNUSED(e);
+    cycleTemperatureUnit();
+    // Force UI update on next cycle
+    smooth_oil_temp_f = -1.0f;
+    smooth_water_temp_f = -1.0f;
+    smooth_trans_temp_f = -1.0f;
+    smooth_steer_temp_f = -1.0f;
+    smooth_diff_temp_f = -1.0f;
+}
+
+// Setup tap handlers for value labels
+void setupUnitTapHandlers() {
+    // Pressure tap handler
+    if (ui_OIL_PRESS_Value) {
+        lv_obj_add_flag(ui_OIL_PRESS_Value, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(ui_OIL_PRESS_Value, pressure_tap_cb, LV_EVENT_CLICKED, NULL);
+    }
+    
+    // Temperature tap handlers (all cycle together)
+    lv_obj_t* temp_labels[] = {
+        ui_OIL_TEMP_Value_P, ui_OIL_TEMP_Value_C,
+        ui_W_TEMP_Value_H, ui_W_TEMP_Value_C,
+        ui_TRAN_TEMP_Value_H, ui_TRAN_TEMP_Value_C,
+        ui_STEER_TEMP_Value_H, ui_STEER_TEMP_Value_C,
+        ui_DIFF_TEMP_Value_H, ui_DIFF_TEMP_Value_C
+    };
+    
+    for (int i = 0; i < 10; i++) {
+        if (temp_labels[i]) {
+            lv_obj_add_flag(temp_labels[i], LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(temp_labels[i], temperature_tap_cb, LV_EVENT_CLICKED, NULL);
+        }
+    }
+    
+    Serial.println("[UI] Unit tap handlers installed");
+    Serial.println("     - Tap pressure value to cycle PSI/Bar/kPa");
+    Serial.println("     - Tap any temp value to cycle F/C (all temps change together)");
+}
+
+#pragma endregion Unit Tap Callbacks
 
 //-----------------------------------------------------------------
 
@@ -1975,44 +2171,124 @@ void my_touch_read(lv_indev_t *indev, lv_indev_data_t *data) {
 #pragma endregion Touch Callbacks
 
 //=================================================================
+// CRITICAL LABEL ANIMATION HELPER
+//=================================================================
+
+// Generic function to manage critical label visibility and blinking
+void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, bool* is_visible, uint32_t* exit_time) {
+    if (!label) return;
+    
+    const uint32_t CRITICAL_LINGER_MS = 2000;
+    uint32_t now = millis();
+    
+    if (is_critical) {
+        *exit_time = 0;
+        
+        if (!*is_visible) {
+            *is_visible = true;
+            lv_obj_set_style_text_opa(label, 255, LV_PART_MAIN);
+            lv_obj_set_style_bg_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(label, 225, LV_PART_MAIN);
+            lv_obj_set_style_pad_all(label, 4, LV_PART_MAIN);
+            
+            lv_anim_t anim;
+            lv_anim_init(&anim);
+            lv_anim_set_var(&anim, label);
+            lv_anim_set_values(&anim, 0, 255);
+            lv_anim_set_duration(&anim, 200);
+            lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
+            lv_anim_set_playback_duration(&anim, 200);
+            lv_anim_set_exec_cb(&anim, [](void* obj, int32_t val) {
+                lv_obj_t* lbl = (lv_obj_t*)obj;
+                if (val < 128) {
+                    lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+                } else {
+                    lv_obj_set_style_text_color(lbl, lv_color_hex(0x960000), LV_PART_MAIN);
+                }
+            });
+            lv_anim_start(&anim);
+        }
+    } else {
+        if (*was_critical && *exit_time == 0) {
+            *exit_time = now;
+        }
+        
+        if (*is_visible && *exit_time > 0 && (now - *exit_time) >= CRITICAL_LINGER_MS) {
+            *is_visible = false;
+            lv_anim_delete(label, NULL);
+            lv_obj_set_style_text_opa(label, 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(label, 0, LV_PART_MAIN);
+            *exit_time = 0;
+        }
+    }
+    
+    *was_critical = is_critical;
+}
+
+//=================================================================
 // UI UPDATE FUNCTION
 // Reads from g_vehicle_data and updates all UI elements
 // This is the SAME code regardless of demo/live mode
 //=================================================================
 
+// Static state for critical label tracking
+static bool oil_press_was_critical = false, oil_press_visible = false;
+static uint32_t oil_press_exit_time = 0;
+static bool oil_temp_was_critical = false, oil_temp_visible = false;
+static uint32_t oil_temp_exit_time = 0;
+static bool water_temp_was_critical = false, water_temp_visible = false;
+static uint32_t water_temp_exit_time = 0;
+static bool trans_temp_was_critical = false, trans_temp_visible = false;
+static uint32_t trans_temp_exit_time = 0;
+static bool steer_temp_was_critical = false, steer_temp_visible = false;
+static uint32_t steer_temp_exit_time = 0;
+static bool diff_temp_was_critical = false, diff_temp_visible = false;
+static uint32_t diff_temp_exit_time = 0;
+static bool fuel_trust_was_critical = false, fuel_trust_visible = false;
+static uint32_t fuel_trust_exit_time = 0;
+
 void updateUI() {
+    const char* tempUnit = getTempUnitStr(g_temp_unit);
+    const char* pressUnit = getPressureUnitStr(g_pressure_unit);
+    char buf[32];
+    
     // ----- Oil Pressure -----
     // Only update UI if we have valid data
     if (g_vehicle_data.oil_pressure_valid) {
-        int pressure = g_vehicle_data.oil_pressure_psi;
+        int pressure_psi = g_vehicle_data.oil_pressure_psi;
+        float display_pressure = pressToDisplay((float)pressure_psi, g_pressure_unit);
         
-        // Smooth animation
-        smooth_oil_pressure = smooth_oil_pressure * (1.0f - SMOOTH_FACTOR) + pressure * SMOOTH_FACTOR;
-        int display_pressure = (int)(smooth_oil_pressure + 0.5f);
+        // Initialize smoothing if first data
+        if (smooth_oil_pressure < 0) {
+            smooth_oil_pressure = display_pressure;
+        } else {
+            smooth_oil_pressure = smooth_oil_pressure * (1.0f - SMOOTH_FACTOR) + display_pressure * SMOOTH_FACTOR;
+        }
+        int display_val = (int)(smooth_oil_pressure + 0.5f);
         
         // Update bar
         if (ui_OIL_PRESS_Bar) {
-            lv_bar_set_value(ui_OIL_PRESS_Bar, display_pressure, LV_ANIM_ON);
+            // Bar always uses PSI internally for range
+            lv_bar_set_value(ui_OIL_PRESS_Bar, pressure_psi, LV_ANIM_ON);
             bool critical = isOilPressureCritical();
             lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar, 
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange), 
                 LV_PART_INDICATOR);
         }
         
-        // Update label
-        static int last_displayed_pressure = -1;
-        if (ui_OIL_PRESS_Value && display_pressure != last_displayed_pressure) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d PSI", display_pressure);
-            lv_label_set_text(ui_OIL_PRESS_Value, buf);
-            last_displayed_pressure = display_pressure;
-        }
-        
-        // Style label based on critical
         if (ui_OIL_PRESS_Value) {
-            static bool was_value_critical = false;
-            bool value_critical = isOilPressureCritical();
+            if (g_pressure_unit == PRESS_KPA) {
+                snprintf(buf, sizeof(buf), "%d %s", display_val, pressUnit);
+            } else if (g_pressure_unit == PRESS_BAR) {
+                snprintf(buf, sizeof(buf), "%.1f %s", smooth_oil_pressure, pressUnit);
+            } else {
+                snprintf(buf, sizeof(buf), "%d %s", display_val, pressUnit);
+            }
+            lv_label_set_text(ui_OIL_PRESS_Value, buf);
             
+            // Style label based on critical
+            bool value_critical = isOilPressureCritical();
+            static bool was_value_critical = false;
             if (value_critical != was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0x000000), 0);
@@ -2028,104 +2304,56 @@ void updateUI() {
             }
         }
         
-        // Critical label with blinking
-        if (ui_OIL_PRESS_VALUE_CRITICAL_Label) {
-            static bool was_critical = false;
-            static bool critical_visible = false;
-            static uint32_t critical_exit_time = 0;
-            const uint32_t CRITICAL_LINGER_MS = 2000;
-            
-            bool press_critical = isOilPressureCritical();
-            uint32_t now = millis();
-            
-            if (press_critical) {
-                critical_exit_time = 0;
-                
-                if (!critical_visible) {
-                    critical_visible = true;
-                    lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 255, LV_PART_MAIN);
-                    lv_obj_set_style_bg_color(ui_OIL_PRESS_VALUE_CRITICAL_Label, lv_color_hex(0x000000), LV_PART_MAIN);
-                    lv_obj_set_style_bg_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 225, LV_PART_MAIN);
-                    lv_obj_set_style_pad_all(ui_OIL_PRESS_VALUE_CRITICAL_Label, 4, LV_PART_MAIN);
-                    
-                    lv_anim_t anim;
-                    lv_anim_init(&anim);
-                    lv_anim_set_var(&anim, ui_OIL_PRESS_VALUE_CRITICAL_Label);
-                    lv_anim_set_values(&anim, 0, 255);
-                    lv_anim_set_duration(&anim, 200);
-                    lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
-                    lv_anim_set_playback_duration(&anim, 200);
-                    lv_anim_set_exec_cb(&anim, [](void* obj, int32_t val) {
-                        lv_obj_t* label = (lv_obj_t*)obj;
-                        if (val < 128) {
-                            lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-                        } else {
-                            lv_obj_set_style_text_color(label, lv_color_hex(0x960000), LV_PART_MAIN);
-                        }
-                    });
-                    lv_anim_start(&anim);
-                }
-            } else {
-                if (was_critical && critical_exit_time == 0) {
-                    critical_exit_time = now;
-                }
-                
-                if (critical_visible && critical_exit_time > 0 && 
-                    (now - critical_exit_time) >= CRITICAL_LINGER_MS) {
-                    critical_visible = false;
-                    lv_anim_delete(ui_OIL_PRESS_VALUE_CRITICAL_Label, NULL);
-                    lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
-                    lv_obj_set_style_bg_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
-                    critical_exit_time = 0;
-                }
-            }
-            
-            was_critical = press_critical;
-        }
+        updateCriticalLabel(ui_OIL_PRESS_VALUE_CRITICAL_Label, isOilPressureCritical(),
+                           &oil_press_was_critical, &oil_press_visible, &oil_press_exit_time);
     }
     // If not valid, don't update - UI stays at reset state ("---" and 0)
     
     // ----- Oil Temperature -----
     if (g_vehicle_data.oil_temp_valid) {
-        int temp_pan = g_vehicle_data.oil_temp_pan_f;
-        int temp_cooled = g_vehicle_data.oil_temp_cooled_f;
+        float temp_pan_disp = tempToDisplay((float)g_vehicle_data.oil_temp_pan_f, g_temp_unit);
+        float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.oil_temp_cooled_f, g_temp_unit);
         
-        // Smooth animation
-        smooth_oil_temp_f = smooth_oil_temp_f * (1.0f - SMOOTH_FACTOR) + temp_pan * SMOOTH_FACTOR;
-        int display_temp = (int)(smooth_oil_temp_f + 0.5f);
+        if (smooth_oil_temp_f < 0) {
+            smooth_oil_temp_f = temp_pan_disp;
+        } else {
+            smooth_oil_temp_f = smooth_oil_temp_f * (1.0f - SMOOTH_FACTOR) + temp_pan_disp * SMOOTH_FACTOR;
+        }
         
         if (ui_OIL_TEMP_Bar) {
-            lv_bar_set_value(ui_OIL_TEMP_Bar, display_temp, LV_ANIM_ON);
-            bool critical = (temp_pan > OIL_TEMP_ValueCriticalF);
+            lv_bar_set_value(ui_OIL_TEMP_Bar, g_vehicle_data.oil_temp_pan_f, LV_ANIM_ON);
+            bool critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
             lv_obj_set_style_bg_color(ui_OIL_TEMP_Bar, 
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange), 
                 LV_PART_INDICATOR);
         }
         
         if (ui_OIL_TEMP_Value_P) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F [P]", temp_pan);
+            snprintf(buf, sizeof(buf), "%d°%s [P]", (int)(temp_pan_disp + 0.5f), tempUnit);
             lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
         }
         
         if (ui_OIL_TEMP_Value_C) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F [C]", temp_cooled);
+            snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), tempUnit);
             lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
         }
+        
+        bool critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
+        updateCriticalLabel(ui_OIL_TEMP_VALUE_CRITICAL_Label, critical,
+                           &oil_temp_was_critical, &oil_temp_visible, &oil_temp_exit_time);
     }
-    // If not valid, don't update - UI stays at reset state
     
     // ----- Water Temperature -----
     if (g_vehicle_data.water_temp_valid) {
+        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.water_temp_hot_f, g_temp_unit);
+        float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.water_temp_cooled_f, g_temp_unit);
+        
         if (ui_W_TEMP_Value_H) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F [H]", g_vehicle_data.water_temp_hot_f);
+            snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), tempUnit);
             lv_label_set_text(ui_W_TEMP_Value_H, buf);
         }
         if (ui_W_TEMP_Value_C) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F [C]", g_vehicle_data.water_temp_cooled_f);
+            snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), tempUnit);
             lv_label_set_text(ui_W_TEMP_Value_C, buf);
         }
         if (ui_W_TEMP_Bar) {
@@ -2135,19 +2363,23 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange), 
                 LV_PART_INDICATOR);
         }
+        
+        bool critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
+        updateCriticalLabel(ui_W_TEMP_VALUE_CRITICAL_Label, critical,
+                           &water_temp_was_critical, &water_temp_visible, &water_temp_exit_time);
     }
-    // If not valid, don't update - UI stays at reset state
     
     // ----- Trans Temperature -----
     if (g_vehicle_data.trans_temp_valid) {
+        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.trans_temp_hot_f, g_temp_unit);
+        float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.trans_temp_cooled_f, g_temp_unit);
+        
         if (ui_TRAN_TEMP_Value_H) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F [H]", g_vehicle_data.trans_temp_hot_f);
+            snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), tempUnit);
             lv_label_set_text(ui_TRAN_TEMP_Value_H, buf);
         }
         if (ui_TRAN_TEMP_Value_C) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F [C]", g_vehicle_data.trans_temp_cooled_f);
+            snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), tempUnit);
             lv_label_set_text(ui_TRAN_TEMP_Value_C, buf);
         }
         if (ui_TRAN_TEMP_Bar) {
@@ -2157,19 +2389,23 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange), 
                 LV_PART_INDICATOR);
         }
+        
+        bool critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
+        updateCriticalLabel(ui_TRAN_TEMP_VALUE_CRITICAL_Label, critical,
+                           &trans_temp_was_critical, &trans_temp_visible, &trans_temp_exit_time);
     }
-    // If not valid, don't update - UI stays at reset state
     
     // ----- Steering Temperature -----
     if (g_vehicle_data.steer_temp_valid) {
+        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.steer_temp_hot_f, g_temp_unit);
+        float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.steer_temp_cooled_f, g_temp_unit);
+        
         if (ui_STEER_TEMP_Value_H) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F [H]", g_vehicle_data.steer_temp_hot_f);
+            snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), tempUnit);
             lv_label_set_text(ui_STEER_TEMP_Value_H, buf);
         }
         if (ui_STEER_TEMP_Value_C) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F [C]", g_vehicle_data.steer_temp_cooled_f);
+            snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), tempUnit);
             lv_label_set_text(ui_STEER_TEMP_Value_C, buf);
         }
         if (ui_STEER_TEMP_Bar) {
@@ -2179,19 +2415,23 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange), 
                 LV_PART_INDICATOR);
         }
+        
+        bool critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
+        updateCriticalLabel(ui_STEER_TEMP_VALUE_CRITICAL_Label, critical,
+                           &steer_temp_was_critical, &steer_temp_visible, &steer_temp_exit_time);
     }
-    // If not valid, don't update - UI stays at reset state
     
     // ----- Diff Temperature -----
     if (g_vehicle_data.diff_temp_valid) {
+        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.diff_temp_hot_f, g_temp_unit);
+        float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.diff_temp_cooled_f, g_temp_unit);
+        
         if (ui_DIFF_TEMP_Value_H) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F [H]", g_vehicle_data.diff_temp_hot_f);
+            snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), tempUnit);
             lv_label_set_text(ui_DIFF_TEMP_Value_H, buf);
         }
         if (ui_DIFF_TEMP_Value_C) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d°F [C]", g_vehicle_data.diff_temp_cooled_f);
+            snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), tempUnit);
             lv_label_set_text(ui_DIFF_TEMP_Value_C, buf);
         }
         if (ui_DIFF_TEMP_Bar) {
@@ -2201,14 +2441,21 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange), 
                 LV_PART_INDICATOR);
         }
+        
+        bool critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
+        updateCriticalLabel(ui_DIFF_TEMP_VALUE_CRITICAL_Label, critical,
+                           &diff_temp_was_critical, &diff_temp_visible, &diff_temp_exit_time);
     }
-    // If not valid, don't update - UI stays at reset state
     
     // ----- Fuel Trust -----
     if (g_vehicle_data.fuel_trust_valid) {
         int fuel = g_vehicle_data.fuel_trust_percent;
         
-        smooth_fuel_trust = smooth_fuel_trust * (1.0f - SMOOTH_FACTOR) + fuel * SMOOTH_FACTOR;
+        if (smooth_fuel_trust < 0) {
+            smooth_fuel_trust = (float)fuel;
+        } else {
+            smooth_fuel_trust = smooth_fuel_trust * (1.0f - SMOOTH_FACTOR) + fuel * SMOOTH_FACTOR;
+        }
         int display_fuel = (int)(smooth_fuel_trust + 0.5f);
         
         if (ui_FUEL_TRUST_Bar) {
@@ -2220,12 +2467,14 @@ void updateUI() {
         }
         
         if (ui_FUEL_TRUST_Value) {
-            char buf[16];
             snprintf(buf, sizeof(buf), "%d %%", fuel);
             lv_label_set_text(ui_FUEL_TRUST_Value, buf);
         }
+        
+        bool critical = (fuel < FUEL_TRUST_ValueCritical);
+        updateCriticalLabel(ui_FUEL_TRUST_VALUE_CRITICAL_Label, critical,
+                           &fuel_trust_was_critical, &fuel_trust_visible, &fuel_trust_exit_time);
     }
-    // If not valid, don't update - UI stays at reset state
 }
 
 //=================================================================
@@ -2236,7 +2485,7 @@ void updateCharts() {
     #if ENABLE_CHARTS
     uint32_t now = millis();
     
-    // Accumulate samples
+    // Only accumulate if data is valid
     if (g_vehicle_data.oil_pressure_valid) {
         oil_pressure_sum += g_vehicle_data.oil_pressure_psi;
         oil_pressure_samples++;
@@ -2245,33 +2494,114 @@ void updateCharts() {
         oil_temp_sum += g_vehicle_data.oil_temp_pan_f;
         oil_temp_samples++;
     }
+    if (g_vehicle_data.water_temp_valid) {
+        water_temp_sum += g_vehicle_data.water_temp_hot_f;
+        water_temp_samples++;
+    }
+    if (g_vehicle_data.trans_temp_valid) {
+        transmission_temp_sum += g_vehicle_data.trans_temp_hot_f;
+        transmission_temp_samples++;
+    }
+    if (g_vehicle_data.steer_temp_valid) {
+        steering_temp_sum += g_vehicle_data.steer_temp_hot_f;
+        steering_temp_samples++;
+    }
+    if (g_vehicle_data.diff_temp_valid) {
+        differencial_temp_sum += g_vehicle_data.diff_temp_hot_f;
+        differencial_temp_samples++;
+    }
+    if (g_vehicle_data.fuel_trust_valid) {
+        fuel_trust_sum += g_vehicle_data.fuel_trust_percent;
+        fuel_trust_samples++;
+    }
     
     // Initialize bucket start times
     if (oil_pressure_bucket_start == 0) oil_pressure_bucket_start = now;
     if (oil_temp_bucket_start == 0) oil_temp_bucket_start = now;
+    if (water_temp_bucket_start == 0) water_temp_bucket_start = now;
+    if (transmission_temp_bucket_start == 0) transmission_temp_bucket_start = now;
+    if (steering_temp_bucket_start == 0) steering_temp_bucket_start = now;
+    if (differencial_temp_bucket_start == 0) differencial_temp_bucket_start = now;
+    if (fuel_trust_start == 0) fuel_trust_start = now;
     
-    // Push to pressure chart every CHART_BUCKET_MS
+    // Push to charts every CHART_BUCKET_MS (only if we have samples)
     if ((now - oil_pressure_bucket_start) >= CHART_BUCKET_MS && chart_series_oil_press) {
-        int32_t avg = (oil_pressure_samples > 0) ? (oil_pressure_sum / oil_pressure_samples) : 0;
-        if (avg < 0) avg = 0;
-        if (avg > 150) avg = 150;
-        shift_history(oil_press_history, avg);
-        lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, avg);
+        if (oil_pressure_samples > 0) {
+            int32_t avg = oil_pressure_sum / oil_pressure_samples;
+            if (avg < 0) avg = 0;
+            if (avg > 150) avg = 150;
+            shift_history(oil_press_history, avg);
+            lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, avg);
+        }
         oil_pressure_sum = 0;
         oil_pressure_samples = 0;
         oil_pressure_bucket_start = now;
     }
     
-    // Push to temp chart every CHART_BUCKET_MS
     if ((now - oil_temp_bucket_start) >= CHART_BUCKET_MS && chart_series_oil_temp) {
-        int32_t avg = (oil_temp_samples > 0) ? (oil_temp_sum / oil_temp_samples) : 0;
-        if (avg < 0) avg = 0;
-        if (avg > OIL_TEMP_Max_F) avg = OIL_TEMP_Max_F;
-        shift_history(oil_temp_history, avg);
-        lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, avg);
+        if (oil_temp_samples > 0) {
+            int32_t avg = oil_temp_sum / oil_temp_samples;
+            shift_history(oil_temp_history, avg);
+            lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, avg);
+        }
         oil_temp_sum = 0;
         oil_temp_samples = 0;
         oil_temp_bucket_start = now;
+    }
+    
+    if ((now - water_temp_bucket_start) >= CHART_BUCKET_MS && chart_series_water_temp) {
+        if (water_temp_samples > 0) {
+            int32_t avg = water_temp_sum / water_temp_samples;
+            shift_history(water_temp_history, avg);
+            lv_chart_set_next_value(ui_W_TEMP_CHART, chart_series_water_temp, avg);
+        }
+        water_temp_sum = 0;
+        water_temp_samples = 0;
+        water_temp_bucket_start = now;
+    }
+    
+    if ((now - transmission_temp_bucket_start) >= CHART_BUCKET_MS && chart_series_transmission_temp) {
+        if (transmission_temp_samples > 0) {
+            int32_t avg = transmission_temp_sum / transmission_temp_samples;
+            shift_history(transmission_temp_history, avg);
+            lv_chart_set_next_value(ui_TRAN_TEMP_CHART, chart_series_transmission_temp, avg);
+        }
+        transmission_temp_sum = 0;
+        transmission_temp_samples = 0;
+        transmission_temp_bucket_start = now;
+    }
+    
+    if ((now - steering_temp_bucket_start) >= CHART_BUCKET_MS && chart_series_steering_temp) {
+        if (steering_temp_samples > 0) {
+            int32_t avg = steering_temp_sum / steering_temp_samples;
+            shift_history(steering_temp_history, avg);
+            lv_chart_set_next_value(ui_STEER_TEMP_CHART, chart_series_steering_temp, avg);
+        }
+        steering_temp_sum = 0;
+        steering_temp_samples = 0;
+        steering_temp_bucket_start = now;
+    }
+    
+    if ((now - differencial_temp_bucket_start) >= CHART_BUCKET_MS && chart_series_differencial_temp) {
+        if (differencial_temp_samples > 0) {
+            int32_t avg = differencial_temp_sum / differencial_temp_samples;
+            shift_history(differencial_temp_history, avg);
+            lv_chart_set_next_value(ui_DIFF_TEMP_CHART, chart_series_differencial_temp, avg);
+        }
+        differencial_temp_sum = 0;
+        differencial_temp_samples = 0;
+        differencial_temp_bucket_start = now;
+    }
+    
+    if ((now - fuel_trust_start) >= CHART_BUCKET_MS && chart_series_fuel_trust) {
+        if (fuel_trust_samples > 0) {
+            int32_t avg = fuel_trust_sum / fuel_trust_samples;
+            shift_history(fuel_trust_history, avg);
+            lv_chart_set_next_value(ui_FUEL_TRUST_CHART, chart_series_fuel_trust, avg);
+        }
+        fuel_trust_sum = 0;
+        fuel_trust_samples = 0;
+        fuel_trust_start = now;
     }
     
     // Update blink phase for critical bars
@@ -2279,10 +2609,51 @@ void updateCharts() {
         g_critical_blink_phase = !g_critical_blink_phase;
         g_last_blink_toggle = now;
         
+        // Invalidate all charts with draw callbacks
         if (ui_OIL_PRESS_CHART) lv_obj_invalidate(ui_OIL_PRESS_CHART);
         if (ui_OIL_TEMP_CHART) lv_obj_invalidate(ui_OIL_TEMP_CHART);
+        if (ui_W_TEMP_CHART) lv_obj_invalidate(ui_W_TEMP_CHART);
+        if (ui_TRAN_TEMP_CHART) lv_obj_invalidate(ui_TRAN_TEMP_CHART);
+        if (ui_STEER_TEMP_CHART) lv_obj_invalidate(ui_STEER_TEMP_CHART);
+        if (ui_DIFF_TEMP_CHART) lv_obj_invalidate(ui_DIFF_TEMP_CHART);
+        if (ui_FUEL_TRUST_CHART) lv_obj_invalidate(ui_FUEL_TRUST_CHART);
     }
     #endif
+}
+
+//=================================================================
+// CHART INITIALIZATION HELPER
+//=================================================================
+
+void initChart(lv_obj_t* chart, lv_chart_series_t** series, int min_val, int max_val, 
+               int32_t* history, void (*draw_cb)(lv_event_t*)) {
+    if (!chart) return;
+    
+    // Remove existing series
+    lv_chart_series_t * ser;
+    while ((ser = lv_chart_get_series_next(chart, NULL)) != NULL) {
+        lv_chart_remove_series(chart, ser);
+    }
+    
+    lv_chart_set_type(chart, LV_CHART_TYPE_BAR);
+    lv_chart_set_point_count(chart, CHART_POINTS);
+    lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, min_val, max_val);
+    lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
+    lv_chart_set_div_line_count(chart, 0, 0);
+    
+    *series = lv_chart_add_series(chart, lv_color_hex(hexOrange), LV_CHART_AXIS_PRIMARY_Y);
+    
+    if (draw_cb) {
+        lv_obj_add_event_cb(chart, draw_cb, LV_EVENT_DRAW_TASK_ADDED, NULL);
+        lv_obj_add_flag(chart, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
+    }
+    
+    // Initialize with no data
+    for (int i = 0; i < CHART_POINTS; i++) {
+        lv_chart_set_next_value(chart, *series, LV_CHART_POINT_NONE);
+        if (history) history[i] = 0;
+    }
+    lv_chart_refresh(chart);
 }
 
 //=================================================================
@@ -2305,60 +2676,47 @@ void setup() {
     delay(1000);
     
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v4 - Data Provider Arch");
-    #if ENABLE_SD_LOGGING
-    Serial.println("   + SD Card Data Logging");
-    #endif
-    #if ENABLE_USB_MSC
-    Serial.println("   + USB MSC (hold BOOT at startup)");
-    #endif
+    Serial.println("   370zMonitor v4.1 - Unit Conversion");
     Serial.println("========================================");
     
-    // Check PSRAM
     if (psramFound()) {
         Serial.printf("✓ PSRAM: %u bytes total, %u free\n", ESP.getPsramSize(), ESP.getFreePsram());
     } else {
         Serial.println("✗ WARNING: No PSRAM detected!");
     }
     
-    Serial.printf("Internal heap: %u free\n", ESP.getFreeHeap());
-    Serial.println("========================================\n");
+    // Load unit preferences from flash
+    loadUnitPreferences();
     
     // I2C init
     Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ_HZ);
     Wire.setTimeOut(50);
     delay(50);
     
-    // IO expander
-    Serial.println("[1/7] IO Expander...");
+    Serial.println("[1/8] IO Expander...");
     g_ioexp_ok = initIOExtension();
     Serial.printf("      %s\n", g_ioexp_ok ? "OK" : "FAILED");
     
-    // Touch controller
-    Serial.println("[2/7] Touch controller...");
+    Serial.println("[2/8] Touch controller...");
     delay(100);
     touch.begin();
     touch.setRotation(0);
     Serial.println("      GT911 initialized");
     
-    // Display
-    Serial.println("[3/7] Display init...");
+    Serial.println("[3/8] Display init...");
     gfx->begin();
     gfx->fillScreen(0x0000);
     Serial.println("      OK");
     
-    // Backlight
-    Serial.println("[4/7] Backlight...");
+    Serial.println("[4/8] Backlight...");
     setBacklight(true);
     delay(100);
     Serial.println("      OK");
     
-    // LVGL
-    Serial.println("[5/7] LVGL init...");
+    Serial.println("[5/8] LVGL init...");
     lv_init();
     
     size_t buf_bytes = LVGL_BUFFER_SIZE * sizeof(lv_color_t);
-    Serial.printf("      Buffer size: %u bytes\n", buf_bytes);
     
     disp_draw_buf1 = (uint8_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!disp_draw_buf1) {
@@ -2378,11 +2736,6 @@ void setup() {
         while (1) delay(100);
     }
     
-    bool in_psram1 = esp_ptr_external_ram(disp_draw_buf1);
-    bool in_psram2 = esp_ptr_external_ram(disp_draw_buf2);
-    Serial.printf("      Buffer 1 in %s\n", in_psram1 ? "PSRAM" : "internal");
-    Serial.printf("      Buffer 2 in %s\n", in_psram2 ? "PSRAM" : "internal");
-    
     disp = lv_display_create(800, 480);
     lv_display_set_flush_cb(disp, my_disp_flush);
     lv_display_set_buffers(disp, disp_draw_buf1, disp_draw_buf2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
@@ -2391,54 +2744,45 @@ void setup() {
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, my_touch_read);
     
-    Serial.printf("      PSRAM free: %u\n", ESP.getFreePsram());
     Serial.println("      OK");
     
-    // Load UI
-    Serial.println("[6/7] Loading UI...");
+    Serial.println("[6/8] Loading UI...");
     ui_init();
     
     if (!ui_Screen1) {
         Serial.println("      FATAL: ui_Screen1 is NULL!");
         while(1) delay(100);
     }
-    Serial.printf("      PSRAM free: %u\n", ESP.getFreePsram());
     Serial.println("      OK");
     
-    // Initialize data providers
-    Serial.println("[7/7] Data providers...");
+    Serial.println("[7/8] Data providers...");
     initSensors();
     initOBD();
     Serial.println("      OK");
     
-    // Initialize SD card logging
     #if ENABLE_SD_LOGGING
     Serial.println("[8/8] SD Card...");
     if (sdInit()) {
-        // Run test write
         sdTestWrite();
-        // Start logging session
         sdStartSession();
     }
     Serial.println("      OK");
     #endif
     
     // Bar animation speeds
-    if (ui_OIL_PRESS_Bar) lv_obj_set_style_anim_duration(ui_OIL_PRESS_Bar, 100, LV_PART_MAIN);
-    if (ui_OIL_TEMP_Bar) lv_obj_set_style_anim_duration(ui_OIL_TEMP_Bar, 100, LV_PART_MAIN);
-    if (ui_FUEL_TRUST_Bar) lv_obj_set_style_anim_duration(ui_FUEL_TRUST_Bar, 100, LV_PART_MAIN);
-    if (ui_W_TEMP_Bar) lv_obj_set_style_anim_duration(ui_W_TEMP_Bar, 100, LV_PART_MAIN);
-    if (ui_TRAN_TEMP_Bar) lv_obj_set_style_anim_duration(ui_TRAN_TEMP_Bar, 100, LV_PART_MAIN);
-    if (ui_STEER_TEMP_Bar) lv_obj_set_style_anim_duration(ui_STEER_TEMP_Bar, 100, LV_PART_MAIN);
-    if (ui_DIFF_TEMP_Bar) lv_obj_set_style_anim_duration(ui_DIFF_TEMP_Bar, 100, LV_PART_MAIN);
+    lv_obj_t* bars[] = {ui_OIL_PRESS_Bar, ui_OIL_TEMP_Bar, ui_FUEL_TRUST_Bar, 
+                        ui_W_TEMP_Bar, ui_TRAN_TEMP_Bar, ui_STEER_TEMP_Bar, ui_DIFF_TEMP_Bar};
+    for (int i = 0; i < 7; i++) {
+        if (bars[i]) lv_obj_set_style_anim_duration(bars[i], 100, LV_PART_MAIN);
+    }
     
     // Create utility box
     if (ui_Screen1) {
         utility_box = lv_obj_create(ui_Screen1);
         #if ENABLE_SD_LOGGING
-        lv_obj_set_size(utility_box, 105, 105);  // Extra height for SD status
+        lv_obj_set_size(utility_box, 105, 105);
         #else
-        lv_obj_set_size(utility_box, 105, 85);  // Standard height
+        lv_obj_set_size(utility_box, 105, 85);
         #endif
         lv_obj_align(utility_box, LV_ALIGN_TOP_LEFT, 5, 5);
         lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x444444), 0);
@@ -2473,85 +2817,43 @@ void setup() {
         updateModeIndicator();
         
         Serial.println("[UI] Utility box created");
-        Serial.println("     - Single tap: toggle brightness");
-        Serial.println("     - Double tap: hide/show");
-        Serial.println("     - 5-sec hold: toggle DEMO/LIVE mode");
     }
     
-    // Set initial brightness
+    // Setup unit tap handlers
+    setupUnitTapHandlers();
+    
     setBrightness(255);
     
-    // Initialize charts
+    // Initialize all charts with draw callbacks
     #if ENABLE_CHARTS
-    if (ui_OIL_PRESS_CHART) {
-        lv_chart_series_t * ser;
-        while ((ser = lv_chart_get_series_next(ui_OIL_PRESS_CHART, NULL)) != NULL) {
-            lv_chart_remove_series(ui_OIL_PRESS_CHART, ser);
-        }
-        
-        lv_chart_set_type(ui_OIL_PRESS_CHART, LV_CHART_TYPE_BAR);
-        lv_chart_set_point_count(ui_OIL_PRESS_CHART, CHART_POINTS);
-        lv_chart_set_range(ui_OIL_PRESS_CHART, LV_CHART_AXIS_PRIMARY_Y, 0, 150);
-        lv_chart_set_update_mode(ui_OIL_PRESS_CHART, LV_CHART_UPDATE_MODE_SHIFT);
-        lv_chart_set_div_line_count(ui_OIL_PRESS_CHART, 0, 0);
-        
-        chart_series_oil_press = lv_chart_add_series(ui_OIL_PRESS_CHART, lv_color_hex(hexOrange), LV_CHART_AXIS_PRIMARY_Y);
-        
-        lv_obj_add_event_cb(ui_OIL_PRESS_CHART, oil_press_chart_draw_cb, LV_EVENT_DRAW_TASK_ADDED, NULL);
-        lv_obj_add_flag(ui_OIL_PRESS_CHART, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
-        
-        for (int i = 0; i < CHART_POINTS; i++) {
-            lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, -100);
-            oil_press_history[i] = 0;
-        }
-        lv_chart_refresh(ui_OIL_PRESS_CHART);
-        Serial.println("Oil pressure chart initialized");
-    }
-    
-    if (ui_OIL_TEMP_CHART) {
-        lv_chart_series_t * ser;
-        while ((ser = lv_chart_get_series_next(ui_OIL_TEMP_CHART, NULL)) != NULL) {
-            lv_chart_remove_series(ui_OIL_TEMP_CHART, ser);
-        }
-        
-        lv_chart_set_type(ui_OIL_TEMP_CHART, LV_CHART_TYPE_BAR);
-        lv_chart_set_point_count(ui_OIL_TEMP_CHART, CHART_POINTS);
-        lv_chart_set_range(ui_OIL_TEMP_CHART, LV_CHART_AXIS_PRIMARY_Y, OIL_TEMP_Min_F, OIL_TEMP_Max_F);
-        lv_chart_set_update_mode(ui_OIL_TEMP_CHART, LV_CHART_UPDATE_MODE_SHIFT);
-        lv_chart_set_div_line_count(ui_OIL_TEMP_CHART, 0, 0);
-        
-        chart_series_oil_temp = lv_chart_add_series(ui_OIL_TEMP_CHART, lv_color_hex(hexOrange), LV_CHART_AXIS_PRIMARY_Y);
-        
-        lv_obj_add_event_cb(ui_OIL_TEMP_CHART, oil_temp_chart_draw_cb, LV_EVENT_DRAW_TASK_ADDED, NULL);
-        lv_obj_add_flag(ui_OIL_TEMP_CHART, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
-        
-        for (int i = 0; i < CHART_POINTS; i++) {
-            lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, -100);
-            oil_temp_history[i] = 0;
-        }
-        lv_chart_refresh(ui_OIL_TEMP_CHART);
-        Serial.println("Oil temp chart initialized");
-    }
+    initChart(ui_OIL_PRESS_CHART, &chart_series_oil_press, 0, 150, oil_press_history, oil_press_chart_draw_cb);
+    initChart(ui_OIL_TEMP_CHART, &chart_series_oil_temp, OIL_TEMP_Min_F, OIL_TEMP_Max_F, oil_temp_history, oil_temp_chart_draw_cb);
+    initChart(ui_W_TEMP_CHART, &chart_series_water_temp, W_TEMP_Min_F, W_TEMP_Max_F, water_temp_history, water_temp_chart_draw_cb);
+    initChart(ui_TRAN_TEMP_CHART, &chart_series_transmission_temp, TRAN_TEMP_Min_F, TRAN_TEMP_Max_F, transmission_temp_history, trans_temp_chart_draw_cb);
+    initChart(ui_STEER_TEMP_CHART, &chart_series_steering_temp, STEER_TEMP_Min_F, STEER_TEMP_Max_F, steering_temp_history, steer_temp_chart_draw_cb);
+    initChart(ui_DIFF_TEMP_CHART, &chart_series_differencial_temp, DIFF_TEMP_Min_F, DIFF_TEMP_Max_F, differencial_temp_history, diff_temp_chart_draw_cb);
+    initChart(ui_FUEL_TRUST_CHART, &chart_series_fuel_trust, 0, 100, fuel_trust_history, fuel_trust_chart_draw_cb);
+    Serial.println("[CHARTS] All charts initialized with draw callbacks");
     #endif
     
-    // Force first render
+    // CRITICAL: Reset UI to show "---" on startup in live mode
+    resetVehicleData();
+    resetSmoothingState();
+    resetUIElements();
+    resetCharts();
+    
     Serial.println("\nForcing initial render...");
     uint32_t t0 = millis();
     lv_refr_now(NULL);
     Serial.printf("Initial render took: %u ms\n", millis() - t0);
-    Serial.printf("PSRAM free: %u\n", ESP.getFreePsram());
     
     Serial.println("\n========================================");
     Serial.println("         RUNNING");
     Serial.printf("  Mode: %s\n", g_demo_mode ? "DEMO" : "LIVE");
+    Serial.printf("  Temp Unit: %s\n", getTempUnitStr(g_temp_unit));
+    Serial.printf("  Pressure Unit: %s\n", getPressureUnitStr(g_pressure_unit));
     Serial.println("  Hold utility box 5s to toggle mode");
-    #if ENABLE_SD_LOGGING
-    if (g_sd_state.file_open) {
-        Serial.printf("  SD Logging: ACTIVE (%s)\n", g_sd_state.current_filename);
-    } else {
-        Serial.println("  SD Logging: DISABLED");
-    }
-    #endif
+    Serial.println("  Tap values to cycle units");
     Serial.println("========================================\n");
 }
 
@@ -2586,18 +2888,10 @@ void loop() {
         
         update_utility_label(flush_count, cpu_percent);
         
-        #if ENABLE_SD_LOGGING
-        Serial.printf("[STATUS] loops=%u flushes=%u cpu=%u%% heap=%u psram=%u mode=%s sd_writes=%u sd_bytes=%u\n",
-                      loop_count, flush_count, (cpu_busy_time * 100) / 1000,
-                      ESP.getFreeHeap(), ESP.getFreePsram(),
-                      g_demo_mode ? "DEMO" : "LIVE",
-                      g_sd_state.write_count, g_sd_state.bytes_written);
-        #else
         Serial.printf("[STATUS] loops=%u flushes=%u cpu=%u%% heap=%u psram=%u mode=%s\n",
                       loop_count, flush_count, (cpu_busy_time * 100) / 1000,
                       ESP.getFreeHeap(), ESP.getFreePsram(),
                       g_demo_mode ? "DEMO" : "LIVE");
-        #endif
         flush_count = 0;
         cpu_busy_time = 0;
         last_status = now;

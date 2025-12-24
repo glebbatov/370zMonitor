@@ -50,8 +50,9 @@ __attribute__((constructor)) void configurePSRAM() {
 //-----------------------------------------------------------------
 
 // ===== UNIT TYPES =====
-enum TempUnit { TEMP_FAHRENHEIT = 0, TEMP_CELSIUS = 1 };
-enum PressureUnit { PRESS_PSI = 0, PRESS_BAR = 1, PRESS_KPA = 2 };
+// Using typedef to ensure Arduino preprocessor handles these correctly
+typedef enum { TEMP_FAHRENHEIT = 0, TEMP_CELSIUS = 1 } TempUnit;
+typedef enum { PRESS_PSI = 0, PRESS_BAR = 1, PRESS_KPA = 2 } PressureUnit;
 
 // Preferences for persistent storage
 Preferences g_prefs;
@@ -74,7 +75,8 @@ float celsiusToFahrenheit(float c) { return c * 9.0f / 5.0f + 32.0f; }
 float fahrenheitToCelsius(float f) { return (f - 32.0f) * 5.0f / 9.0f; }
 
 // Convert from source unit to internal storage (Fahrenheit)
-float tempToInternal(float value, TempUnit source_unit) {
+// Uses int for parameter to avoid Arduino preprocessor issues
+static float tempToInternal(float value, int source_unit) {
     if (source_unit == TEMP_CELSIUS) {
         return celsiusToFahrenheit(value);
     }
@@ -82,7 +84,7 @@ float tempToInternal(float value, TempUnit source_unit) {
 }
 
 // Convert from internal (Fahrenheit) to display unit
-float tempToDisplay(float value_f, TempUnit display_unit) {
+static float tempToDisplay(float value_f, int display_unit) {
     if (display_unit == TEMP_CELSIUS) {
         return fahrenheitToCelsius(value_f);
     }
@@ -96,7 +98,7 @@ float barToPsi(float bar) { return bar / 0.0689476f; }
 float kpaToPsi(float kpa) { return kpa / 6.89476f; }
 
 // Convert from source unit to internal storage (PSI)
-float pressToInternal(float value, PressureUnit source_unit) {
+static float pressToInternal(float value, int source_unit) {
     switch (source_unit) {
         case PRESS_BAR: return barToPsi(value);
         case PRESS_KPA: return kpaToPsi(value);
@@ -105,7 +107,7 @@ float pressToInternal(float value, PressureUnit source_unit) {
 }
 
 // Convert from internal (PSI) to display unit
-float pressToDisplay(float value_psi, PressureUnit display_unit) {
+static float pressToDisplay(float value_psi, int display_unit) {
     switch (display_unit) {
         case PRESS_BAR: return psiToBar(value_psi);
         case PRESS_KPA: return psiToKpa(value_psi);
@@ -114,11 +116,11 @@ float pressToDisplay(float value_psi, PressureUnit display_unit) {
 }
 
 // Get unit suffix strings
-const char* getTempUnitStr(TempUnit unit) {
+static const char* getTempUnitStr(int unit) {
     return (unit == TEMP_CELSIUS) ? "C" : "F";
 }
 
-const char* getPressureUnitStr(PressureUnit unit) {
+static const char* getPressureUnitStr(int unit) {
     switch (unit) {
         case PRESS_BAR: return "BAR";
         case PRESS_KPA: return "kPa";
@@ -1597,6 +1599,14 @@ void runUSBMSCMode() {
         while(1) { delay(1000); }
     }
     
+    // Get card type name for display
+    const char* cardTypeName = "UNKNOWN";
+    switch (cardType) {
+        case CARD_MMC:  cardTypeName = "MMC";  break;
+        case CARD_SD:   cardTypeName = "SD";   break;
+        case CARD_SDHC: cardTypeName = "SDHC"; break;
+    }
+    
     uint64_t cardSize = SD.cardSize();
     g_sd_sector_count = cardSize / g_sd_sector_size;
     
@@ -2485,7 +2495,7 @@ void updateCharts() {
     #if ENABLE_CHARTS
     uint32_t now = millis();
     
-    // Only accumulate if data is valid
+    // Only accumulate if data is valid (demo mode - always true, live mode - true only if there is a data from a sensor)
     if (g_vehicle_data.oil_pressure_valid) {
         oil_pressure_sum += g_vehicle_data.oil_pressure_psi;
         oil_pressure_samples++;
@@ -2625,6 +2635,7 @@ void updateCharts() {
 // CHART INITIALIZATION HELPER
 //=================================================================
 
+// Configures each chart widget - sets type (bar), range (min/max), creates the data series, attaches the draw callback for critical coloring, and initializes with empty data.
 void initChart(lv_obj_t* chart, lv_chart_series_t** series, int min_val, int max_val, 
                int32_t* history, void (*draw_cb)(lv_event_t*)) {
     if (!chart) return;

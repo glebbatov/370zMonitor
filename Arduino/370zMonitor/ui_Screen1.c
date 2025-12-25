@@ -27,6 +27,7 @@ lv_obj_t * ui_OIL_PRESS_CHART = NULL;
 lv_obj_t * ui_OIL_PRESS_CHART_Xaxis = NULL;
 lv_obj_t * ui_OIL_PRESS_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_OIL_PRESS_CHART_Yaxis2 = NULL;
+lv_obj_t * ui_OIL_PRESS_Value_Tap_Panel = NULL;
 lv_obj_t * ui_OIL_PRESS_Value = NULL;
 lv_obj_t * ui_OIL_PRESS_VALUE_CRITICAL_Label = NULL;
 lv_obj_t * ui_OIL_TEMP = NULL;
@@ -38,6 +39,7 @@ lv_obj_t * ui_OIL_TEMP_CHART = NULL;
 lv_obj_t * ui_OIL_TEMP_CHART_Xaxis = NULL;
 lv_obj_t * ui_OIL_TEMP_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_OIL_TEMP_CHART_Yaxis2 = NULL;
+lv_obj_t * ui_OIL_TEMP_Value_Tap_Panel = NULL;
 lv_obj_t * ui_OIL_TEMP_Value_P = NULL;
 lv_obj_t * ui_OIL_TEMP_Value_C = NULL;
 lv_obj_t * ui_OIL_TEMP_VALUE_CRITICAL_Label = NULL;
@@ -50,6 +52,7 @@ lv_obj_t * ui_W_TEMP_CHART = NULL;
 lv_obj_t * ui_W_TEMP_CHART_Xaxis = NULL;
 lv_obj_t * ui_W_TEMP_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_W_TEMP_CHART_Yaxis2 = NULL;
+lv_obj_t * ui_W_TEMP_Value_Tap_Panel = NULL;
 lv_obj_t * ui_W_TEMP_Value_H = NULL;
 lv_obj_t * ui_W_TEMP_Value_C = NULL;
 lv_obj_t * ui_W_TEMP_VALUE_CRITICAL_Label = NULL;
@@ -62,6 +65,7 @@ lv_obj_t * ui_TRAN_TEMP_CHART = NULL;
 lv_obj_t * ui_TRAN_TEMP_CHART_Xaxis = NULL;
 lv_obj_t * ui_TRAN_TEMP_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_TRAN_TEMP_CHART_Yaxis2 = NULL;
+lv_obj_t * ui_TRAN_TEMP_Value_Tap_Panel = NULL;
 lv_obj_t * ui_TRAN_TEMP_Value_H = NULL;
 lv_obj_t * ui_TRAN_TEMP_Value_C = NULL;
 lv_obj_t * ui_TRAN_TEMP_VALUE_CRITICAL_Label = NULL;
@@ -74,6 +78,7 @@ lv_obj_t * ui_STEER_TEMP_CHART = NULL;
 lv_obj_t * ui_STEER_TEMP_CHART_Xaxis = NULL;
 lv_obj_t * ui_STEER_TEMP_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_STEER_TEMP_CHART_Yaxis2 = NULL;
+lv_obj_t * ui_STEER_TEMP_Value_Tap_Panel = NULL;
 lv_obj_t * ui_STEER_TEMP_Value_H = NULL;
 lv_obj_t * ui_STEER_TEMP_Value_C = NULL;
 lv_obj_t * ui_STEER_TEMP_VALUE_CRITICAL_Label = NULL;
@@ -86,6 +91,7 @@ lv_obj_t * ui_DIFF_TEMP_CHART = NULL;
 lv_obj_t * ui_DIFF_TEMP_CHART_Xaxis = NULL;
 lv_obj_t * ui_DIFF_TEMP_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_DIFF_TEMP_CHART_Yaxis2 = NULL;
+lv_obj_t * ui_DIFF_TEMP_Value_Tap_Panel = NULL;
 lv_obj_t * ui_DIFF_TEMP_Value_H = NULL;
 lv_obj_t * ui_DIFF_TEMP_Value_C = NULL;
 lv_obj_t * ui_DIFF_TEMP_VALUE_CRITICAL_Label = NULL;
@@ -97,6 +103,7 @@ lv_obj_t * ui_FUEL_TRUST_CHART = NULL;
 lv_obj_t * ui_FUEL_TRUST_CHART_Xaxis = NULL;
 lv_obj_t * ui_FUEL_TRUST_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_FUEL_TRUST_CHART_Yaxis2 = NULL;
+lv_obj_t * ui_FUEL_TRUST_Value_Tap_Panel = NULL;
 lv_obj_t * ui_FUEL_TRUST_Value = NULL;
 lv_obj_t * ui_FUEL_TRUST_VALUE_CRITICAL_Label = NULL;
 // event funtions
@@ -324,18 +331,27 @@ void ui_Screen1_screen_init(void)
 
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_OIL_PRESS_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_OIL_PRESS_Value_Tap_Panel = lv_obj_create(ui_OIL_PRESS);
+    lv_obj_set_width(ui_OIL_PRESS_Value_Tap_Panel, 156);
+    lv_obj_set_height(ui_OIL_PRESS_Value_Tap_Panel, 70);
+    lv_obj_set_x(ui_OIL_PRESS_Value_Tap_Panel, 325);
+    lv_obj_set_y(ui_OIL_PRESS_Value_Tap_Panel, -1);
+    lv_obj_set_align(ui_OIL_PRESS_Value_Tap_Panel, LV_ALIGN_CENTER);
+    lv_obj_remove_flag(ui_OIL_PRESS_Value_Tap_Panel, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
+    lv_obj_set_style_radius(ui_OIL_PRESS_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_OIL_PRESS_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     ui_OIL_PRESS_Value = lv_label_create(ui_OIL_PRESS);
     lv_obj_set_width(ui_OIL_PRESS_Value, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_OIL_PRESS_Value, LV_SIZE_CONTENT);    /// 1
     lv_obj_set_x(ui_OIL_PRESS_Value, -4);
-    lv_obj_set_y(ui_OIL_PRESS_Value, -6);
+    lv_obj_set_y(ui_OIL_PRESS_Value, 0);
     lv_obj_set_align(ui_OIL_PRESS_Value, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_OIL_PRESS_Value, "150 PSI");
+    lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_opa(ui_OIL_PRESS_Value, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_OIL_PRESS_Value, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_left(ui_OIL_PRESS_Value, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_right(ui_OIL_PRESS_Value, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_top(ui_OIL_PRESS_Value, 16, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_bottom(ui_OIL_PRESS_Value, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_OIL_PRESS_VALUE_CRITICAL_Label = lv_label_create(ui_OIL_PRESS);
     lv_obj_set_width(ui_OIL_PRESS_VALUE_CRITICAL_Label, lv_pct(42));
@@ -480,6 +496,17 @@ void ui_Screen1_screen_init(void)
 
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_OIL_TEMP_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_OIL_TEMP_Value_Tap_Panel = lv_obj_create(ui_OIL_TEMP);
+    lv_obj_set_width(ui_OIL_TEMP_Value_Tap_Panel, 156);
+    lv_obj_set_height(ui_OIL_TEMP_Value_Tap_Panel, 70);
+    lv_obj_set_x(ui_OIL_TEMP_Value_Tap_Panel, 325);
+    lv_obj_set_y(ui_OIL_TEMP_Value_Tap_Panel, -1);
+    lv_obj_set_align(ui_OIL_TEMP_Value_Tap_Panel, LV_ALIGN_CENTER);
+    lv_obj_remove_flag(ui_OIL_TEMP_Value_Tap_Panel, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
+    lv_obj_set_style_radius(ui_OIL_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_OIL_TEMP_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     ui_OIL_TEMP_Value_P = lv_label_create(ui_OIL_TEMP);
     lv_obj_set_width(ui_OIL_TEMP_Value_P, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_OIL_TEMP_Value_P, LV_SIZE_CONTENT);    /// 1
@@ -642,6 +669,17 @@ void ui_Screen1_screen_init(void)
 
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_W_TEMP_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_W_TEMP_Value_Tap_Panel = lv_obj_create(ui_W_TEMP);
+    lv_obj_set_width(ui_W_TEMP_Value_Tap_Panel, 156);
+    lv_obj_set_height(ui_W_TEMP_Value_Tap_Panel, 70);
+    lv_obj_set_x(ui_W_TEMP_Value_Tap_Panel, 325);
+    lv_obj_set_y(ui_W_TEMP_Value_Tap_Panel, -1);
+    lv_obj_set_align(ui_W_TEMP_Value_Tap_Panel, LV_ALIGN_CENTER);
+    lv_obj_remove_flag(ui_W_TEMP_Value_Tap_Panel, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
+    lv_obj_set_style_radius(ui_W_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_W_TEMP_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_W_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     ui_W_TEMP_Value_H = lv_label_create(ui_W_TEMP);
     lv_obj_set_width(ui_W_TEMP_Value_H, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_W_TEMP_Value_H, LV_SIZE_CONTENT);    /// 1
@@ -804,6 +842,17 @@ void ui_Screen1_screen_init(void)
 
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_TRAN_TEMP_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_TRAN_TEMP_Value_Tap_Panel = lv_obj_create(ui_TRAN_TEMP);
+    lv_obj_set_width(ui_TRAN_TEMP_Value_Tap_Panel, 156);
+    lv_obj_set_height(ui_TRAN_TEMP_Value_Tap_Panel, 70);
+    lv_obj_set_x(ui_TRAN_TEMP_Value_Tap_Panel, 325);
+    lv_obj_set_y(ui_TRAN_TEMP_Value_Tap_Panel, -1);
+    lv_obj_set_align(ui_TRAN_TEMP_Value_Tap_Panel, LV_ALIGN_CENTER);
+    lv_obj_remove_flag(ui_TRAN_TEMP_Value_Tap_Panel, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
+    lv_obj_set_style_radius(ui_TRAN_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_TRAN_TEMP_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     ui_TRAN_TEMP_Value_H = lv_label_create(ui_TRAN_TEMP);
     lv_obj_set_width(ui_TRAN_TEMP_Value_H, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_TRAN_TEMP_Value_H, LV_SIZE_CONTENT);    /// 1
@@ -967,6 +1016,17 @@ void ui_Screen1_screen_init(void)
 
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_STEER_TEMP_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_STEER_TEMP_Value_Tap_Panel = lv_obj_create(ui_STEER_TEMP);
+    lv_obj_set_width(ui_STEER_TEMP_Value_Tap_Panel, 156);
+    lv_obj_set_height(ui_STEER_TEMP_Value_Tap_Panel, 70);
+    lv_obj_set_x(ui_STEER_TEMP_Value_Tap_Panel, 325);
+    lv_obj_set_y(ui_STEER_TEMP_Value_Tap_Panel, -1);
+    lv_obj_set_align(ui_STEER_TEMP_Value_Tap_Panel, LV_ALIGN_CENTER);
+    lv_obj_remove_flag(ui_STEER_TEMP_Value_Tap_Panel, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
+    lv_obj_set_style_radius(ui_STEER_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_STEER_TEMP_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     ui_STEER_TEMP_Value_H = lv_label_create(ui_STEER_TEMP);
     lv_obj_set_width(ui_STEER_TEMP_Value_H, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_STEER_TEMP_Value_H, LV_SIZE_CONTENT);    /// 1
@@ -1131,6 +1191,17 @@ void ui_Screen1_screen_init(void)
 
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_DIFF_TEMP_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_DIFF_TEMP_Value_Tap_Panel = lv_obj_create(ui_DIFF_TEMP);
+    lv_obj_set_width(ui_DIFF_TEMP_Value_Tap_Panel, 156);
+    lv_obj_set_height(ui_DIFF_TEMP_Value_Tap_Panel, 70);
+    lv_obj_set_x(ui_DIFF_TEMP_Value_Tap_Panel, 325);
+    lv_obj_set_y(ui_DIFF_TEMP_Value_Tap_Panel, -1);
+    lv_obj_set_align(ui_DIFF_TEMP_Value_Tap_Panel, LV_ALIGN_CENTER);
+    lv_obj_remove_flag(ui_DIFF_TEMP_Value_Tap_Panel, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
+    lv_obj_set_style_radius(ui_DIFF_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_DIFF_TEMP_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     ui_DIFF_TEMP_Value_H = lv_label_create(ui_DIFF_TEMP);
     lv_obj_set_width(ui_DIFF_TEMP_Value_H, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_DIFF_TEMP_Value_H, LV_SIZE_CONTENT);    /// 1
@@ -1281,6 +1352,17 @@ void ui_Screen1_screen_init(void)
 
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_FUEL_TRUST_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_FUEL_TRUST_Value_Tap_Panel = lv_obj_create(ui_FUEL_TRUST);
+    lv_obj_set_width(ui_FUEL_TRUST_Value_Tap_Panel, 156);
+    lv_obj_set_height(ui_FUEL_TRUST_Value_Tap_Panel, 70);
+    lv_obj_set_x(ui_FUEL_TRUST_Value_Tap_Panel, 325);
+    lv_obj_set_y(ui_FUEL_TRUST_Value_Tap_Panel, -1);
+    lv_obj_set_align(ui_FUEL_TRUST_Value_Tap_Panel, LV_ALIGN_CENTER);
+    lv_obj_remove_flag(ui_FUEL_TRUST_Value_Tap_Panel, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
+    lv_obj_set_style_radius(ui_FUEL_TRUST_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_FUEL_TRUST_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_FUEL_TRUST_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     ui_FUEL_TRUST_Value = lv_label_create(ui_FUEL_TRUST);
     lv_obj_set_width(ui_FUEL_TRUST_Value, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_FUEL_TRUST_Value, LV_SIZE_CONTENT);    /// 1
@@ -1337,6 +1419,7 @@ void ui_Screen1_screen_destroy(void)
     ui_OIL_PRESS_Image_2 = NULL;
     ui_OIL_PRESS_Bar = NULL;
     ui_OIL_PRESS_CHART = NULL;
+    ui_OIL_PRESS_Value_Tap_Panel = NULL;
     ui_OIL_PRESS_Value = NULL;
     ui_OIL_PRESS_VALUE_CRITICAL_Label = NULL;
     ui_OIL_TEMP = NULL;
@@ -1345,6 +1428,7 @@ void ui_Screen1_screen_destroy(void)
     ui_OIL_TEMP_Image_2 = NULL;
     ui_OIL_TEMP_Bar = NULL;
     ui_OIL_TEMP_CHART = NULL;
+    ui_OIL_TEMP_Value_Tap_Panel = NULL;
     ui_OIL_TEMP_Value_P = NULL;
     ui_OIL_TEMP_Value_C = NULL;
     ui_OIL_TEMP_VALUE_CRITICAL_Label = NULL;
@@ -1354,6 +1438,7 @@ void ui_Screen1_screen_destroy(void)
     ui_W_TEMP_Image_2 = NULL;
     ui_W_TEMP_Bar = NULL;
     ui_W_TEMP_CHART = NULL;
+    ui_W_TEMP_Value_Tap_Panel = NULL;
     ui_W_TEMP_Value_H = NULL;
     ui_W_TEMP_Value_C = NULL;
     ui_W_TEMP_VALUE_CRITICAL_Label = NULL;
@@ -1363,6 +1448,7 @@ void ui_Screen1_screen_destroy(void)
     ui_TRAN_TEMP_Image_2 = NULL;
     ui_TRAN_TEMP_Bar = NULL;
     ui_TRAN_TEMP_CHART = NULL;
+    ui_TRAN_TEMP_Value_Tap_Panel = NULL;
     ui_TRAN_TEMP_Value_H = NULL;
     ui_TRAN_TEMP_Value_C = NULL;
     ui_TRAN_TEMP_VALUE_CRITICAL_Label = NULL;
@@ -1372,6 +1458,7 @@ void ui_Screen1_screen_destroy(void)
     ui_STEER_TEMP_Image_2 = NULL;
     ui_STEER_TEMP_Bar = NULL;
     ui_STEER_TEMP_CHART = NULL;
+    ui_STEER_TEMP_Value_Tap_Panel = NULL;
     ui_STEER_TEMP_Value_H = NULL;
     ui_STEER_TEMP_Value_C = NULL;
     ui_STEER_TEMP_VALUE_CRITICAL_Label = NULL;
@@ -1381,6 +1468,7 @@ void ui_Screen1_screen_destroy(void)
     ui_DIFF_TEMP_Image_2 = NULL;
     ui_DIFF_TEMP_Bar = NULL;
     ui_DIFF_TEMP_CHART = NULL;
+    ui_DIFF_TEMP_Value_Tap_Panel = NULL;
     ui_DIFF_TEMP_Value_H = NULL;
     ui_DIFF_TEMP_Value_C = NULL;
     ui_DIFF_TEMP_VALUE_CRITICAL_Label = NULL;
@@ -1389,6 +1477,7 @@ void ui_Screen1_screen_destroy(void)
     ui_FUEL_TRUST_Image = NULL;
     ui_FUEL_TRUST_Bar = NULL;
     ui_FUEL_TRUST_CHART = NULL;
+    ui_FUEL_TRUST_Value_Tap_Panel = NULL;
     ui_FUEL_TRUST_Value = NULL;
     ui_FUEL_TRUST_VALUE_CRITICAL_Label = NULL;
 

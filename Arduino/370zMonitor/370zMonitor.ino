@@ -43,7 +43,7 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_CHARTS       1   // Enable charts
 #define ENABLE_SD_LOGGING   1   // Enable SD card data logging
 #define ENABLE_USB_MSC      1   // Enable USB Mass Storage mode (hold BOOT at startup)
-#define UPDATE_INTERVAL_MS  150 // Update every 150ms
+#define UPDATE_INTERVAL_MS  200 // Update every 150ms
 
 // USB MSC Configuration
 #define USB_MSC_BOOT_PIN    0   // GPIO0 = BOOT button on most ESP32-S3 boards
@@ -246,7 +246,7 @@ void resetUIElements();
 #define CH422_ADDR_IOWR   0x38
 #define I2C_SDA 8
 #define I2C_SCL 9
-#define I2C_FREQ_HZ 100000
+#define I2C_FREQ_HZ 400000
 #define EXIO_TP_RST   1
 #define EXIO_DISP     2
 #define EXIO_SD_CS    4
@@ -528,10 +528,19 @@ static int32_t steering_temp_history[CHART_POINTS] = { 0 };
 static int32_t differencial_temp_history[CHART_POINTS] = { 0 };
 static int32_t fuel_trust_history[CHART_POINTS] = { 0 };
 
+// Track which charts currently have critical values (for selective blink invalidation)
+static bool g_chart_has_critical_oil_press = false;
+static bool g_chart_has_critical_oil_temp = false;
+static bool g_chart_has_critical_water_temp = false;
+static bool g_chart_has_critical_trans_temp = false;
+static bool g_chart_has_critical_steer_temp = false;
+static bool g_chart_has_critical_diff_temp = false;
+static bool g_chart_has_critical_fuel_trust = false;
+
 // Critical bar blinking
 static bool g_critical_blink_phase = false;
 static uint32_t g_last_blink_toggle = 0;
-#define CHART_BLINK_INTERVAL_MS 200
+#define CHART_BLINK_INTERVAL_MS 350     // 200 default
 
 // Tap box objects for reliable touch detection
 static lv_obj_t* tap_box_oil_press = NULL;
@@ -828,14 +837,43 @@ void resetDemoState() {
     g_demo_state.start_time = millis();
 }
 
-// Calculate sine wave value between min and max with given cycle time
-// Uses (1 - cos) / 2 for smooth "slow at edges" effect
+// Pre-calculated sine table (256 entries)
+// This is (1-cos(x))/2 * 255 for x from 0 to 2*PI, giving smooth "slow at edges" effect
+// Values range 0-255, eliminating expensive floating-point trig operations
+static const uint8_t SINE_TABLE[256] PROGMEM = {
+    0,   0,   1,   1,   2,   3,   4,   5,   6,   8,   9,  11,  13,  15,  17,  19,
+   22,  24,  27,  30,  33,  36,  39,  42,  46,  49,  53,  56,  60,  64,  68,  72,
+   76,  80,  85,  89,  93,  98, 102, 107, 111, 116, 120, 125, 129, 134, 138, 143,
+  147, 152, 156, 160, 165, 169, 173, 177, 181, 185, 189, 193, 197, 201, 204, 208,
+  211, 214, 217, 220, 223, 226, 228, 231, 233, 235, 237, 239, 241, 242, 244, 245,
+  246, 247, 248, 249, 250, 250, 251, 251, 252, 252, 252, 252, 252, 252, 252, 251,
+  251, 250, 250, 249, 248, 247, 246, 245, 244, 242, 241, 239, 237, 235, 233, 231,
+  228, 226, 223, 220, 217, 214, 211, 208, 204, 201, 197, 193, 189, 185, 181, 177,
+  173, 169, 165, 160, 156, 152, 147, 143, 138, 134, 129, 125, 120, 116, 111, 107,
+  102,  98,  93,  89,  85,  80,  76,  72,  68,  64,  60,  56,  53,  49,  46,  42,
+   39,  36,  33,  30,  27,  24,  22,  19,  17,  15,  13,  11,   9,   8,   6,   5,
+    4,   3,   2,   1,   1,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   1,   1,   2,
+    3,   4,   5,   6,   8,   9,  11,  13,  15,  17,  19,  22,  24,  27,  30,  33,
+   36,  39,  42,  46,  49,  53,  56,  60,  64,  68,  72,  76,  80,  85,  89,  93,
+   98, 102, 107, 111, 116, 120, 125, 129, 134, 138, 143, 147, 152, 156, 160, 165
+};
+
+// Fast sine approximation using lookup table - no floating point trig!
+// Replicates the "slow at edges" (1-cos)/2 behavior of the original
 int calcDemoValue(int min_val, int max_val, uint32_t cycle_ms, uint32_t offset_ms = 0) {
     uint32_t now = millis();
     uint32_t elapsed = (now - g_demo_state.start_time + offset_ms) % cycle_ms;
-    float angle = (float)elapsed / (float)cycle_ms * 2.0f * PI;
-    float progress = (1.0f - cos(angle)) / 2.0f;  // 0 to 1 with slow at edges
-    return min_val + (int)(progress * (max_val - min_val) + 0.5f);
+
+    // Map elapsed time to table index (0-255)
+    uint32_t index = (elapsed * 256UL) / cycle_ms;
+
+    // Get pre-calculated (1-cos)/2 value scaled 0-255
+    uint8_t table_val = pgm_read_byte(&SINE_TABLE[index & 0xFF]);
+
+    // Map to output range
+    int32_t range = max_val - min_val;
+    return min_val + (int)((range * table_val) / 255);
 }
 
 void updateDemoData() {
@@ -2448,6 +2486,44 @@ void updateUI() {
     char buf[32];
     const char* pressUnit = getPressureUnitStr(g_pressure_unit);
 
+    // Static variables to track last displayed values - only update labels when changed
+    static int last_oil_press_display = -9999;
+    static int last_oil_temp_pan_display = -9999;
+    static int last_oil_temp_cooled_display = -9999;
+    static int last_water_temp_hot_display = -9999;
+    static int last_water_temp_cooled_display = -9999;
+    static int last_trans_temp_hot_display = -9999;
+    static int last_trans_temp_cooled_display = -9999;
+    static int last_steer_temp_hot_display = -9999;
+    static int last_steer_temp_cooled_display = -9999;
+    static int last_diff_temp_hot_display = -9999;
+    static int last_diff_temp_cooled_display = -9999;
+    static int last_fuel_trust_display = -9999;
+
+    // Track last units to force update on unit change
+    static PressureUnit last_pressure_unit = (PressureUnit)-1;
+    static TempUnit last_oil_temp_unit = (TempUnit)-1;
+    static TempUnit last_water_temp_unit = (TempUnit)-1;
+    static TempUnit last_trans_temp_unit = (TempUnit)-1;
+    static TempUnit last_steer_temp_unit = (TempUnit)-1;
+    static TempUnit last_diff_temp_unit = (TempUnit)-1;
+
+    // Check for unit changes - force update if units changed
+    bool pressure_unit_changed = (last_pressure_unit != g_pressure_unit);
+    bool oil_temp_unit_changed = (last_oil_temp_unit != g_oil_temp_unit);
+    bool water_temp_unit_changed = (last_water_temp_unit != g_water_temp_unit);
+    bool trans_temp_unit_changed = (last_trans_temp_unit != g_trans_temp_unit);
+    bool steer_temp_unit_changed = (last_steer_temp_unit != g_steer_temp_unit);
+    bool diff_temp_unit_changed = (last_diff_temp_unit != g_diff_temp_unit);
+
+    // Update unit tracking
+    last_pressure_unit = g_pressure_unit;
+    last_oil_temp_unit = g_oil_temp_unit;
+    last_water_temp_unit = g_water_temp_unit;
+    last_trans_temp_unit = g_trans_temp_unit;
+    last_steer_temp_unit = g_steer_temp_unit;
+    last_diff_temp_unit = g_diff_temp_unit;
+
     // ----- Oil Pressure -----
     // Only update UI if we have valid data
     if (g_vehicle_data.oil_pressure_valid) {
@@ -2473,7 +2549,8 @@ void updateUI() {
                 LV_PART_INDICATOR);
         }
 
-        if (ui_OIL_PRESS_Value) {
+        // Only update label if value changed OR unit changed
+        if (ui_OIL_PRESS_Value && (display_val != last_oil_press_display || pressure_unit_changed)) {
             if (g_pressure_unit == PRESS_KPA) {
                 snprintf(buf, sizeof(buf), "%d %s", display_val, pressUnit);
             }
@@ -2484,6 +2561,7 @@ void updateUI() {
                 snprintf(buf, sizeof(buf), "%d %s", display_val, pressUnit);
             }
             lv_label_set_text(ui_OIL_PRESS_Value, buf);
+            last_oil_press_display = display_val;
 
             // Style label based on critical
             bool value_critical = isOilPressureCritical();
@@ -2531,8 +2609,12 @@ void updateUI() {
         }
 
         if (ui_OIL_TEMP_Value_P) {
-            snprintf(buf, sizeof(buf), "%d°%s [P]", (int)(temp_pan_disp + 0.5f), oilTempUnit);
-            lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
+            int pan_display_val = (int)(temp_pan_disp + 0.5f);
+            if (pan_display_val != last_oil_temp_pan_display || oil_temp_unit_changed) {
+                snprintf(buf, sizeof(buf), "%d°%s [P]", pan_display_val, oilTempUnit);
+                lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
+                last_oil_temp_pan_display = pan_display_val;
+            }
 
             // Style label based on critical
             bool value_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
@@ -2554,8 +2636,12 @@ void updateUI() {
         }
 
         if (ui_OIL_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), oilTempUnit);
-            lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
+            int cooled_display_val = (int)(temp_cooled_disp + 0.5f);
+            if (cooled_display_val != last_oil_temp_cooled_display || oil_temp_unit_changed) {
+                snprintf(buf, sizeof(buf), "%d°%s [C]", cooled_display_val, oilTempUnit);
+                lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
+                last_oil_temp_cooled_display = cooled_display_val;
+            }
 
             // Style label based on critical (uses pan temp for critical check)
             bool value_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
@@ -2588,8 +2674,12 @@ void updateUI() {
         float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.water_temp_cooled_f, g_water_temp_unit);
 
         if (ui_W_TEMP_Value_H) {
-            snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), waterTempUnit);
-            lv_label_set_text(ui_W_TEMP_Value_H, buf);
+            int hot_display_val = (int)(temp_hot_disp + 0.5f);
+            if (hot_display_val != last_water_temp_hot_display || water_temp_unit_changed) {
+                snprintf(buf, sizeof(buf), "%d°%s [H]", hot_display_val, waterTempUnit);
+                lv_label_set_text(ui_W_TEMP_Value_H, buf);
+                last_water_temp_hot_display = hot_display_val;
+            }
 
             // Style label based on critical
             bool value_critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
@@ -2610,8 +2700,12 @@ void updateUI() {
             }
         }
         if (ui_W_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), waterTempUnit);
-            lv_label_set_text(ui_W_TEMP_Value_C, buf);
+            int cooled_display_val = (int)(temp_cooled_disp + 0.5f);
+            if (cooled_display_val != last_water_temp_cooled_display || water_temp_unit_changed) {
+                snprintf(buf, sizeof(buf), "%d°%s [C]", cooled_display_val, waterTempUnit);
+                lv_label_set_text(ui_W_TEMP_Value_C, buf);
+                last_water_temp_cooled_display = cooled_display_val;
+            }
 
             // Style label based on critical (uses hot temp for critical check)
             bool value_critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
@@ -2651,8 +2745,12 @@ void updateUI() {
         float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.trans_temp_cooled_f, g_trans_temp_unit);
 
         if (ui_TRAN_TEMP_Value_H) {
-            snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), transTempUnit);
-            lv_label_set_text(ui_TRAN_TEMP_Value_H, buf);
+            int hot_display_val = (int)(temp_hot_disp + 0.5f);
+            if (hot_display_val != last_trans_temp_hot_display || trans_temp_unit_changed) {
+                snprintf(buf, sizeof(buf), "%d°%s [H]", hot_display_val, transTempUnit);
+                lv_label_set_text(ui_TRAN_TEMP_Value_H, buf);
+                last_trans_temp_hot_display = hot_display_val;
+            }
 
             // Style label based on critical
             bool value_critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
@@ -2673,8 +2771,12 @@ void updateUI() {
             }
         }
         if (ui_TRAN_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), transTempUnit);
-            lv_label_set_text(ui_TRAN_TEMP_Value_C, buf);
+            int cooled_display_val = (int)(temp_cooled_disp + 0.5f);
+            if (cooled_display_val != last_trans_temp_cooled_display || trans_temp_unit_changed) {
+                snprintf(buf, sizeof(buf), "%d°%s [C]", cooled_display_val, transTempUnit);
+                lv_label_set_text(ui_TRAN_TEMP_Value_C, buf);
+                last_trans_temp_cooled_display = cooled_display_val;
+            }
 
             // Style label based on critical (uses hot temp for critical check)
             bool value_critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
@@ -2714,8 +2816,12 @@ void updateUI() {
         float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.steer_temp_cooled_f, g_steer_temp_unit);
 
         if (ui_STEER_TEMP_Value_H) {
-            snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), steerTempUnit);
-            lv_label_set_text(ui_STEER_TEMP_Value_H, buf);
+            int hot_display_val = (int)(temp_hot_disp + 0.5f);
+            if (hot_display_val != last_steer_temp_hot_display || steer_temp_unit_changed) {
+                snprintf(buf, sizeof(buf), "%d°%s [H]", hot_display_val, steerTempUnit);
+                lv_label_set_text(ui_STEER_TEMP_Value_H, buf);
+                last_steer_temp_hot_display = hot_display_val;
+            }
 
             // Style label based on critical
             bool value_critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
@@ -2736,8 +2842,12 @@ void updateUI() {
             }
         }
         if (ui_STEER_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), steerTempUnit);
-            lv_label_set_text(ui_STEER_TEMP_Value_C, buf);
+            int cooled_display_val = (int)(temp_cooled_disp + 0.5f);
+            if (cooled_display_val != last_steer_temp_cooled_display || steer_temp_unit_changed) {
+                snprintf(buf, sizeof(buf), "%d°%s [C]", cooled_display_val, steerTempUnit);
+                lv_label_set_text(ui_STEER_TEMP_Value_C, buf);
+                last_steer_temp_cooled_display = cooled_display_val;
+            }
 
             // Style label based on critical (uses hot temp for critical check)
             bool value_critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
@@ -2777,8 +2887,12 @@ void updateUI() {
         float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.diff_temp_cooled_f, g_diff_temp_unit);
 
         if (ui_DIFF_TEMP_Value_H) {
-            snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), diffTempUnit);
-            lv_label_set_text(ui_DIFF_TEMP_Value_H, buf);
+            int hot_display_val = (int)(temp_hot_disp + 0.5f);
+            if (hot_display_val != last_diff_temp_hot_display || diff_temp_unit_changed) {
+                snprintf(buf, sizeof(buf), "%d°%s [H]", hot_display_val, diffTempUnit);
+                lv_label_set_text(ui_DIFF_TEMP_Value_H, buf);
+                last_diff_temp_hot_display = hot_display_val;
+            }
 
             // Style label based on critical
             bool value_critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
@@ -2799,8 +2913,12 @@ void updateUI() {
             }
         }
         if (ui_DIFF_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), diffTempUnit);
-            lv_label_set_text(ui_DIFF_TEMP_Value_C, buf);
+            int cooled_display_val = (int)(temp_cooled_disp + 0.5f);
+            if (cooled_display_val != last_diff_temp_cooled_display || diff_temp_unit_changed) {
+                snprintf(buf, sizeof(buf), "%d°%s [C]", cooled_display_val, diffTempUnit);
+                lv_label_set_text(ui_DIFF_TEMP_Value_C, buf);
+                last_diff_temp_cooled_display = cooled_display_val;
+            }
 
             // Style label based on critical (uses hot temp for critical check)
             bool value_critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
@@ -2854,8 +2972,11 @@ void updateUI() {
         }
 
         if (ui_FUEL_TRUST_Value) {
-            snprintf(buf, sizeof(buf), "%d %%", fuel);
-            lv_label_set_text(ui_FUEL_TRUST_Value, buf);
+            if (display_fuel != last_fuel_trust_display) {
+                snprintf(buf, sizeof(buf), "%d %%", display_fuel);
+                lv_label_set_text(ui_FUEL_TRUST_Value, buf);
+                last_fuel_trust_display = display_fuel;
+            }
 
             // Style label based on critical
             bool value_critical = (fuel < FUEL_TRUST_ValueCritical);
@@ -2883,7 +3004,7 @@ void updateUI() {
 }
 
 //=================================================================
-// CHART UPDATE FUNCTION
+// CHART UPDATE FUNCTION - OPTIMIZED WITH SELECTIVE INVALIDATION
 //=================================================================
 
 void updateCharts() {
@@ -2929,7 +3050,7 @@ void updateCharts() {
     if (differencial_temp_bucket_start == 0) differencial_temp_bucket_start = now;
     if (fuel_trust_start == 0) fuel_trust_start = now;
 
-    // Push to charts every CHART_BUCKET_MS (only if we have samples)
+    // Push to charts every CHART_BUCKET_MS - also update critical flags
     if ((now - oil_pressure_bucket_start) >= CHART_BUCKET_MS && chart_series_oil_press) {
         if (oil_pressure_samples > 0) {
             int32_t avg = oil_pressure_sum / oil_pressure_samples;
@@ -2937,6 +3058,17 @@ void updateCharts() {
             if (avg > 150) avg = 150;
             shift_history(oil_press_history, avg);
             lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, avg);
+
+            // Check if ANY point in history is critical
+            g_chart_has_critical_oil_press = false;
+            for (int i = 0; i < CHART_POINTS; i++) {
+                if (oil_press_history[i] > 0 &&
+                    (oil_press_history[i] < OIL_PRESS_ValueCriticalLow ||
+                        oil_press_history[i] > OIL_PRESS_ValueCriticalAbsolute)) {
+                    g_chart_has_critical_oil_press = true;
+                    break;
+                }
+            }
         }
         oil_pressure_sum = 0;
         oil_pressure_samples = 0;
@@ -2948,6 +3080,14 @@ void updateCharts() {
             int32_t avg = oil_temp_sum / oil_temp_samples;
             shift_history(oil_temp_history, avg);
             lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, avg);
+
+            g_chart_has_critical_oil_temp = false;
+            for (int i = 0; i < CHART_POINTS; i++) {
+                if (oil_temp_history[i] > OIL_TEMP_ValueCriticalF) {
+                    g_chart_has_critical_oil_temp = true;
+                    break;
+                }
+            }
         }
         oil_temp_sum = 0;
         oil_temp_samples = 0;
@@ -2959,6 +3099,14 @@ void updateCharts() {
             int32_t avg = water_temp_sum / water_temp_samples;
             shift_history(water_temp_history, avg);
             lv_chart_set_next_value(ui_W_TEMP_CHART, chart_series_water_temp, avg);
+
+            g_chart_has_critical_water_temp = false;
+            for (int i = 0; i < CHART_POINTS; i++) {
+                if (water_temp_history[i] > W_TEMP_ValueCritical_F) {
+                    g_chart_has_critical_water_temp = true;
+                    break;
+                }
+            }
         }
         water_temp_sum = 0;
         water_temp_samples = 0;
@@ -2970,6 +3118,14 @@ void updateCharts() {
             int32_t avg = transmission_temp_sum / transmission_temp_samples;
             shift_history(transmission_temp_history, avg);
             lv_chart_set_next_value(ui_TRAN_TEMP_CHART, chart_series_transmission_temp, avg);
+
+            g_chart_has_critical_trans_temp = false;
+            for (int i = 0; i < CHART_POINTS; i++) {
+                if (transmission_temp_history[i] > TRAN_TEMP_ValueCritical_F) {
+                    g_chart_has_critical_trans_temp = true;
+                    break;
+                }
+            }
         }
         transmission_temp_sum = 0;
         transmission_temp_samples = 0;
@@ -2981,6 +3137,14 @@ void updateCharts() {
             int32_t avg = steering_temp_sum / steering_temp_samples;
             shift_history(steering_temp_history, avg);
             lv_chart_set_next_value(ui_STEER_TEMP_CHART, chart_series_steering_temp, avg);
+
+            g_chart_has_critical_steer_temp = false;
+            for (int i = 0; i < CHART_POINTS; i++) {
+                if (steering_temp_history[i] > STEER_TEMP_ValueCritical_F) {
+                    g_chart_has_critical_steer_temp = true;
+                    break;
+                }
+            }
         }
         steering_temp_sum = 0;
         steering_temp_samples = 0;
@@ -2992,6 +3156,14 @@ void updateCharts() {
             int32_t avg = differencial_temp_sum / differencial_temp_samples;
             shift_history(differencial_temp_history, avg);
             lv_chart_set_next_value(ui_DIFF_TEMP_CHART, chart_series_differencial_temp, avg);
+
+            g_chart_has_critical_diff_temp = false;
+            for (int i = 0; i < CHART_POINTS; i++) {
+                if (differencial_temp_history[i] > DIFF_TEMP_ValueCritical_F) {
+                    g_chart_has_critical_diff_temp = true;
+                    break;
+                }
+            }
         }
         differencial_temp_sum = 0;
         differencial_temp_samples = 0;
@@ -3003,25 +3175,40 @@ void updateCharts() {
             int32_t avg = fuel_trust_sum / fuel_trust_samples;
             shift_history(fuel_trust_history, avg);
             lv_chart_set_next_value(ui_FUEL_TRUST_CHART, chart_series_fuel_trust, avg);
+
+            g_chart_has_critical_fuel_trust = false;
+            for (int i = 0; i < CHART_POINTS; i++) {
+                if (fuel_trust_history[i] > 0 && fuel_trust_history[i] < FUEL_TRUST_ValueCritical) {
+                    g_chart_has_critical_fuel_trust = true;
+                    break;
+                }
+            }
         }
         fuel_trust_sum = 0;
         fuel_trust_samples = 0;
         fuel_trust_start = now;
     }
 
-    // Update blink phase for critical bars
+    // Update blink phase - ONLY invalidate charts that have critical values
     if (now - g_last_blink_toggle >= CHART_BLINK_INTERVAL_MS) {
         g_critical_blink_phase = !g_critical_blink_phase;
         g_last_blink_toggle = now;
 
-        // Invalidate all charts with draw callbacks
-        if (ui_OIL_PRESS_CHART) lv_obj_invalidate(ui_OIL_PRESS_CHART);
-        if (ui_OIL_TEMP_CHART) lv_obj_invalidate(ui_OIL_TEMP_CHART);
-        if (ui_W_TEMP_CHART) lv_obj_invalidate(ui_W_TEMP_CHART);
-        if (ui_TRAN_TEMP_CHART) lv_obj_invalidate(ui_TRAN_TEMP_CHART);
-        if (ui_STEER_TEMP_CHART) lv_obj_invalidate(ui_STEER_TEMP_CHART);
-        if (ui_DIFF_TEMP_CHART) lv_obj_invalidate(ui_DIFF_TEMP_CHART);
-        if (ui_FUEL_TRUST_CHART) lv_obj_invalidate(ui_FUEL_TRUST_CHART);
+        // Selective invalidation - only charts with critical values need redraw
+        if (g_chart_has_critical_oil_press && ui_OIL_PRESS_CHART)
+            lv_obj_invalidate(ui_OIL_PRESS_CHART);
+        if (g_chart_has_critical_oil_temp && ui_OIL_TEMP_CHART)
+            lv_obj_invalidate(ui_OIL_TEMP_CHART);
+        if (g_chart_has_critical_water_temp && ui_W_TEMP_CHART)
+            lv_obj_invalidate(ui_W_TEMP_CHART);
+        if (g_chart_has_critical_trans_temp && ui_TRAN_TEMP_CHART)
+            lv_obj_invalidate(ui_TRAN_TEMP_CHART);
+        if (g_chart_has_critical_steer_temp && ui_STEER_TEMP_CHART)
+            lv_obj_invalidate(ui_STEER_TEMP_CHART);
+        if (g_chart_has_critical_diff_temp && ui_DIFF_TEMP_CHART)
+            lv_obj_invalidate(ui_DIFF_TEMP_CHART);
+        if (g_chart_has_critical_fuel_trust && ui_FUEL_TRUST_CHART)
+            lv_obj_invalidate(ui_FUEL_TRUST_CHART);
     }
 #endif
 }
@@ -3180,7 +3367,7 @@ void setup() {
     lv_obj_t* bars[] = { ui_OIL_PRESS_Bar, ui_OIL_TEMP_Bar, ui_FUEL_TRUST_Bar,
                         ui_W_TEMP_Bar, ui_TRAN_TEMP_Bar, ui_STEER_TEMP_Bar, ui_DIFF_TEMP_Bar };
     for (int i = 0; i < 7; i++) {
-        if (bars[i]) lv_obj_set_style_anim_duration(bars[i], 100, LV_PART_MAIN);
+        if (bars[i]) lv_obj_set_style_anim_duration(bars[i], 0, LV_PART_MAIN);
     }
 
     // Create utility box
@@ -3366,3 +3553,4 @@ void loop() {
         delay(FRAME_TIME_MS - elapsed);
     }
 }
+ 

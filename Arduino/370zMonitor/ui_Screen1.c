@@ -328,23 +328,34 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_width(ui_OIL_PRESS_Value, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_OIL_PRESS_Value, LV_SIZE_CONTENT);    /// 1
     lv_obj_set_x(ui_OIL_PRESS_Value, -4);
-    lv_obj_set_y(ui_OIL_PRESS_Value, -1);
+    lv_obj_set_y(ui_OIL_PRESS_Value, -6);
     lv_obj_set_align(ui_OIL_PRESS_Value, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_OIL_PRESS_Value, "150 PSI");
     lv_obj_set_style_text_font(ui_OIL_PRESS_Value, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_left(ui_OIL_PRESS_Value, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_right(ui_OIL_PRESS_Value, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_top(ui_OIL_PRESS_Value, 16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_bottom(ui_OIL_PRESS_Value, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_OIL_PRESS_VALUE_CRITICAL_Label = lv_label_create(ui_OIL_PRESS);
-    lv_obj_set_width(ui_OIL_PRESS_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_OIL_PRESS_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_OIL_PRESS_VALUE_CRITICAL_Label, 308);
-    lv_obj_set_y(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0);
-    lv_obj_set_align(ui_OIL_PRESS_VALUE_CRITICAL_Label, LV_ALIGN_LEFT_MID);
+    lv_obj_set_width(ui_OIL_PRESS_VALUE_CRITICAL_Label, lv_pct(42));
+    lv_obj_set_height(ui_OIL_PRESS_VALUE_CRITICAL_Label, lv_pct(95));
+    lv_obj_set_x(ui_OIL_PRESS_VALUE_CRITICAL_Label, 79);
+    lv_obj_set_y(ui_OIL_PRESS_VALUE_CRITICAL_Label, -1);
+    lv_obj_set_align(ui_OIL_PRESS_VALUE_CRITICAL_Label, LV_ALIGN_CENTER);
     lv_label_set_text(ui_OIL_PRESS_VALUE_CRITICAL_Label, "VALUE CRITICAL");
     lv_obj_set_style_text_color(ui_OIL_PRESS_VALUE_CRITICAL_Label, lv_color_hex(0x960000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_align(ui_OIL_PRESS_VALUE_CRITICAL_Label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_decor(ui_OIL_PRESS_VALUE_CRITICAL_Label, LV_TEXT_DECOR_UNDERLINE,
                                 LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_OIL_PRESS_VALUE_CRITICAL_Label, &lv_font_montserrat_40, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_OIL_PRESS_VALUE_CRITICAL_Label, &lv_font_montserrat_38, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_OIL_PRESS_VALUE_CRITICAL_Label, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_left(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_right(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_top(ui_OIL_PRESS_VALUE_CRITICAL_Label, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_bottom(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_OIL_TEMP = lv_obj_create(ui_MainPanel);
     lv_obj_remove_style_all(ui_OIL_TEMP);
@@ -488,16 +499,23 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_style_text_font(ui_OIL_TEMP_Value_C, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_OIL_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_OIL_TEMP);
-    lv_obj_set_width(ui_OIL_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_OIL_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_OIL_TEMP_VALUE_CRITICAL_Label, 308);
-    lv_obj_set_y(ui_OIL_TEMP_VALUE_CRITICAL_Label, 0);
-    lv_obj_set_align(ui_OIL_TEMP_VALUE_CRITICAL_Label, LV_ALIGN_LEFT_MID);
+    lv_obj_set_width(ui_OIL_TEMP_VALUE_CRITICAL_Label, lv_pct(42));
+    lv_obj_set_height(ui_OIL_TEMP_VALUE_CRITICAL_Label, lv_pct(95));
+    lv_obj_set_x(ui_OIL_TEMP_VALUE_CRITICAL_Label, 79);
+    lv_obj_set_y(ui_OIL_TEMP_VALUE_CRITICAL_Label, -1);
+    lv_obj_set_align(ui_OIL_TEMP_VALUE_CRITICAL_Label, LV_ALIGN_CENTER);
     lv_label_set_text(ui_OIL_TEMP_VALUE_CRITICAL_Label, "VALUE CRITICAL");
     lv_obj_set_style_text_color(ui_OIL_TEMP_VALUE_CRITICAL_Label, lv_color_hex(0x960000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_OIL_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_align(ui_OIL_TEMP_VALUE_CRITICAL_Label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_decor(ui_OIL_TEMP_VALUE_CRITICAL_Label, LV_TEXT_DECOR_UNDERLINE, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_OIL_TEMP_VALUE_CRITICAL_Label, &lv_font_montserrat_40, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_OIL_TEMP_VALUE_CRITICAL_Label, &lv_font_montserrat_38, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_OIL_TEMP_VALUE_CRITICAL_Label, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_OIL_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_left(ui_OIL_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_right(ui_OIL_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_top(ui_OIL_TEMP_VALUE_CRITICAL_Label, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_bottom(ui_OIL_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_W_TEMP = lv_obj_create(ui_MainPanel);
     lv_obj_remove_style_all(ui_W_TEMP);
@@ -643,16 +661,23 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_style_text_font(ui_W_TEMP_Value_C, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_W_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_W_TEMP);
-    lv_obj_set_width(ui_W_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_W_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_W_TEMP_VALUE_CRITICAL_Label, 308);
-    lv_obj_set_y(ui_W_TEMP_VALUE_CRITICAL_Label, 0);
-    lv_obj_set_align(ui_W_TEMP_VALUE_CRITICAL_Label, LV_ALIGN_LEFT_MID);
+    lv_obj_set_width(ui_W_TEMP_VALUE_CRITICAL_Label, lv_pct(42));
+    lv_obj_set_height(ui_W_TEMP_VALUE_CRITICAL_Label, lv_pct(95));
+    lv_obj_set_x(ui_W_TEMP_VALUE_CRITICAL_Label, 79);
+    lv_obj_set_y(ui_W_TEMP_VALUE_CRITICAL_Label, -1);
+    lv_obj_set_align(ui_W_TEMP_VALUE_CRITICAL_Label, LV_ALIGN_CENTER);
     lv_label_set_text(ui_W_TEMP_VALUE_CRITICAL_Label, "VALUE CRITICAL");
     lv_obj_set_style_text_color(ui_W_TEMP_VALUE_CRITICAL_Label, lv_color_hex(0x960000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_W_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_align(ui_W_TEMP_VALUE_CRITICAL_Label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_decor(ui_W_TEMP_VALUE_CRITICAL_Label, LV_TEXT_DECOR_UNDERLINE, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_W_TEMP_VALUE_CRITICAL_Label, &lv_font_montserrat_40, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_W_TEMP_VALUE_CRITICAL_Label, &lv_font_montserrat_38, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_W_TEMP_VALUE_CRITICAL_Label, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_W_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_left(ui_W_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_right(ui_W_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_top(ui_W_TEMP_VALUE_CRITICAL_Label, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_bottom(ui_W_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_TRAN_TEMP = lv_obj_create(ui_MainPanel);
     lv_obj_remove_style_all(ui_TRAN_TEMP);
@@ -798,17 +823,24 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_style_text_font(ui_TRAN_TEMP_Value_C, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_TRAN_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_TRAN_TEMP);
-    lv_obj_set_width(ui_TRAN_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_TRAN_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_TRAN_TEMP_VALUE_CRITICAL_Label, 308);
-    lv_obj_set_y(ui_TRAN_TEMP_VALUE_CRITICAL_Label, 0);
-    lv_obj_set_align(ui_TRAN_TEMP_VALUE_CRITICAL_Label, LV_ALIGN_LEFT_MID);
+    lv_obj_set_width(ui_TRAN_TEMP_VALUE_CRITICAL_Label, lv_pct(42));
+    lv_obj_set_height(ui_TRAN_TEMP_VALUE_CRITICAL_Label, lv_pct(95));
+    lv_obj_set_x(ui_TRAN_TEMP_VALUE_CRITICAL_Label, 79);
+    lv_obj_set_y(ui_TRAN_TEMP_VALUE_CRITICAL_Label, -1);
+    lv_obj_set_align(ui_TRAN_TEMP_VALUE_CRITICAL_Label, LV_ALIGN_CENTER);
     lv_label_set_text(ui_TRAN_TEMP_VALUE_CRITICAL_Label, "VALUE CRITICAL");
     lv_obj_set_style_text_color(ui_TRAN_TEMP_VALUE_CRITICAL_Label, lv_color_hex(0x960000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_TRAN_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_align(ui_TRAN_TEMP_VALUE_CRITICAL_Label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_decor(ui_TRAN_TEMP_VALUE_CRITICAL_Label, LV_TEXT_DECOR_UNDERLINE,
                                 LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_TRAN_TEMP_VALUE_CRITICAL_Label, &lv_font_montserrat_40, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_TRAN_TEMP_VALUE_CRITICAL_Label, &lv_font_montserrat_38, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_TRAN_TEMP_VALUE_CRITICAL_Label, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_TRAN_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_left(ui_TRAN_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_right(ui_TRAN_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_top(ui_TRAN_TEMP_VALUE_CRITICAL_Label, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_bottom(ui_TRAN_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_STEER_TEMP = lv_obj_create(ui_MainPanel);
     lv_obj_remove_style_all(ui_STEER_TEMP);
@@ -873,7 +905,7 @@ void ui_Screen1_screen_init(void)
     if(lv_obj_get_style_pad_top(ui_STEER_TEMP_Bar, LV_PART_MAIN) > 0) lv_obj_set_style_pad_right(ui_STEER_TEMP_Bar,
                                                                                                      lv_obj_get_style_pad_right(ui_STEER_TEMP_Bar, LV_PART_MAIN) + 1, LV_PART_MAIN);
     ui_STEER_TEMP_CHART = lv_chart_create(ui_STEER_TEMP);
-    lv_obj_set_width(ui_STEER_TEMP_CHART, 355);
+    lv_obj_set_width(ui_STEER_TEMP_CHART, 335);
     lv_obj_set_height(ui_STEER_TEMP_CHART, 68);
     lv_obj_set_x(ui_STEER_TEMP_CHART, 79);
     lv_obj_set_y(ui_STEER_TEMP_CHART, -2);
@@ -954,18 +986,25 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_style_text_font(ui_STEER_TEMP_Value_C, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_STEER_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_STEER_TEMP);
-    lv_obj_set_width(ui_STEER_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_STEER_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_STEER_TEMP_VALUE_CRITICAL_Label, 308);
-    lv_obj_set_y(ui_STEER_TEMP_VALUE_CRITICAL_Label, 0);
-    lv_obj_set_align(ui_STEER_TEMP_VALUE_CRITICAL_Label, LV_ALIGN_LEFT_MID);
+    lv_obj_set_width(ui_STEER_TEMP_VALUE_CRITICAL_Label, lv_pct(42));
+    lv_obj_set_height(ui_STEER_TEMP_VALUE_CRITICAL_Label, lv_pct(95));
+    lv_obj_set_x(ui_STEER_TEMP_VALUE_CRITICAL_Label, 79);
+    lv_obj_set_y(ui_STEER_TEMP_VALUE_CRITICAL_Label, -1);
+    lv_obj_set_align(ui_STEER_TEMP_VALUE_CRITICAL_Label, LV_ALIGN_CENTER);
     lv_label_set_text(ui_STEER_TEMP_VALUE_CRITICAL_Label, "VALUE CRITICAL");
     lv_obj_set_style_text_color(ui_STEER_TEMP_VALUE_CRITICAL_Label, lv_color_hex(0x960000),
                                 LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_STEER_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_align(ui_STEER_TEMP_VALUE_CRITICAL_Label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_decor(ui_STEER_TEMP_VALUE_CRITICAL_Label, LV_TEXT_DECOR_UNDERLINE,
                                 LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_STEER_TEMP_VALUE_CRITICAL_Label, &lv_font_montserrat_40, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_STEER_TEMP_VALUE_CRITICAL_Label, &lv_font_montserrat_38, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_STEER_TEMP_VALUE_CRITICAL_Label, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_STEER_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_left(ui_STEER_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_right(ui_STEER_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_top(ui_STEER_TEMP_VALUE_CRITICAL_Label, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_bottom(ui_STEER_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_DIFF_TEMP = lv_obj_create(ui_MainPanel);
     lv_obj_remove_style_all(ui_DIFF_TEMP);
@@ -1111,17 +1150,24 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_style_text_font(ui_DIFF_TEMP_Value_C, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_DIFF_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_DIFF_TEMP);
-    lv_obj_set_width(ui_DIFF_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_DIFF_TEMP_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_DIFF_TEMP_VALUE_CRITICAL_Label, 308);
-    lv_obj_set_y(ui_DIFF_TEMP_VALUE_CRITICAL_Label, 0);
-    lv_obj_set_align(ui_DIFF_TEMP_VALUE_CRITICAL_Label, LV_ALIGN_LEFT_MID);
+    lv_obj_set_width(ui_DIFF_TEMP_VALUE_CRITICAL_Label, lv_pct(42));
+    lv_obj_set_height(ui_DIFF_TEMP_VALUE_CRITICAL_Label, lv_pct(95));
+    lv_obj_set_x(ui_DIFF_TEMP_VALUE_CRITICAL_Label, 79);
+    lv_obj_set_y(ui_DIFF_TEMP_VALUE_CRITICAL_Label, -1);
+    lv_obj_set_align(ui_DIFF_TEMP_VALUE_CRITICAL_Label, LV_ALIGN_CENTER);
     lv_label_set_text(ui_DIFF_TEMP_VALUE_CRITICAL_Label, "VALUE CRITICAL");
     lv_obj_set_style_text_color(ui_DIFF_TEMP_VALUE_CRITICAL_Label, lv_color_hex(0x960000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_DIFF_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_align(ui_DIFF_TEMP_VALUE_CRITICAL_Label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_decor(ui_DIFF_TEMP_VALUE_CRITICAL_Label, LV_TEXT_DECOR_UNDERLINE,
                                 LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_DIFF_TEMP_VALUE_CRITICAL_Label, &lv_font_montserrat_40, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_DIFF_TEMP_VALUE_CRITICAL_Label, &lv_font_montserrat_38, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_DIFF_TEMP_VALUE_CRITICAL_Label, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_DIFF_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_left(ui_DIFF_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_right(ui_DIFF_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_top(ui_DIFF_TEMP_VALUE_CRITICAL_Label, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_bottom(ui_DIFF_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_FUEL_TRUST = lv_obj_create(ui_MainPanel);
     lv_obj_remove_style_all(ui_FUEL_TRUST);
@@ -1245,18 +1291,25 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_style_text_font(ui_FUEL_TRUST_Value, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_FUEL_TRUST_VALUE_CRITICAL_Label = lv_label_create(ui_FUEL_TRUST);
-    lv_obj_set_width(ui_FUEL_TRUST_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_FUEL_TRUST_VALUE_CRITICAL_Label, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_FUEL_TRUST_VALUE_CRITICAL_Label, 308);
-    lv_obj_set_y(ui_FUEL_TRUST_VALUE_CRITICAL_Label, 0);
-    lv_obj_set_align(ui_FUEL_TRUST_VALUE_CRITICAL_Label, LV_ALIGN_LEFT_MID);
+    lv_obj_set_width(ui_FUEL_TRUST_VALUE_CRITICAL_Label, lv_pct(42));
+    lv_obj_set_height(ui_FUEL_TRUST_VALUE_CRITICAL_Label, lv_pct(95));
+    lv_obj_set_x(ui_FUEL_TRUST_VALUE_CRITICAL_Label, 79);
+    lv_obj_set_y(ui_FUEL_TRUST_VALUE_CRITICAL_Label, -1);
+    lv_obj_set_align(ui_FUEL_TRUST_VALUE_CRITICAL_Label, LV_ALIGN_CENTER);
     lv_label_set_text(ui_FUEL_TRUST_VALUE_CRITICAL_Label, "VALUE CRITICAL");
     lv_obj_set_style_text_color(ui_FUEL_TRUST_VALUE_CRITICAL_Label, lv_color_hex(0x960000),
                                 LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_FUEL_TRUST_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_align(ui_FUEL_TRUST_VALUE_CRITICAL_Label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_decor(ui_FUEL_TRUST_VALUE_CRITICAL_Label, LV_TEXT_DECOR_UNDERLINE,
                                 LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_FUEL_TRUST_VALUE_CRITICAL_Label, &lv_font_montserrat_40, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_FUEL_TRUST_VALUE_CRITICAL_Label, &lv_font_montserrat_38, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_FUEL_TRUST_VALUE_CRITICAL_Label, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_FUEL_TRUST_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_left(ui_FUEL_TRUST_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_right(ui_FUEL_TRUST_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_top(ui_FUEL_TRUST_VALUE_CRITICAL_Label, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_bottom(ui_FUEL_TRUST_VALUE_CRITICAL_Label, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
 }
 

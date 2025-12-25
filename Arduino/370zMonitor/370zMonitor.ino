@@ -2158,7 +2158,7 @@ lv_obj_t* createTapBox(lv_obj_t* parent, lv_obj_t* anchor, int w, int h, uint32_
     lv_obj_t* box = lv_obj_create(parent);
     lv_obj_remove_style_all(box);
     lv_obj_set_size(box, w, h);
-    lv_obj_align_to(box, anchor, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align_to(box, anchor, LV_ALIGN_TOP_RIGHT, 10, -5);
     lv_obj_set_style_bg_color(box, lv_color_hex(color), 0);
     // Only show debug colors in demo mode
     lv_obj_set_style_bg_opa(box, g_demo_mode ? TAP_BOX_OPACITY : LV_OPA_TRANSP, 0);
@@ -2173,7 +2173,7 @@ lv_obj_t* createTapBox(lv_obj_t* parent, lv_obj_t* anchor, int w, int h, uint32_
 
 // Update tap box visibility based on demo mode
 void updateTapBoxVisibility() {
-    lv_opa_t opa = g_demo_mode ? TAP_BOX_OPACITY : LV_OPA_TRANSP;
+    lv_opa_t opa = g_demo_mode ? LV_OPA_20 : LV_OPA_TRANSP;
     if (tap_box_oil_press) lv_obj_set_style_bg_opa(tap_box_oil_press, opa, 0);
     if (tap_box_oil_temp) lv_obj_set_style_bg_opa(tap_box_oil_temp, opa, 0);
     if (tap_box_water_temp) lv_obj_set_style_bg_opa(tap_box_water_temp, opa, 0);
@@ -2184,19 +2184,17 @@ void updateTapBoxVisibility() {
 
 void setupUnitTapHandlers() {
     if (ui_OIL_PRESS_Value)
-        tap_box_oil_press = createTapBox(ui_Screen1, ui_OIL_PRESS_Value, 80, 40, 0x00FFFF, oil_press_tap_cb);
+        tap_box_oil_press = createTapBox(ui_Screen1, ui_OIL_PRESS_Value, 154, 50, 0x00FFFF, oil_press_tap_cb);
     if (ui_OIL_TEMP_Value_P)
-        tap_box_oil_temp = createTapBox(ui_Screen1, ui_OIL_TEMP_Value_P, 80, 50, 0xFF0000, oil_temp_tap_cb);
+        tap_box_oil_temp = createTapBox(ui_Screen1, ui_OIL_TEMP_Value_P, 154, 69, 0xFF00FF, oil_temp_tap_cb);
     if (ui_W_TEMP_Value_H)
-        tap_box_water_temp = createTapBox(ui_Screen1, ui_W_TEMP_Value_H, 80, 50, 0x00FF00, water_temp_tap_cb);
+        tap_box_water_temp = createTapBox(ui_Screen1, ui_W_TEMP_Value_H, 154, 69, 0x00FFFF, water_temp_tap_cb);
     if (ui_TRAN_TEMP_Value_H)
-        tap_box_trans_temp = createTapBox(ui_Screen1, ui_TRAN_TEMP_Value_H, 80, 50, 0x0000FF, trans_temp_tap_cb);
+        tap_box_trans_temp = createTapBox(ui_Screen1, ui_TRAN_TEMP_Value_H, 154, 69, 0xFF00FF, trans_temp_tap_cb);
     if (ui_STEER_TEMP_Value_H)
-        tap_box_steer_temp = createTapBox(ui_Screen1, ui_STEER_TEMP_Value_H, 80, 50, 0xFFFF00, steer_temp_tap_cb);
+        tap_box_steer_temp = createTapBox(ui_Screen1, ui_STEER_TEMP_Value_H, 154, 69, 0x00FFFF, steer_temp_tap_cb);
     if (ui_DIFF_TEMP_Value_H)
-        tap_box_diff_temp = createTapBox(ui_Screen1, ui_DIFF_TEMP_Value_H, 80, 50, 0xFF00FF, diff_temp_tap_cb);
-
-    Serial.println("[UI] Tap boxes: CYAN=Press, RED=OilT, GREEN=WaterT, BLUE=TransT, YELLOW=SteerT, MAGENTA=DiffT");
+        tap_box_diff_temp = createTapBox(ui_Screen1, ui_DIFF_TEMP_Value_H, 154, 69, 0xFF00FF, diff_temp_tap_cb);
 }
 
 #pragma endregion Unit Tap Box Callbacks

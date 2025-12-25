@@ -2589,7 +2589,7 @@
                         "strtype": "OBJECT/Position",
                         "intarray": [
                           -4,
-                          -1
+                          -6
                         ],
                         "InheritedType": 7
                       },
@@ -2687,6 +2687,17 @@
                                 "strtype": "_style/Text_Font",
                                 "strval": "OrbitronRegular26",
                                 "InheritedType": 3
+                              },
+                              {
+                                "nid": 11110,
+                                "strtype": "_style/Padding",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  16,
+                                  0
+                                ],
+                                "InheritedType": 7
                               }
                             ],
                             "InheritedType": 1
@@ -2740,25 +2751,25 @@
                         "flags": 17,
                         "strtype": "OBJECT/Position",
                         "intarray": [
-                          308,
-                          0
+                          79,
+                          -1
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 60,
-                        "flags": 51,
+                        "flags": 34,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          1,
-                          1
+                          42,
+                          95
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 70,
                         "strtype": "OBJECT/Align",
-                        "strval": "LEFT_MID",
+                        "strval": "CENTER",
                         "InheritedType": 3
                       },
                       {
@@ -2846,6 +2857,12 @@
                                 "InheritedType": 7
                               },
                               {
+                                "nid": 10430,
+                                "strtype": "_style/Text_Align",
+                                "strval": "CENTER",
+                                "InheritedType": 3
+                              },
+                              {
                                 "nid": 10440,
                                 "strtype": "_style/Text_Decor",
                                 "strval": "UNDERLINE",
@@ -2854,8 +2871,30 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "montserrat_40",
+                                "strval": "montserrat_38",
                                 "InheritedType": 3
+                              },
+                              {
+                                "nid": 10520,
+                                "strtype": "_style/Bg_Color",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  0,
+                                  0
+                                ],
+                                "InheritedType": 7
+                              },
+                              {
+                                "nid": 11110,
+                                "strtype": "_style/Padding",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  10,
+                                  0
+                                ],
+                                "InheritedType": 7
                               }
                             ],
                             "InheritedType": 1
@@ -4446,25 +4485,25 @@
                         "flags": 17,
                         "strtype": "OBJECT/Position",
                         "intarray": [
-                          308,
-                          0
+                          79,
+                          -1
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 60,
-                        "flags": 51,
+                        "flags": 34,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          1,
-                          1
+                          42,
+                          95
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 70,
                         "strtype": "OBJECT/Align",
-                        "strval": "LEFT_MID",
+                        "strval": "CENTER",
                         "InheritedType": 3
                       },
                       {
@@ -4552,6 +4591,12 @@
                                 "InheritedType": 7
                               },
                               {
+                                "nid": 10430,
+                                "strtype": "_style/Text_Align",
+                                "strval": "CENTER",
+                                "InheritedType": 3
+                              },
+                              {
                                 "nid": 10440,
                                 "strtype": "_style/Text_Decor",
                                 "strval": "UNDERLINE",
@@ -4560,8 +4605,30 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "montserrat_40",
+                                "strval": "montserrat_38",
                                 "InheritedType": 3
+                              },
+                              {
+                                "nid": 10520,
+                                "strtype": "_style/Bg_Color",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  0,
+                                  0
+                                ],
+                                "InheritedType": 7
+                              },
+                              {
+                                "nid": 11110,
+                                "strtype": "_style/Padding",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  10,
+                                  0
+                                ],
+                                "InheritedType": 7
                               }
                             ],
                             "InheritedType": 1
@@ -6153,25 +6220,25 @@
                         "flags": 17,
                         "strtype": "OBJECT/Position",
                         "intarray": [
-                          308,
-                          0
+                          79,
+                          -1
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 60,
-                        "flags": 51,
+                        "flags": 34,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          1,
-                          1
+                          42,
+                          95
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 70,
                         "strtype": "OBJECT/Align",
-                        "strval": "LEFT_MID",
+                        "strval": "CENTER",
                         "InheritedType": 3
                       },
                       {
@@ -6259,6 +6326,12 @@
                                 "InheritedType": 7
                               },
                               {
+                                "nid": 10430,
+                                "strtype": "_style/Text_Align",
+                                "strval": "CENTER",
+                                "InheritedType": 3
+                              },
+                              {
                                 "nid": 10440,
                                 "strtype": "_style/Text_Decor",
                                 "strval": "UNDERLINE",
@@ -6267,8 +6340,30 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "montserrat_40",
+                                "strval": "montserrat_38",
                                 "InheritedType": 3
+                              },
+                              {
+                                "nid": 10520,
+                                "strtype": "_style/Bg_Color",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  0,
+                                  0
+                                ],
+                                "InheritedType": 7
+                              },
+                              {
+                                "nid": 11110,
+                                "strtype": "_style/Padding",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  10,
+                                  0
+                                ],
+                                "InheritedType": 7
                               }
                             ],
                             "InheritedType": 1
@@ -7860,25 +7955,25 @@
                         "flags": 17,
                         "strtype": "OBJECT/Position",
                         "intarray": [
-                          308,
-                          0
+                          79,
+                          -1
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 60,
-                        "flags": 51,
+                        "flags": 34,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          1,
-                          1
+                          42,
+                          95
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 70,
                         "strtype": "OBJECT/Align",
-                        "strval": "LEFT_MID",
+                        "strval": "CENTER",
                         "InheritedType": 3
                       },
                       {
@@ -7966,6 +8061,12 @@
                                 "InheritedType": 7
                               },
                               {
+                                "nid": 10430,
+                                "strtype": "_style/Text_Align",
+                                "strval": "CENTER",
+                                "InheritedType": 3
+                              },
+                              {
                                 "nid": 10440,
                                 "strtype": "_style/Text_Decor",
                                 "strval": "UNDERLINE",
@@ -7974,8 +8075,30 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "montserrat_40",
+                                "strval": "montserrat_38",
                                 "InheritedType": 3
+                              },
+                              {
+                                "nid": 10520,
+                                "strtype": "_style/Bg_Color",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  0,
+                                  0
+                                ],
+                                "InheritedType": 7
+                              },
+                              {
+                                "nid": 11110,
+                                "strtype": "_style/Padding",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  10,
+                                  0
+                                ],
+                                "InheritedType": 7
                               }
                             ],
                             "InheritedType": 1
@@ -8894,7 +9017,7 @@
                         "flags": 17,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          355,
+                          335,
                           68
                         ],
                         "InheritedType": 7
@@ -9567,25 +9690,25 @@
                         "flags": 17,
                         "strtype": "OBJECT/Position",
                         "intarray": [
-                          308,
-                          0
+                          79,
+                          -1
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 60,
-                        "flags": 51,
+                        "flags": 34,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          1,
-                          1
+                          42,
+                          95
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 70,
                         "strtype": "OBJECT/Align",
-                        "strval": "LEFT_MID",
+                        "strval": "CENTER",
                         "InheritedType": 3
                       },
                       {
@@ -9673,6 +9796,12 @@
                                 "InheritedType": 7
                               },
                               {
+                                "nid": 10430,
+                                "strtype": "_style/Text_Align",
+                                "strval": "CENTER",
+                                "InheritedType": 3
+                              },
+                              {
                                 "nid": 10440,
                                 "strtype": "_style/Text_Decor",
                                 "strval": "UNDERLINE",
@@ -9681,8 +9810,30 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "montserrat_40",
+                                "strval": "montserrat_38",
                                 "InheritedType": 3
+                              },
+                              {
+                                "nid": 10520,
+                                "strtype": "_style/Bg_Color",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  0,
+                                  0
+                                ],
+                                "InheritedType": 7
+                              },
+                              {
+                                "nid": 11110,
+                                "strtype": "_style/Padding",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  10,
+                                  0
+                                ],
+                                "InheritedType": 7
                               }
                             ],
                             "InheritedType": 1
@@ -11274,25 +11425,25 @@
                         "flags": 17,
                         "strtype": "OBJECT/Position",
                         "intarray": [
-                          308,
-                          0
+                          79,
+                          -1
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 60,
-                        "flags": 51,
+                        "flags": 34,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          1,
-                          1
+                          42,
+                          95
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 70,
                         "strtype": "OBJECT/Align",
-                        "strval": "LEFT_MID",
+                        "strval": "CENTER",
                         "InheritedType": 3
                       },
                       {
@@ -11380,6 +11531,12 @@
                                 "InheritedType": 7
                               },
                               {
+                                "nid": 10430,
+                                "strtype": "_style/Text_Align",
+                                "strval": "CENTER",
+                                "InheritedType": 3
+                              },
+                              {
                                 "nid": 10440,
                                 "strtype": "_style/Text_Decor",
                                 "strval": "UNDERLINE",
@@ -11388,8 +11545,30 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "montserrat_40",
+                                "strval": "montserrat_38",
                                 "InheritedType": 3
+                              },
+                              {
+                                "nid": 10520,
+                                "strtype": "_style/Bg_Color",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  0,
+                                  0
+                                ],
+                                "InheritedType": 7
+                              },
+                              {
+                                "nid": 11110,
+                                "strtype": "_style/Padding",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  10,
+                                  0
+                                ],
+                                "InheritedType": 7
                               }
                             ],
                             "InheritedType": 1
@@ -12651,25 +12830,25 @@
                         "flags": 17,
                         "strtype": "OBJECT/Position",
                         "intarray": [
-                          308,
-                          0
+                          79,
+                          -1
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 60,
-                        "flags": 51,
+                        "flags": 34,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          1,
-                          1
+                          42,
+                          95
                         ],
                         "InheritedType": 7
                       },
                       {
                         "nid": 70,
                         "strtype": "OBJECT/Align",
-                        "strval": "LEFT_MID",
+                        "strval": "CENTER",
                         "InheritedType": 3
                       },
                       {
@@ -12757,6 +12936,12 @@
                                 "InheritedType": 7
                               },
                               {
+                                "nid": 10430,
+                                "strtype": "_style/Text_Align",
+                                "strval": "CENTER",
+                                "InheritedType": 3
+                              },
+                              {
                                 "nid": 10440,
                                 "strtype": "_style/Text_Decor",
                                 "strval": "UNDERLINE",
@@ -12765,8 +12950,30 @@
                               {
                                 "nid": 10450,
                                 "strtype": "_style/Text_Font",
-                                "strval": "montserrat_40",
+                                "strval": "montserrat_38",
                                 "InheritedType": 3
+                              },
+                              {
+                                "nid": 10520,
+                                "strtype": "_style/Bg_Color",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  0,
+                                  0
+                                ],
+                                "InheritedType": 7
+                              },
+                              {
+                                "nid": 11110,
+                                "strtype": "_style/Padding",
+                                "intarray": [
+                                  0,
+                                  0,
+                                  10,
+                                  0
+                                ],
+                                "InheritedType": 7
                               }
                             ],
                             "InheritedType": 1
@@ -13218,7 +13425,7 @@
     "theme_color1": 5,
     "theme_color2": 0,
     "custom_variable_prefix": "uic",
-    "backup_cnt": 32,
+    "backup_cnt": 33,
     "autosave_cnt": 0,
     "group_color_cnt": 0,
     "lvgl_version": "9.1.0",

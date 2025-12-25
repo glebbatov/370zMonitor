@@ -235,6 +235,7 @@ void resetVehicleData() {
 // Forward declarations for reset functions (defined after variables)
 void resetSmoothingState();
 void resetDemoState();
+void updateTapBoxVisibility();
 void resetUIElements();
 
 //-----------------------------------------------------------------
@@ -596,6 +597,73 @@ void resetUIElements() {
         lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value, LV_OPA_TRANSP, 0);
         lv_obj_set_style_pad_all(ui_OIL_PRESS_Value, 0, 0);
+    }
+
+    // Reset oil temp label styling to default
+    if (ui_OIL_TEMP_Value_P) {
+        lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_P, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_P, 0, 0);
+    }
+    if (ui_OIL_TEMP_Value_C) {
+        lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_C, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_C, 0, 0);
+    }
+
+    // Reset water temp label styling to default
+    if (ui_W_TEMP_Value_H) {
+        lv_obj_set_style_text_color(ui_W_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_W_TEMP_Value_H, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_W_TEMP_Value_H, 0, 0);
+    }
+    if (ui_W_TEMP_Value_C) {
+        lv_obj_set_style_text_color(ui_W_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_W_TEMP_Value_C, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_W_TEMP_Value_C, 0, 0);
+    }
+
+    // Reset trans temp label styling to default
+    if (ui_TRAN_TEMP_Value_H) {
+        lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_H, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_H, 0, 0);
+    }
+    if (ui_TRAN_TEMP_Value_C) {
+        lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_C, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_C, 0, 0);
+    }
+
+    // Reset steer temp label styling to default
+    if (ui_STEER_TEMP_Value_H) {
+        lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_H, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_H, 0, 0);
+    }
+    if (ui_STEER_TEMP_Value_C) {
+        lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_C, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_C, 0, 0);
+    }
+
+    // Reset diff temp label styling to default
+    if (ui_DIFF_TEMP_Value_H) {
+        lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_H, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_H, 0, 0);
+    }
+    if (ui_DIFF_TEMP_Value_C) {
+        lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_C, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_C, 0, 0);
+    }
+
+    // Reset fuel trust label styling to default
+    if (ui_FUEL_TRUST_Value) {
+        lv_obj_set_style_text_color(ui_FUEL_TRUST_Value, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_FUEL_TRUST_Value, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_FUEL_TRUST_Value, 0, 0);
     }
 
     // Hide all critical labels
@@ -1350,7 +1418,6 @@ bool sdDeleteOldestLog() {
 
     char path[40];
     snprintf(path, sizeof(path), "/%s", oldest_name);
-    }
 
 //=================================================================
 // STATUS AND CONTROL FUNCTIONS
@@ -1715,7 +1782,7 @@ static void oil_temp_chart_draw_cb(lv_event_t* e) {
         fill_dsc->color = g_critical_blink_phase ? lv_color_hex(0xFFFFFF) : lv_color_hex(hexRed);
     }
     else {
-        fill_dsc->color = lv_color_hex(hexOrange);
+        fill_dsc->color = lv_color_hex(hexRed);
     }
 }
 
@@ -1738,7 +1805,7 @@ static void generic_temp_chart_draw_cb(lv_event_t* e, int32_t* history, int crit
         fill_dsc->color = g_critical_blink_phase ? lv_color_hex(0xFFFFFF) : lv_color_hex(hexRed);
     }
     else {
-        fill_dsc->color = lv_color_hex(hexOrange);
+        fill_dsc->color = lv_color_hex(hexRed);
     }
 }
 
@@ -1776,7 +1843,7 @@ static void fuel_trust_chart_draw_cb(lv_event_t* e) {
         fill_dsc->color = g_critical_blink_phase ? lv_color_hex(0xFFFFFF) : lv_color_hex(hexRed);
     }
     else {
-        fill_dsc->color = lv_color_hex(hexOrange);
+        fill_dsc->color = lv_color_hex(hexRed);
     }
 }
 
@@ -1800,6 +1867,8 @@ static void updateModeIndicator() {
             lv_obj_set_style_text_color(mode_indicator, lv_color_hex(0x00FF00), 0);
         }
     }
+    // Update tap box visibility based on mode
+    updateTapBoxVisibility();
 }
 
 static void utility_box_single_tap_cb(lv_timer_t* t) {
@@ -1954,6 +2023,12 @@ static void oil_press_tap_cb(lv_event_t* e) {
     saveUnitPreferences();
     smooth_oil_pressure = -1.0f;
     Serial.printf("[UNITS] Pressure -> %s\n", getPressureUnitStr(g_pressure_unit));
+    // Immediately update display (works even with no valid data)
+    if (!g_vehicle_data.oil_pressure_valid && ui_OIL_PRESS_Value) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "--- %s", getPressureUnitStr(g_pressure_unit));
+        lv_label_set_text(ui_OIL_PRESS_Value, buf);
+    }
 }
 
 // Individual temperature tap callbacks
@@ -1963,6 +2038,19 @@ static void oil_temp_tap_cb(lv_event_t* e) {
     saveUnitPreferences();
     smooth_oil_temp_f = -1.0f;
     Serial.printf("[UNITS] Oil Temp -> %s\n", getTempUnitStr(g_oil_temp_unit));
+    // Immediately update display (works even with no valid data)
+    if (!g_vehicle_data.oil_temp_valid) {
+        char buf[32];
+        const char* unit = getTempUnitStr(g_oil_temp_unit);
+        if (ui_OIL_TEMP_Value_P) {
+            snprintf(buf, sizeof(buf), "---°%s [P]", unit);
+            lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
+        }
+        if (ui_OIL_TEMP_Value_C) {
+            snprintf(buf, sizeof(buf), "---°%s [C]", unit);
+            lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
+        }
+    }
 }
 
 static void water_temp_tap_cb(lv_event_t* e) {
@@ -1971,6 +2059,19 @@ static void water_temp_tap_cb(lv_event_t* e) {
     saveUnitPreferences();
     smooth_water_temp_f = -1.0f;
     Serial.printf("[UNITS] Water Temp -> %s\n", getTempUnitStr(g_water_temp_unit));
+    // Immediately update display (works even with no valid data)
+    if (!g_vehicle_data.water_temp_valid) {
+        char buf[32];
+        const char* unit = getTempUnitStr(g_water_temp_unit);
+        if (ui_W_TEMP_Value_H) {
+            snprintf(buf, sizeof(buf), "---°%s [H]", unit);
+            lv_label_set_text(ui_W_TEMP_Value_H, buf);
+        }
+        if (ui_W_TEMP_Value_C) {
+            snprintf(buf, sizeof(buf), "---°%s [C]", unit);
+            lv_label_set_text(ui_W_TEMP_Value_C, buf);
+        }
+    }
 }
 
 static void trans_temp_tap_cb(lv_event_t* e) {
@@ -1979,6 +2080,19 @@ static void trans_temp_tap_cb(lv_event_t* e) {
     saveUnitPreferences();
     smooth_trans_temp_f = -1.0f;
     Serial.printf("[UNITS] Trans Temp -> %s\n", getTempUnitStr(g_trans_temp_unit));
+    // Immediately update display (works even with no valid data)
+    if (!g_vehicle_data.trans_temp_valid) {
+        char buf[32];
+        const char* unit = getTempUnitStr(g_trans_temp_unit);
+        if (ui_TRAN_TEMP_Value_H) {
+            snprintf(buf, sizeof(buf), "---°%s [H]", unit);
+            lv_label_set_text(ui_TRAN_TEMP_Value_H, buf);
+        }
+        if (ui_TRAN_TEMP_Value_C) {
+            snprintf(buf, sizeof(buf), "---°%s [C]", unit);
+            lv_label_set_text(ui_TRAN_TEMP_Value_C, buf);
+        }
+    }
 }
 
 static void steer_temp_tap_cb(lv_event_t* e) {
@@ -1987,6 +2101,19 @@ static void steer_temp_tap_cb(lv_event_t* e) {
     saveUnitPreferences();
     smooth_steer_temp_f = -1.0f;
     Serial.printf("[UNITS] Steer Temp -> %s\n", getTempUnitStr(g_steer_temp_unit));
+    // Immediately update display (works even with no valid data)
+    if (!g_vehicle_data.steer_temp_valid) {
+        char buf[32];
+        const char* unit = getTempUnitStr(g_steer_temp_unit);
+        if (ui_STEER_TEMP_Value_H) {
+            snprintf(buf, sizeof(buf), "---°%s [H]", unit);
+            lv_label_set_text(ui_STEER_TEMP_Value_H, buf);
+        }
+        if (ui_STEER_TEMP_Value_C) {
+            snprintf(buf, sizeof(buf), "---°%s [C]", unit);
+            lv_label_set_text(ui_STEER_TEMP_Value_C, buf);
+        }
+    }
 }
 
 static void diff_temp_tap_cb(lv_event_t* e) {
@@ -1995,6 +2122,19 @@ static void diff_temp_tap_cb(lv_event_t* e) {
     saveUnitPreferences();
     smooth_diff_temp_f = -1.0f;
     Serial.printf("[UNITS] Diff Temp -> %s\n", getTempUnitStr(g_diff_temp_unit));
+    // Immediately update display (works even with no valid data)
+    if (!g_vehicle_data.diff_temp_valid) {
+        char buf[32];
+        const char* unit = getTempUnitStr(g_diff_temp_unit);
+        if (ui_DIFF_TEMP_Value_H) {
+            snprintf(buf, sizeof(buf), "---°%s [H]", unit);
+            lv_label_set_text(ui_DIFF_TEMP_Value_H, buf);
+        }
+        if (ui_DIFF_TEMP_Value_C) {
+            snprintf(buf, sizeof(buf), "---°%s [C]", unit);
+            lv_label_set_text(ui_DIFF_TEMP_Value_C, buf);
+        }
+    }
 }
 
 // Create tap box over a label
@@ -2005,7 +2145,8 @@ lv_obj_t* createTapBox(lv_obj_t* parent, lv_obj_t* anchor, int w, int h, uint32_
     lv_obj_set_size(box, w, h);
     lv_obj_align_to(box, anchor, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(box, lv_color_hex(color), 0);
-    lv_obj_set_style_bg_opa(box, TAP_BOX_OPACITY, 0);
+    // Only show debug colors in demo mode
+    lv_obj_set_style_bg_opa(box, g_demo_mode ? TAP_BOX_OPACITY : LV_OPA_TRANSP, 0);
     lv_obj_set_style_radius(box, 4, 0);
     lv_obj_add_flag(box, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
@@ -2015,7 +2156,17 @@ lv_obj_t* createTapBox(lv_obj_t* parent, lv_obj_t* anchor, int w, int h, uint32_
     return box;
 }
 
-// Setup tap handlers for value labels
+// Update tap box visibility based on demo mode
+void updateTapBoxVisibility() {
+    lv_opa_t opa = g_demo_mode ? TAP_BOX_OPACITY : LV_OPA_TRANSP;
+    if (tap_box_oil_press) lv_obj_set_style_bg_opa(tap_box_oil_press, opa, 0);
+    if (tap_box_oil_temp) lv_obj_set_style_bg_opa(tap_box_oil_temp, opa, 0);
+    if (tap_box_water_temp) lv_obj_set_style_bg_opa(tap_box_water_temp, opa, 0);
+    if (tap_box_trans_temp) lv_obj_set_style_bg_opa(tap_box_trans_temp, opa, 0);
+    if (tap_box_steer_temp) lv_obj_set_style_bg_opa(tap_box_steer_temp, opa, 0);
+    if (tap_box_diff_temp) lv_obj_set_style_bg_opa(tap_box_diff_temp, opa, 0);
+}
+
 void setupUnitTapHandlers() {
     if (ui_OIL_PRESS_Value)
         tap_box_oil_press = createTapBox(ui_Screen1, ui_OIL_PRESS_Value, 80, 40, 0x00FFFF, oil_press_tap_cb);
@@ -2370,11 +2521,47 @@ void updateUI() {
         if (ui_OIL_TEMP_Value_P) {
             snprintf(buf, sizeof(buf), "%d°%s [P]", (int)(temp_pan_disp + 0.5f), oilTempUnit);
             lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
+
+            // Style label based on critical
+            bool value_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
+            static bool oil_temp_was_value_critical = false;
+            if (value_critical != oil_temp_was_value_critical) {
+                if (value_critical) {
+                    lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_color(ui_OIL_TEMP_Value_P, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_P, LV_OPA_COVER, 0);
+                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_P, 4, 0);
+                }
+                else {
+                    lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_P, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_P, 0, 0);
+                }
+                oil_temp_was_value_critical = value_critical;
+            }
         }
 
         if (ui_OIL_TEMP_Value_C) {
             snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), oilTempUnit);
             lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
+
+            // Style label based on critical (uses pan temp for critical check)
+            bool value_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
+            static bool oil_temp_c_was_value_critical = false;
+            if (value_critical != oil_temp_c_was_value_critical) {
+                if (value_critical) {
+                    lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_color(ui_OIL_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_C, LV_OPA_COVER, 0);
+                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_C, 4, 0);
+                }
+                else {
+                    lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_C, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_C, 0, 0);
+                }
+                oil_temp_c_was_value_critical = value_critical;
+            }
         }
 
         bool critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
@@ -2391,10 +2578,46 @@ void updateUI() {
         if (ui_W_TEMP_Value_H) {
             snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), waterTempUnit);
             lv_label_set_text(ui_W_TEMP_Value_H, buf);
+
+            // Style label based on critical
+            bool value_critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
+            static bool water_temp_was_value_critical = false;
+            if (value_critical != water_temp_was_value_critical) {
+                if (value_critical) {
+                    lv_obj_set_style_text_color(ui_W_TEMP_Value_H, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_color(ui_W_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_bg_opa(ui_W_TEMP_Value_H, LV_OPA_COVER, 0);
+                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_H, 4, 0);
+                }
+                else {
+                    lv_obj_set_style_text_color(ui_W_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_bg_opa(ui_W_TEMP_Value_H, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_H, 0, 0);
+                }
+                water_temp_was_value_critical = value_critical;
+            }
         }
         if (ui_W_TEMP_Value_C) {
             snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), waterTempUnit);
             lv_label_set_text(ui_W_TEMP_Value_C, buf);
+
+            // Style label based on critical (uses hot temp for critical check)
+            bool value_critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
+            static bool water_temp_c_was_value_critical = false;
+            if (value_critical != water_temp_c_was_value_critical) {
+                if (value_critical) {
+                    lv_obj_set_style_text_color(ui_W_TEMP_Value_C, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_color(ui_W_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_bg_opa(ui_W_TEMP_Value_C, LV_OPA_COVER, 0);
+                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_C, 4, 0);
+                }
+                else {
+                    lv_obj_set_style_text_color(ui_W_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_bg_opa(ui_W_TEMP_Value_C, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_C, 0, 0);
+                }
+                water_temp_c_was_value_critical = value_critical;
+            }
         }
         if (ui_W_TEMP_Bar) {
             lv_bar_set_value(ui_W_TEMP_Bar, g_vehicle_data.water_temp_hot_f, LV_ANIM_ON);
@@ -2418,10 +2641,46 @@ void updateUI() {
         if (ui_TRAN_TEMP_Value_H) {
             snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), transTempUnit);
             lv_label_set_text(ui_TRAN_TEMP_Value_H, buf);
+
+            // Style label based on critical
+            bool value_critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
+            static bool trans_temp_was_value_critical = false;
+            if (value_critical != trans_temp_was_value_critical) {
+                if (value_critical) {
+                    lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_H, LV_OPA_COVER, 0);
+                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_H, 4, 0);
+                }
+                else {
+                    lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_H, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_H, 0, 0);
+                }
+                trans_temp_was_value_critical = value_critical;
+            }
         }
         if (ui_TRAN_TEMP_Value_C) {
             snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), transTempUnit);
             lv_label_set_text(ui_TRAN_TEMP_Value_C, buf);
+
+            // Style label based on critical (uses hot temp for critical check)
+            bool value_critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
+            static bool trans_temp_c_was_value_critical = false;
+            if (value_critical != trans_temp_c_was_value_critical) {
+                if (value_critical) {
+                    lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_C, LV_OPA_COVER, 0);
+                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_C, 4, 0);
+                }
+                else {
+                    lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_C, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_C, 0, 0);
+                }
+                trans_temp_c_was_value_critical = value_critical;
+            }
         }
         if (ui_TRAN_TEMP_Bar) {
             lv_bar_set_value(ui_TRAN_TEMP_Bar, g_vehicle_data.trans_temp_hot_f, LV_ANIM_ON);
@@ -2445,10 +2704,46 @@ void updateUI() {
         if (ui_STEER_TEMP_Value_H) {
             snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), steerTempUnit);
             lv_label_set_text(ui_STEER_TEMP_Value_H, buf);
+
+            // Style label based on critical
+            bool value_critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
+            static bool steer_temp_was_value_critical = false;
+            if (value_critical != steer_temp_was_value_critical) {
+                if (value_critical) {
+                    lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_color(ui_STEER_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_H, LV_OPA_COVER, 0);
+                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_H, 4, 0);
+                }
+                else {
+                    lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_H, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_H, 0, 0);
+                }
+                steer_temp_was_value_critical = value_critical;
+            }
         }
         if (ui_STEER_TEMP_Value_C) {
             snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), steerTempUnit);
             lv_label_set_text(ui_STEER_TEMP_Value_C, buf);
+
+            // Style label based on critical (uses hot temp for critical check)
+            bool value_critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
+            static bool steer_temp_c_was_value_critical = false;
+            if (value_critical != steer_temp_c_was_value_critical) {
+                if (value_critical) {
+                    lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_color(ui_STEER_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_C, LV_OPA_COVER, 0);
+                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_C, 4, 0);
+                }
+                else {
+                    lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_C, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_C, 0, 0);
+                }
+                steer_temp_c_was_value_critical = value_critical;
+            }
         }
         if (ui_STEER_TEMP_Bar) {
             lv_bar_set_value(ui_STEER_TEMP_Bar, g_vehicle_data.steer_temp_hot_f, LV_ANIM_ON);
@@ -2472,10 +2767,46 @@ void updateUI() {
         if (ui_DIFF_TEMP_Value_H) {
             snprintf(buf, sizeof(buf), "%d°%s [H]", (int)(temp_hot_disp + 0.5f), diffTempUnit);
             lv_label_set_text(ui_DIFF_TEMP_Value_H, buf);
+
+            // Style label based on critical
+            bool value_critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
+            static bool diff_temp_was_value_critical = false;
+            if (value_critical != diff_temp_was_value_critical) {
+                if (value_critical) {
+                    lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_H, LV_OPA_COVER, 0);
+                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_H, 4, 0);
+                }
+                else {
+                    lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_H, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_H, 0, 0);
+                }
+                diff_temp_was_value_critical = value_critical;
+            }
         }
         if (ui_DIFF_TEMP_Value_C) {
             snprintf(buf, sizeof(buf), "%d°%s [C]", (int)(temp_cooled_disp + 0.5f), diffTempUnit);
             lv_label_set_text(ui_DIFF_TEMP_Value_C, buf);
+
+            // Style label based on critical (uses hot temp for critical check)
+            bool value_critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
+            static bool diff_temp_c_was_value_critical = false;
+            if (value_critical != diff_temp_c_was_value_critical) {
+                if (value_critical) {
+                    lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_C, LV_OPA_COVER, 0);
+                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_C, 4, 0);
+                }
+                else {
+                    lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_C, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_C, 0, 0);
+                }
+                diff_temp_c_was_value_critical = value_critical;
+            }
         }
         if (ui_DIFF_TEMP_Bar) {
             lv_bar_set_value(ui_DIFF_TEMP_Bar, g_vehicle_data.diff_temp_hot_f, LV_ANIM_ON);
@@ -2513,6 +2844,24 @@ void updateUI() {
         if (ui_FUEL_TRUST_Value) {
             snprintf(buf, sizeof(buf), "%d %%", fuel);
             lv_label_set_text(ui_FUEL_TRUST_Value, buf);
+
+            // Style label based on critical
+            bool value_critical = (fuel < FUEL_TRUST_ValueCritical);
+            static bool fuel_trust_was_value_critical = false;
+            if (value_critical != fuel_trust_was_value_critical) {
+                if (value_critical) {
+                    lv_obj_set_style_text_color(ui_FUEL_TRUST_Value, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_color(ui_FUEL_TRUST_Value, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_bg_opa(ui_FUEL_TRUST_Value, LV_OPA_COVER, 0);
+                    lv_obj_set_style_pad_all(ui_FUEL_TRUST_Value, 4, 0);
+                }
+                else {
+                    lv_obj_set_style_text_color(ui_FUEL_TRUST_Value, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_bg_opa(ui_FUEL_TRUST_Value, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_pad_all(ui_FUEL_TRUST_Value, 0, 0);
+                }
+                fuel_trust_was_value_critical = value_critical;
+            }
         }
 
         bool critical = (fuel < FUEL_TRUST_ValueCritical);
@@ -2686,7 +3035,7 @@ void initChart(lv_obj_t* chart, lv_chart_series_t** series, int min_val, int max
     lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
     lv_chart_set_div_line_count(chart, 0, 0);
 
-    *series = lv_chart_add_series(chart, lv_color_hex(hexOrange), LV_CHART_AXIS_PRIMARY_Y);
+    *series = lv_chart_add_series(chart, lv_color_hex(hexRed), LV_CHART_AXIS_PRIMARY_Y);
 
     if (draw_cb) {
         lv_obj_add_event_cb(chart, draw_cb, LV_EVENT_DRAW_TASK_ADDED, NULL);
@@ -2941,9 +3290,10 @@ void loop() {
         cpu_busy_time = 0;
         last_status = now;
     }
-    
+
     // Update data and UI
     #if ENABLE_UI_UPDATES
+
     if (now - last_update >= UPDATE_INTERVAL_MS) {
         update_count++;
         
@@ -2959,11 +3309,13 @@ void loop() {
         // Step 4: Log data to SD card
         #if ENABLE_SD_LOGGING
         sdLogData();
-#endif
+            sdLogData();
+        #endif
+
 
         last_update = now;
     }
-#endif
+    #endif
 
     uint32_t t0 = micros();
     lv_timer_handler();

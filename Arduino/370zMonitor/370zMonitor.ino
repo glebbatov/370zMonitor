@@ -43,7 +43,7 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_CHARTS       1   // Enable charts
 #define ENABLE_SD_LOGGING   1   // Enable SD card data logging
 #define ENABLE_USB_MSC      1   // Enable USB Mass Storage mode (hold BOOT at startup)
-#define UPDATE_INTERVAL_MS  200 // Update every 150ms
+#define UPDATE_INTERVAL_MS  250 // Update every 150ms
 
 // USB MSC Configuration
 #define USB_MSC_BOOT_PIN    0   // GPIO0 = BOOT button on most ESP32-S3 boards
@@ -841,22 +841,23 @@ void resetDemoState() {
 // This is (1-cos(x))/2 * 255 for x from 0 to 2*PI, giving smooth "slow at edges" effect
 // Values range 0-255, eliminating expensive floating-point trig operations
 static const uint8_t SINE_TABLE[256] PROGMEM = {
-    0,   0,   1,   1,   2,   3,   4,   5,   6,   8,   9,  11,  13,  15,  17,  19,
-   22,  24,  27,  30,  33,  36,  39,  42,  46,  49,  53,  56,  60,  64,  68,  72,
-   76,  80,  85,  89,  93,  98, 102, 107, 111, 116, 120, 125, 129, 134, 138, 143,
-  147, 152, 156, 160, 165, 169, 173, 177, 181, 185, 189, 193, 197, 201, 204, 208,
-  211, 214, 217, 220, 223, 226, 228, 231, 233, 235, 237, 239, 241, 242, 244, 245,
-  246, 247, 248, 249, 250, 250, 251, 251, 252, 252, 252, 252, 252, 252, 252, 251,
-  251, 250, 250, 249, 248, 247, 246, 245, 244, 242, 241, 239, 237, 235, 233, 231,
-  228, 226, 223, 220, 217, 214, 211, 208, 204, 201, 197, 193, 189, 185, 181, 177,
-  173, 169, 165, 160, 156, 152, 147, 143, 138, 134, 129, 125, 120, 116, 111, 107,
-  102,  98,  93,  89,  85,  80,  76,  72,  68,  64,  60,  56,  53,  49,  46,  42,
-   39,  36,  33,  30,  27,  24,  22,  19,  17,  15,  13,  11,   9,   8,   6,   5,
-    4,   3,   2,   1,   1,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
-    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   1,   1,   2,
-    3,   4,   5,   6,   8,   9,  11,  13,  15,  17,  19,  22,  24,  27,  30,  33,
-   36,  39,  42,  46,  49,  53,  56,  60,  64,  68,  72,  76,  80,  85,  89,  93,
-   98, 102, 107, 111, 116, 120, 125, 129, 134, 138, 143, 147, 152, 156, 160, 165
+    // (1-cos(i*2*PI/256))/2 * 255 - smooth ease-in-ease-out, one complete cycle
+      0,   0,   0,   0,   1,   1,   2,   2,   3,   4,   5,   6,   7,   8,   9,  10,
+     12,  13,  15,  17,  18,  20,  22,  24,  26,  28,  31,  33,  35,  38,  40,  43,
+     45,  48,  51,  54,  57,  60,  63,  66,  69,  72,  76,  79,  82,  86,  89,  93,
+     96, 100, 103, 107, 111, 114, 118, 121, 125, 129, 132, 136, 140, 143, 147, 151,
+    154, 158, 162, 165, 169, 172, 176, 179, 183, 186, 190, 193, 196, 200, 203, 206,
+    209, 212, 215, 218, 221, 223, 226, 229, 231, 234, 236, 238, 241, 243, 245, 247,
+    248, 250, 251, 253, 254, 255, 255, 255, 255, 255, 255, 255, 254, 253, 251, 250,
+    248, 247, 245, 243, 241, 238, 236, 234, 231, 229, 226, 223, 221, 218, 215, 212,
+    209, 206, 203, 200, 196, 193, 190, 186, 183, 179, 176, 172, 169, 165, 162, 158,
+    154, 151, 147, 143, 140, 136, 132, 129, 125, 121, 118, 114, 111, 107, 103, 100,
+     96,  93,  89,  86,  82,  79,  76,  72,  69,  66,  63,  60,  57,  54,  51,  48,
+     45,  43,  40,  38,  35,  33,  31,  28,  26,  24,  22,  20,  18,  17,  15,  13,
+     12,  10,   9,   8,   7,   6,   5,   4,   3,   2,   2,   1,   1,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   1,   1,
+      2,   2,   3,   4,   5,   6,   7,   8,   9,  10,  12,  13,  15,  17,  18,  20
 };
 
 // Fast sine approximation using lookup table - no floating point trig!
@@ -2542,7 +2543,7 @@ void updateUI() {
         // Update bar
         if (ui_OIL_PRESS_Bar) {
             // Bar always uses PSI internally for range
-            lv_bar_set_value(ui_OIL_PRESS_Bar, pressure_psi, LV_ANIM_ON);
+            lv_bar_set_value(ui_OIL_PRESS_Bar, pressure_psi, LV_ANIM_OFF);
             bool critical = isOilPressureCritical();
             lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
@@ -2601,7 +2602,7 @@ void updateUI() {
         }
 
         if (ui_OIL_TEMP_Bar) {
-            lv_bar_set_value(ui_OIL_TEMP_Bar, g_vehicle_data.oil_temp_pan_f, LV_ANIM_ON);
+            lv_bar_set_value(ui_OIL_TEMP_Bar, g_vehicle_data.oil_temp_pan_f, LV_ANIM_OFF);
             bool critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
             lv_obj_set_style_bg_color(ui_OIL_TEMP_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
@@ -2726,7 +2727,7 @@ void updateUI() {
             }
         }
         if (ui_W_TEMP_Bar) {
-            lv_bar_set_value(ui_W_TEMP_Bar, g_vehicle_data.water_temp_hot_f, LV_ANIM_ON);
+            lv_bar_set_value(ui_W_TEMP_Bar, g_vehicle_data.water_temp_hot_f, LV_ANIM_OFF);
             bool critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
             lv_obj_set_style_bg_color(ui_W_TEMP_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
@@ -2797,7 +2798,7 @@ void updateUI() {
             }
         }
         if (ui_TRAN_TEMP_Bar) {
-            lv_bar_set_value(ui_TRAN_TEMP_Bar, g_vehicle_data.trans_temp_hot_f, LV_ANIM_ON);
+            lv_bar_set_value(ui_TRAN_TEMP_Bar, g_vehicle_data.trans_temp_hot_f, LV_ANIM_OFF);
             bool critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
             lv_obj_set_style_bg_color(ui_TRAN_TEMP_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
@@ -2868,7 +2869,7 @@ void updateUI() {
             }
         }
         if (ui_STEER_TEMP_Bar) {
-            lv_bar_set_value(ui_STEER_TEMP_Bar, g_vehicle_data.steer_temp_hot_f, LV_ANIM_ON);
+            lv_bar_set_value(ui_STEER_TEMP_Bar, g_vehicle_data.steer_temp_hot_f, LV_ANIM_OFF);
             bool critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
             lv_obj_set_style_bg_color(ui_STEER_TEMP_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
@@ -2939,7 +2940,7 @@ void updateUI() {
             }
         }
         if (ui_DIFF_TEMP_Bar) {
-            lv_bar_set_value(ui_DIFF_TEMP_Bar, g_vehicle_data.diff_temp_hot_f, LV_ANIM_ON);
+            lv_bar_set_value(ui_DIFF_TEMP_Bar, g_vehicle_data.diff_temp_hot_f, LV_ANIM_OFF);
             bool critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
             lv_obj_set_style_bg_color(ui_DIFF_TEMP_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
@@ -2964,7 +2965,7 @@ void updateUI() {
         int display_fuel = (int)(smooth_fuel_trust + 0.5f);
 
         if (ui_FUEL_TRUST_Bar) {
-            lv_bar_set_value(ui_FUEL_TRUST_Bar, display_fuel, LV_ANIM_ON);
+            lv_bar_set_value(ui_FUEL_TRUST_Bar, display_fuel, LV_ANIM_OFF);
             bool critical = (fuel < FUEL_TRUST_ValueCritical);
             lv_obj_set_style_bg_color(ui_FUEL_TRUST_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
@@ -3553,4 +3554,3 @@ void loop() {
         delay(FRAME_TIME_MS - elapsed);
     }
 }
- 

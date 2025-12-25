@@ -2386,7 +2386,6 @@ void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, 
             lv_obj_set_style_text_opa(label, 255, LV_PART_MAIN);
             lv_obj_set_style_bg_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
             lv_obj_set_style_bg_opa(label, LV_OPA_COVER, LV_PART_MAIN);
-            lv_obj_set_style_pad_all(label, 4, LV_PART_MAIN);
 
             lv_anim_t anim;
             lv_anim_init(&anim);
@@ -2494,7 +2493,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_OIL_PRESS_Value, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_OIL_PRESS_Value, 4, 0);
+                    lv_obj_set_style_pad_all(ui_OIL_PRESS_Value, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0xFFFFFF), 0);
@@ -2543,7 +2542,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_OIL_TEMP_Value_P, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_P, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_P, 4, 0);
+                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_P, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0xFFFFFF), 0);
@@ -2566,7 +2565,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_OIL_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_C, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_C, 4, 0);
+                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_C, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
@@ -2600,7 +2599,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_W_TEMP_Value_H, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_W_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_W_TEMP_Value_H, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_H, 4, 0);
+                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_H, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_W_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
@@ -2622,7 +2621,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_W_TEMP_Value_C, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_W_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_W_TEMP_Value_C, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_C, 4, 0);
+                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_C, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_W_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
@@ -2663,7 +2662,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_H, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_H, 4, 0);
+                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_H, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
@@ -2685,7 +2684,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_C, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_C, 4, 0);
+                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_C, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
@@ -2726,7 +2725,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_STEER_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_H, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_H, 4, 0);
+                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_H, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
@@ -2748,7 +2747,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_STEER_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_C, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_C, 4, 0);
+                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_C, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
@@ -2789,7 +2788,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_H, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_H, 4, 0);
+                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_H, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
@@ -2811,7 +2810,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_C, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_C, 4, 0);
+                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_C, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
@@ -2866,7 +2865,7 @@ void updateUI() {
                     lv_obj_set_style_text_color(ui_FUEL_TRUST_Value, lv_color_hex(0x000000), 0);
                     lv_obj_set_style_bg_color(ui_FUEL_TRUST_Value, lv_color_hex(0xFF0000), 0);
                     lv_obj_set_style_bg_opa(ui_FUEL_TRUST_Value, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_FUEL_TRUST_Value, 4, 0);
+                    lv_obj_set_style_pad_all(ui_FUEL_TRUST_Value, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_FUEL_TRUST_Value, lv_color_hex(0xFFFFFF), 0);

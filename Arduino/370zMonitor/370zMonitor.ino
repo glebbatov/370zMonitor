@@ -15,6 +15,14 @@
  * USB Mass Storage Mode: Hold BOOT button during power-on to enter [press RESET, then BOOT right away] (USB drive mode (SD card accessible via USB-C))
  */
 
+/*
+ * Quick performance points:
+ * UPDATE_INTERVAL_MS
+ * I2C_FREQ_HZ
+ * CHART_BLINK_INTERVAL_MS
+ * LVGL_BUFFER_SIZE
+*/
+
 #include <Arduino_GFX_Library.h>
 #include <Wire.h>
 #include <lvgl.h>
@@ -432,7 +440,7 @@ Arduino_RGB_Display* gfx = new Arduino_RGB_Display(800, 480, rgbpanel, 0, true);
 //-----------------------------------------------------------------
 
 // LVGL
-#define LVGL_BUFFER_SIZE (800 * 69)  // 69 lines - will go to PSRAM | 480 ÷ 7 ≈ 69 lines per strip
+#define LVGL_BUFFER_SIZE (800 * 48)  // 69 lines - will go to PSRAM | 480 ÷ 7 ≈ 69 lines per strip
 static lv_display_t* disp;
 static lv_indev_t* indev;
 static uint8_t* disp_draw_buf1;
@@ -540,7 +548,7 @@ static bool g_chart_has_critical_fuel_trust = false;
 // Critical bar blinking
 static bool g_critical_blink_phase = false;
 static uint32_t g_last_blink_toggle = 0;
-#define CHART_BLINK_INTERVAL_MS 350     // 200 default
+#define CHART_BLINK_INTERVAL_MS 500     // 200 default
 
 // Tap box objects for reliable touch detection
 static lv_obj_t* tap_box_oil_press = NULL;

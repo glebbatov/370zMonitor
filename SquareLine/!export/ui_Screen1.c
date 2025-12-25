@@ -332,8 +332,8 @@ void ui_Screen1_screen_init(void)
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_OIL_PRESS_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
     ui_OIL_PRESS_Value_Tap_Panel = lv_obj_create(ui_OIL_PRESS);
-    lv_obj_set_width(ui_OIL_PRESS_Value_Tap_Panel, 156);
-    lv_obj_set_height(ui_OIL_PRESS_Value_Tap_Panel, 70);
+    lv_obj_set_width(ui_OIL_PRESS_Value_Tap_Panel, 153);
+    lv_obj_set_height(ui_OIL_PRESS_Value_Tap_Panel, 66);
     lv_obj_set_x(ui_OIL_PRESS_Value_Tap_Panel, 325);
     lv_obj_set_y(ui_OIL_PRESS_Value_Tap_Panel, -1);
     lv_obj_set_align(ui_OIL_PRESS_Value_Tap_Panel, LV_ALIGN_CENTER);
@@ -497,8 +497,8 @@ void ui_Screen1_screen_init(void)
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_OIL_TEMP_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
     ui_OIL_TEMP_Value_Tap_Panel = lv_obj_create(ui_OIL_TEMP);
-    lv_obj_set_width(ui_OIL_TEMP_Value_Tap_Panel, 156);
-    lv_obj_set_height(ui_OIL_TEMP_Value_Tap_Panel, 70);
+    lv_obj_set_width(ui_OIL_TEMP_Value_Tap_Panel, 153);
+    lv_obj_set_height(ui_OIL_TEMP_Value_Tap_Panel, 66);
     lv_obj_set_x(ui_OIL_TEMP_Value_Tap_Panel, 325);
     lv_obj_set_y(ui_OIL_TEMP_Value_Tap_Panel, -1);
     lv_obj_set_align(ui_OIL_TEMP_Value_Tap_Panel, LV_ALIGN_CENTER);
@@ -670,8 +670,8 @@ void ui_Screen1_screen_init(void)
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_W_TEMP_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
     ui_W_TEMP_Value_Tap_Panel = lv_obj_create(ui_W_TEMP);
-    lv_obj_set_width(ui_W_TEMP_Value_Tap_Panel, 156);
-    lv_obj_set_height(ui_W_TEMP_Value_Tap_Panel, 70);
+    lv_obj_set_width(ui_W_TEMP_Value_Tap_Panel, 153);
+    lv_obj_set_height(ui_W_TEMP_Value_Tap_Panel, 66);
     lv_obj_set_x(ui_W_TEMP_Value_Tap_Panel, 325);
     lv_obj_set_y(ui_W_TEMP_Value_Tap_Panel, -1);
     lv_obj_set_align(ui_W_TEMP_Value_Tap_Panel, LV_ALIGN_CENTER);
@@ -843,8 +843,8 @@ void ui_Screen1_screen_init(void)
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_TRAN_TEMP_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
     ui_TRAN_TEMP_Value_Tap_Panel = lv_obj_create(ui_TRAN_TEMP);
-    lv_obj_set_width(ui_TRAN_TEMP_Value_Tap_Panel, 156);
-    lv_obj_set_height(ui_TRAN_TEMP_Value_Tap_Panel, 70);
+    lv_obj_set_width(ui_TRAN_TEMP_Value_Tap_Panel, 153);
+    lv_obj_set_height(ui_TRAN_TEMP_Value_Tap_Panel, 66);
     lv_obj_set_x(ui_TRAN_TEMP_Value_Tap_Panel, 325);
     lv_obj_set_y(ui_TRAN_TEMP_Value_Tap_Panel, -1);
     lv_obj_set_align(ui_TRAN_TEMP_Value_Tap_Panel, LV_ALIGN_CENTER);
@@ -1017,8 +1017,8 @@ void ui_Screen1_screen_init(void)
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_STEER_TEMP_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
     ui_STEER_TEMP_Value_Tap_Panel = lv_obj_create(ui_STEER_TEMP);
-    lv_obj_set_width(ui_STEER_TEMP_Value_Tap_Panel, 156);
-    lv_obj_set_height(ui_STEER_TEMP_Value_Tap_Panel, 70);
+    lv_obj_set_width(ui_STEER_TEMP_Value_Tap_Panel, 153);
+    lv_obj_set_height(ui_STEER_TEMP_Value_Tap_Panel, 66);
     lv_obj_set_x(ui_STEER_TEMP_Value_Tap_Panel, 325);
     lv_obj_set_y(ui_STEER_TEMP_Value_Tap_Panel, -1);
     lv_obj_set_align(ui_STEER_TEMP_Value_Tap_Panel, LV_ALIGN_CENTER);
@@ -1192,9 +1192,9 @@ void ui_Screen1_screen_init(void)
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_DIFF_TEMP_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
     ui_DIFF_TEMP_Value_Tap_Panel = lv_obj_create(ui_DIFF_TEMP);
-    lv_obj_set_width(ui_DIFF_TEMP_Value_Tap_Panel, 156);
-    lv_obj_set_height(ui_DIFF_TEMP_Value_Tap_Panel, 70);
-    lv_obj_set_x(ui_DIFF_TEMP_Value_Tap_Panel, 325);
+    lv_obj_set_width(ui_DIFF_TEMP_Value_Tap_Panel, 154);
+    lv_obj_set_height(ui_DIFF_TEMP_Value_Tap_Panel, 66);
+    lv_obj_set_x(ui_DIFF_TEMP_Value_Tap_Panel, 326);
     lv_obj_set_y(ui_DIFF_TEMP_Value_Tap_Panel, -1);
     lv_obj_set_align(ui_DIFF_TEMP_Value_Tap_Panel, LV_ALIGN_CENTER);
     lv_obj_remove_flag(ui_DIFF_TEMP_Value_Tap_Panel, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
@@ -1353,10 +1353,10 @@ void ui_Screen1_screen_init(void)
     //This workaround (an invisible outline) is needed because without it chart overflow-visible doesn't work in LVGL-9.1
     lv_obj_set_style_outline_width(ui_FUEL_TRUST_CHART, -1, LV_PART_MAIN | LV_STATE_DEFAULT);
     ui_FUEL_TRUST_Value_Tap_Panel = lv_obj_create(ui_FUEL_TRUST);
-    lv_obj_set_width(ui_FUEL_TRUST_Value_Tap_Panel, 156);
+    lv_obj_set_width(ui_FUEL_TRUST_Value_Tap_Panel, 155);
     lv_obj_set_height(ui_FUEL_TRUST_Value_Tap_Panel, 70);
     lv_obj_set_x(ui_FUEL_TRUST_Value_Tap_Panel, 325);
-    lv_obj_set_y(ui_FUEL_TRUST_Value_Tap_Panel, -1);
+    lv_obj_set_y(ui_FUEL_TRUST_Value_Tap_Panel, 0);
     lv_obj_set_align(ui_FUEL_TRUST_Value_Tap_Panel, LV_ALIGN_CENTER);
     lv_obj_remove_flag(ui_FUEL_TRUST_Value_Tap_Panel, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
     lv_obj_set_style_radius(ui_FUEL_TRUST_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);

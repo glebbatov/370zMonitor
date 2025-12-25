@@ -440,7 +440,7 @@ Arduino_RGB_Display* gfx = new Arduino_RGB_Display(800, 480, rgbpanel, 0, true);
 //-----------------------------------------------------------------
 
 // LVGL
-#define LVGL_BUFFER_SIZE (800 * 48)  // 69 lines - will go to PSRAM | 480 ÷ 7 ≈ 69 lines per strip
+#define LVGL_BUFFER_SIZE (800 * 69)  // 69 lines - will go to PSRAM | 480 ÷ 7 ≈ 69 lines per strip
 static lv_display_t* disp;
 static lv_indev_t* indev;
 static uint8_t* disp_draw_buf1;
@@ -550,17 +550,15 @@ static bool g_critical_blink_phase = false;
 static uint32_t g_last_blink_toggle = 0;
 #define CHART_BLINK_INTERVAL_MS 500     // 200 default
 
-// Tap box objects for reliable touch detection
-static lv_obj_t* tap_box_oil_press = NULL;
-static lv_obj_t* tap_box_oil_temp = NULL;
-static lv_obj_t* tap_box_water_temp = NULL;
-static lv_obj_t* tap_box_trans_temp = NULL;
-static lv_obj_t* tap_box_steer_temp = NULL;
-static lv_obj_t* tap_box_diff_temp = NULL;
-
-// Debug mode for tap boxes (set to 0 for transparent in production)
-#define TAP_BOX_DEBUG 1  // Set to 0 to hide tap boxes in demo mode
-#define TAP_BOX_OPACITY LV_OPA_COVER  // No expensive transparency - fully visible or invisible
+// Value Tap Panels from SquareLine Studio - used for tap detection AND critical background
+// These are declared in ui_Screen1.h:
+// - ui_OIL_PRESS_Value_Tap_Panel
+// - ui_OIL_TEMP_Value_Tap_Panel  
+// - ui_W_TEMP_Value_Tap_Panel
+// - ui_TRAN_TEMP_Value_Tap_Panel
+// - ui_STEER_TEMP_Value_Tap_Panel
+// - ui_DIFF_TEMP_Value_Tap_Panel
+// - ui_FUEL_TRUST_Value_Tap_Panel
 
 //=================================================================
 // UI RESET FUNCTIONS (defined after all variables are declared)
@@ -1938,7 +1936,7 @@ static void utility_box_single_tap_cb(lv_timer_t* t) {
     g_util_single_tap_timer = NULL;
 
     if (g_brightness_level == 255) {
-        setBrightness(89);
+        setBrightness(90);
     }
     else {
         setBrightness(255);
@@ -2059,24 +2057,9 @@ static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
 
 //-----------------------------------------------------------------
 
-#pragma region Unit Tap Box Callbacks
+#pragma region Unit Tap Panel Callbacks
 
-// Press feedback - show on press (demo mode only)
-static void tap_box_press_cb(lv_event_t* e) {
-    lv_obj_t* box = (lv_obj_t*)lv_event_get_target(e);
-    // Only show visual feedback in demo mode
-    if (g_demo_mode) {
-        lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
-    }
-}
-
-static void tap_box_release_cb(lv_event_t* e) {
-    lv_obj_t* box = (lv_obj_t*)lv_event_get_target(e);
-    // Only show visual feedback in demo mode
-    if (g_demo_mode) {
-        lv_obj_set_style_bg_opa(box, TAP_BOX_OPACITY, 0);
-    }
-}
+// Note: Press/release visual feedback removed - panels now show critical state
 
 // Pressure tap - cycles PSI/Bar/kPa
 static void oil_press_tap_cb(lv_event_t* e) {
@@ -2199,49 +2182,41 @@ static void diff_temp_tap_cb(lv_event_t* e) {
     }
 }
 
-// Create tap box over a label
-lv_obj_t* createTapBox(lv_obj_t* parent, lv_obj_t* anchor, int w, int h, uint32_t color, lv_event_cb_t cb) {
-    if (!parent || !anchor) return NULL;
-    lv_obj_t* box = lv_obj_create(parent);
-    lv_obj_remove_style_all(box);
-    lv_obj_set_size(box, w, h);
-    lv_obj_align_to(box, anchor, LV_ALIGN_TOP_RIGHT, 10, -5);
-    lv_obj_set_style_bg_color(box, lv_color_hex(color), 0);
-    // Only show debug colors in demo mode
-    lv_obj_set_style_bg_opa(box, g_demo_mode ? TAP_BOX_OPACITY : LV_OPA_TRANSP, 0);
-    lv_obj_set_style_radius(box, 4, 0);
-    lv_obj_add_flag(box, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(box, cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(box, tap_box_press_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(box, tap_box_release_cb, LV_EVENT_RELEASED, NULL);
-    return box;
+// Update tap box visibility - panels are always transparent when not critical
+// (critical state is handled in updateUI)
+void updateTapBoxVisibility() {
+    // No-op - panel visibility is now controlled by critical state in updateUI()
 }
 
-// Update tap box visibility based on demo mode
-void updateTapBoxVisibility() {
-    lv_opa_t opa = g_demo_mode ? LV_OPA_20 : LV_OPA_TRANSP;
-    if (tap_box_oil_press) lv_obj_set_style_bg_opa(tap_box_oil_press, opa, 0);
-    if (tap_box_oil_temp) lv_obj_set_style_bg_opa(tap_box_oil_temp, opa, 0);
-    if (tap_box_water_temp) lv_obj_set_style_bg_opa(tap_box_water_temp, opa, 0);
-    if (tap_box_trans_temp) lv_obj_set_style_bg_opa(tap_box_trans_temp, opa, 0);
-    if (tap_box_steer_temp) lv_obj_set_style_bg_opa(tap_box_steer_temp, opa, 0);
-    if (tap_box_diff_temp) lv_obj_set_style_bg_opa(tap_box_diff_temp, opa, 0);
+// Configure a SquareLine panel for tap detection
+void configureTapPanel(lv_obj_t* panel, lv_event_cb_t cb) {
+    if (!panel) return;
+    
+    // Make it clickable
+    lv_obj_add_flag(panel, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Remove any border that might show
+    lv_obj_set_style_border_width(panel, 0, 0);
+    
+    // Background is already red (0xFF0000) from SquareLine, opacity 0
+    // This will be set to LV_OPA_COVER when critical
+    
+    // Add click handler
+    lv_obj_add_event_cb(panel, cb, LV_EVENT_CLICKED, NULL);
 }
 
 void setupUnitTapHandlers() {
-    if (ui_OIL_PRESS_Value)
-        tap_box_oil_press = createTapBox(ui_Screen1, ui_OIL_PRESS_Value, 150, 55, 0x00FFFF, oil_press_tap_cb);  // 150 width, 65 height
-    if (ui_OIL_TEMP_Value_P)
-        tap_box_oil_temp = createTapBox(ui_Screen1, ui_OIL_TEMP_Value_P, 150, 65, 0xFF00FF, oil_temp_tap_cb);
-    if (ui_W_TEMP_Value_H)
-        tap_box_water_temp = createTapBox(ui_Screen1, ui_W_TEMP_Value_H, 150, 65, 0x00FFFF, water_temp_tap_cb);
-    if (ui_TRAN_TEMP_Value_H)
-        tap_box_trans_temp = createTapBox(ui_Screen1, ui_TRAN_TEMP_Value_H, 150, 65, 0xFF00FF, trans_temp_tap_cb);
-    if (ui_STEER_TEMP_Value_H)
-        tap_box_steer_temp = createTapBox(ui_Screen1, ui_STEER_TEMP_Value_H, 150, 65, 0x00FFFF, steer_temp_tap_cb);
-    if (ui_DIFF_TEMP_Value_H)
-        tap_box_diff_temp = createTapBox(ui_Screen1, ui_DIFF_TEMP_Value_H, 150, 65, 0xFF00FF, diff_temp_tap_cb);
+    // Configure the SquareLine-created Value Tap Panels
+    configureTapPanel(ui_OIL_PRESS_Value_Tap_Panel, oil_press_tap_cb);
+    configureTapPanel(ui_OIL_TEMP_Value_Tap_Panel, oil_temp_tap_cb);
+    configureTapPanel(ui_W_TEMP_Value_Tap_Panel, water_temp_tap_cb);
+    configureTapPanel(ui_TRAN_TEMP_Value_Tap_Panel, trans_temp_tap_cb);
+    configureTapPanel(ui_STEER_TEMP_Value_Tap_Panel, steer_temp_tap_cb);
+    configureTapPanel(ui_DIFF_TEMP_Value_Tap_Panel, diff_temp_tap_cb);
+    // Note: FUEL_TRUST doesn't have a tap handler (no unit conversion)
+    
+    Serial.println("[UI] Value Tap Panels configured");
 }
 
 #pragma endregion Unit Tap Box Callbacks
@@ -2572,20 +2547,23 @@ void updateUI() {
             lv_label_set_text(ui_OIL_PRESS_Value, buf);
             last_oil_press_display = display_val;
 
-            // Style label based on critical
+            // Style label text color based on critical
             bool value_critical = isOilPressureCritical();
             static bool was_value_critical = false;
             if (value_critical != was_value_critical) {
                 if (value_critical) {
+                    // Critical: black text, panel shows red background
                     lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_OIL_PRESS_Value, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_OIL_PRESS_Value, 0, 0);
+                    if (ui_OIL_PRESS_Value_Tap_Panel) {
+                        lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value_Tap_Panel, LV_OPA_COVER, 0);
+                    }
                 }
                 else {
+                    // Normal: white text, panel transparent
                     lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_OIL_PRESS_Value, 0, 0);
+                    if (ui_OIL_PRESS_Value_Tap_Panel) {
+                        lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+                    }
                 }
                 was_value_critical = value_critical;
             }
@@ -2625,20 +2603,15 @@ void updateUI() {
                 last_oil_temp_pan_display = pan_display_val;
             }
 
-            // Style label based on critical
+            // Style label text color based on critical
             bool value_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
             static bool oil_temp_was_value_critical = false;
             if (value_critical != oil_temp_was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_OIL_TEMP_Value_P, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_P, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_P, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_P, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_P, 0, 0);
                 }
                 oil_temp_was_value_critical = value_critical;
             }
@@ -2652,23 +2625,29 @@ void updateUI() {
                 last_oil_temp_cooled_display = cooled_display_val;
             }
 
-            // Style label based on critical (uses pan temp for critical check)
+            // Style label text color based on critical
             bool value_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
             static bool oil_temp_c_was_value_critical = false;
             if (value_critical != oil_temp_c_was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_OIL_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_C, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_C, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_C, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_C, 0, 0);
                 }
                 oil_temp_c_was_value_critical = value_critical;
             }
+        }
+
+        // Panel background for critical state (covers both P and C labels)
+        bool oil_temp_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
+        static bool oil_temp_panel_was_critical = false;
+        if (oil_temp_critical != oil_temp_panel_was_critical) {
+            if (ui_OIL_TEMP_Value_Tap_Panel) {
+                lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_Tap_Panel, 
+                    oil_temp_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            }
+            oil_temp_panel_was_critical = oil_temp_critical;
         }
 
         bool critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
@@ -2690,20 +2669,15 @@ void updateUI() {
                 last_water_temp_hot_display = hot_display_val;
             }
 
-            // Style label based on critical
+            // Style label text color based on critical
             bool value_critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
             static bool water_temp_was_value_critical = false;
             if (value_critical != water_temp_was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_W_TEMP_Value_H, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_W_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_W_TEMP_Value_H, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_H, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_W_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_W_TEMP_Value_H, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_H, 0, 0);
                 }
                 water_temp_was_value_critical = value_critical;
             }
@@ -2716,23 +2690,29 @@ void updateUI() {
                 last_water_temp_cooled_display = cooled_display_val;
             }
 
-            // Style label based on critical (uses hot temp for critical check)
+            // Style label text color based on critical
             bool value_critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
             static bool water_temp_c_was_value_critical = false;
             if (value_critical != water_temp_c_was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_W_TEMP_Value_C, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_W_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_W_TEMP_Value_C, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_C, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_W_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_W_TEMP_Value_C, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_W_TEMP_Value_C, 0, 0);
                 }
                 water_temp_c_was_value_critical = value_critical;
             }
+        }
+
+        // Panel background for critical state
+        bool water_temp_critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
+        static bool water_temp_panel_was_critical = false;
+        if (water_temp_critical != water_temp_panel_was_critical) {
+            if (ui_W_TEMP_Value_Tap_Panel) {
+                lv_obj_set_style_bg_opa(ui_W_TEMP_Value_Tap_Panel,
+                    water_temp_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            }
+            water_temp_panel_was_critical = water_temp_critical;
         }
         if (ui_W_TEMP_Bar) {
             lv_bar_set_value(ui_W_TEMP_Bar, g_vehicle_data.water_temp_hot_f, LV_ANIM_OFF);
@@ -2761,20 +2741,15 @@ void updateUI() {
                 last_trans_temp_hot_display = hot_display_val;
             }
 
-            // Style label based on critical
+            // Style label text color based on critical
             bool value_critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
             static bool trans_temp_was_value_critical = false;
             if (value_critical != trans_temp_was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_H, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_H, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_H, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_H, 0, 0);
                 }
                 trans_temp_was_value_critical = value_critical;
             }
@@ -2787,23 +2762,29 @@ void updateUI() {
                 last_trans_temp_cooled_display = cooled_display_val;
             }
 
-            // Style label based on critical (uses hot temp for critical check)
+            // Style label text color based on critical
             bool value_critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
             static bool trans_temp_c_was_value_critical = false;
             if (value_critical != trans_temp_c_was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_C, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_C, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_C, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_C, 0, 0);
                 }
                 trans_temp_c_was_value_critical = value_critical;
             }
+        }
+
+        // Panel background for critical state
+        bool trans_temp_critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
+        static bool trans_temp_panel_was_critical = false;
+        if (trans_temp_critical != trans_temp_panel_was_critical) {
+            if (ui_TRAN_TEMP_Value_Tap_Panel) {
+                lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_Tap_Panel,
+                    trans_temp_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            }
+            trans_temp_panel_was_critical = trans_temp_critical;
         }
         if (ui_TRAN_TEMP_Bar) {
             lv_bar_set_value(ui_TRAN_TEMP_Bar, g_vehicle_data.trans_temp_hot_f, LV_ANIM_OFF);
@@ -2832,20 +2813,15 @@ void updateUI() {
                 last_steer_temp_hot_display = hot_display_val;
             }
 
-            // Style label based on critical
+            // Style label text color based on critical
             bool value_critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
             static bool steer_temp_was_value_critical = false;
             if (value_critical != steer_temp_was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_STEER_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_H, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_H, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_H, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_H, 0, 0);
                 }
                 steer_temp_was_value_critical = value_critical;
             }
@@ -2858,23 +2834,29 @@ void updateUI() {
                 last_steer_temp_cooled_display = cooled_display_val;
             }
 
-            // Style label based on critical (uses hot temp for critical check)
+            // Style label text color based on critical
             bool value_critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
             static bool steer_temp_c_was_value_critical = false;
             if (value_critical != steer_temp_c_was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_STEER_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_C, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_C, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_C, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_C, 0, 0);
                 }
                 steer_temp_c_was_value_critical = value_critical;
             }
+        }
+
+        // Panel background for critical state
+        bool steer_temp_critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
+        static bool steer_temp_panel_was_critical = false;
+        if (steer_temp_critical != steer_temp_panel_was_critical) {
+            if (ui_STEER_TEMP_Value_Tap_Panel) {
+                lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_Tap_Panel,
+                    steer_temp_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            }
+            steer_temp_panel_was_critical = steer_temp_critical;
         }
         if (ui_STEER_TEMP_Bar) {
             lv_bar_set_value(ui_STEER_TEMP_Bar, g_vehicle_data.steer_temp_hot_f, LV_ANIM_OFF);
@@ -2903,20 +2885,15 @@ void updateUI() {
                 last_diff_temp_hot_display = hot_display_val;
             }
 
-            // Style label based on critical
+            // Style label text color based on critical
             bool value_critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
             static bool diff_temp_was_value_critical = false;
             if (value_critical != diff_temp_was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_H, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_H, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_H, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_H, 0, 0);
                 }
                 diff_temp_was_value_critical = value_critical;
             }
@@ -2929,23 +2906,29 @@ void updateUI() {
                 last_diff_temp_cooled_display = cooled_display_val;
             }
 
-            // Style label based on critical (uses hot temp for critical check)
+            // Style label text color based on critical
             bool value_critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
             static bool diff_temp_c_was_value_critical = false;
             if (value_critical != diff_temp_c_was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_C, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_C, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_C, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_C, 0, 0);
                 }
                 diff_temp_c_was_value_critical = value_critical;
             }
+        }
+
+        // Panel background for critical state
+        bool diff_temp_critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
+        static bool diff_temp_panel_was_critical = false;
+        if (diff_temp_critical != diff_temp_panel_was_critical) {
+            if (ui_DIFF_TEMP_Value_Tap_Panel) {
+                lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_Tap_Panel,
+                    diff_temp_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            }
+            diff_temp_panel_was_critical = diff_temp_critical;
         }
         if (ui_DIFF_TEMP_Bar) {
             lv_bar_set_value(ui_DIFF_TEMP_Bar, g_vehicle_data.diff_temp_hot_f, LV_ANIM_OFF);
@@ -2987,23 +2970,29 @@ void updateUI() {
                 last_fuel_trust_display = display_fuel;
             }
 
-            // Style label based on critical
+            // Style label text color based on critical
             bool value_critical = (fuel < FUEL_TRUST_ValueCritical);
             static bool fuel_trust_was_value_critical = false;
             if (value_critical != fuel_trust_was_value_critical) {
                 if (value_critical) {
                     lv_obj_set_style_text_color(ui_FUEL_TRUST_Value, lv_color_hex(0x000000), 0);
-                    lv_obj_set_style_bg_color(ui_FUEL_TRUST_Value, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_bg_opa(ui_FUEL_TRUST_Value, LV_OPA_COVER, 0);
-                    lv_obj_set_style_pad_all(ui_FUEL_TRUST_Value, 0, 0);
                 }
                 else {
                     lv_obj_set_style_text_color(ui_FUEL_TRUST_Value, lv_color_hex(0xFFFFFF), 0);
-                    lv_obj_set_style_bg_opa(ui_FUEL_TRUST_Value, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_pad_all(ui_FUEL_TRUST_Value, 0, 0);
                 }
                 fuel_trust_was_value_critical = value_critical;
             }
+        }
+
+        // Panel background for critical state
+        bool fuel_critical = (fuel < FUEL_TRUST_ValueCritical);
+        static bool fuel_panel_was_critical = false;
+        if (fuel_critical != fuel_panel_was_critical) {
+            if (ui_FUEL_TRUST_Value_Tap_Panel) {
+                lv_obj_set_style_bg_opa(ui_FUEL_TRUST_Value_Tap_Panel,
+                    fuel_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            }
+            fuel_panel_was_critical = fuel_critical;
         }
 
         bool critical = (fuel < FUEL_TRUST_ValueCritical);

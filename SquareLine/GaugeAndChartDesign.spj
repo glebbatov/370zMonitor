@@ -2598,8 +2598,8 @@
                         "flags": 17,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          156,
-                          70
+                          153,
+                          66
                         ],
                         "InheritedType": 7
                       },
@@ -4344,8 +4344,8 @@
                         "flags": 17,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          156,
-                          70
+                          153,
+                          66
                         ],
                         "InheritedType": 7
                       },
@@ -6234,8 +6234,8 @@
                         "flags": 17,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          156,
-                          70
+                          153,
+                          66
                         ],
                         "InheritedType": 7
                       },
@@ -8123,8 +8123,8 @@
                         "flags": 17,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          156,
-                          70
+                          153,
+                          66
                         ],
                         "InheritedType": 7
                       },
@@ -10012,8 +10012,8 @@
                         "flags": 17,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          156,
-                          70
+                          153,
+                          66
                         ],
                         "InheritedType": 7
                       },
@@ -11891,7 +11891,7 @@
                         "flags": 17,
                         "strtype": "OBJECT/Position",
                         "intarray": [
-                          325,
+                          326,
                           -1
                         ],
                         "InheritedType": 7
@@ -11901,8 +11901,8 @@
                         "flags": 17,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          156,
-                          70
+                          154,
+                          66
                         ],
                         "InheritedType": 7
                       },
@@ -13603,7 +13603,7 @@
                         "strtype": "OBJECT/Position",
                         "intarray": [
                           325,
-                          -1
+                          0
                         ],
                         "InheritedType": 7
                       },
@@ -13612,7 +13612,7 @@
                         "flags": 17,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          156,
+                          155,
                           70
                         ],
                         "InheritedType": 7
@@ -14503,7 +14503,7 @@
     "theme_color1": 5,
     "theme_color2": 0,
     "custom_variable_prefix": "uic",
-    "backup_cnt": 33,
+    "backup_cnt": 37,
     "autosave_cnt": 0,
     "group_color_cnt": 0,
     "lvgl_version": "9.1.0",

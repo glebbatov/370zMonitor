@@ -469,8 +469,9 @@ static volatile uint32_t g_idle_count_core1 = 0;
 static uint32_t g_last_idle0 = 0, g_last_idle1 = 0;
 
 // Idle hooks - called when each core is idle
-static bool idle_hook_core0() { g_idle_count_core0++; return true; }
-static bool idle_hook_core1() { g_idle_count_core1++; return true; }
+// Idle hooks - called when each core is idle (must return false to allow normal idle processing)
+static bool idle_hook_core0() { g_idle_count_core0++; return false; }
+static bool idle_hook_core1() { g_idle_count_core1++; return false; }
 
 // Long press tracking for demo mode toggle
 static uint32_t g_utility_press_start = 0;
@@ -1483,10 +1484,10 @@ void sdGetStatusString(char* buf, size_t buf_size) {
         // Show KB written
         uint32_t kb = g_sd_state.bytes_written / 1024;
         if (kb < 1000) {
-            snprintf(buf, buf_size, "SD:%luK", kb);
+            snprintf(buf, buf_size, "%luK", kb);
         }
         else {
-            snprintf(buf, buf_size, "SD:%luM", kb / 1024);
+            snprintf(buf, buf_size, "%luM", kb / 1024);
         }
     }
 }
@@ -1992,16 +1993,15 @@ static void checkUtilityLongPress() {
 
 static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
     if (utility_label) {
-        char buf[64];
+        char buf[80];
         int bri_percent = (g_brightness_level * 100) / 255;
 
 #if ENABLE_SD_LOGGING
         char sd_status[16];
         sdGetStatusString(sd_status, sizeof(sd_status));
-
-        snprintf(buf, sizeof(buf), "%3d FPS\n%3d%%/%3d%%\n%3d%% BRI\n%s", fps, cpu0_percent, cpu1_percent, bri_percent, sd_status);
+        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nBRI:  %3d%%\nSD:   %s", fps, cpu0_percent, cpu1_percent, bri_percent, sd_status);
 #else
-        snprintf(buf, sizeof(buf), "%3d FPS\n%3d%%/%3d%%\n%3d%% BRI", fps, cpu0_percent, cpu1_percent, bri_percent);
+        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nBRI:  %3d%%", fps, cpu0_percent, cpu1_percent, bri_percent);
 #endif
 
         lv_label_set_text(utility_label, buf);
@@ -3190,9 +3190,9 @@ void setup() {
     if (ui_Screen1) {
         utility_box = lv_obj_create(ui_Screen1);
 #if ENABLE_SD_LOGGING
-        lv_obj_set_size(utility_box, 105, 105);
+        lv_obj_set_size(utility_box, 200, 120);  // Height for 5 lines: FPS, CPU1, CPU2, BRI, SD
 #else
-        lv_obj_set_size(utility_box, 105, 85);
+        lv_obj_set_size(utility_box, 200, 100);  // Height for 4 lines: FPS, CPU1, CPU2, BRI
 #endif
         lv_obj_align(utility_box, LV_ALIGN_TOP_LEFT, 5, 5);
         lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x444444), 0);
@@ -3216,18 +3216,20 @@ void setup() {
 
         // FPS/CPU/BRI/SD label
         utility_label = lv_label_create(utility_box);
-#if ENABLE_SD_LOGGING
-        lv_label_set_text(utility_label, "--- FPS\n---%/---% CPU\n---% BRI\nSD: ---");
-#else
-        lv_label_set_text(utility_label, "--- FPS\n---%/---% CPU\n---% BRI");
-#endif
+
+        #if ENABLE_SD_LOGGING
+        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nBRI:   ---%\nSD:    ---");
+        #else
+        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nBRI:   ---%");
+        #endif
+
         lv_obj_set_style_text_color(utility_label, lv_color_hex(0xffff00), 0);
-        lv_obj_set_style_text_font(utility_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(utility_label, &lv_font_unscii_16, 0);
         lv_obj_align(utility_label, LV_ALIGN_TOP_LEFT, 0, 0);
 
         // Mode indicator (DEMO/LIVE)
         mode_indicator = lv_label_create(utility_box);
-        lv_obj_set_style_text_font(mode_indicator, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(mode_indicator, &lv_font_unscii_16, 0);
         lv_obj_align(mode_indicator, LV_ALIGN_BOTTOM_LEFT, 0, 0);
         updateModeIndicator();
 
@@ -3303,10 +3305,14 @@ void loop() {
         g_last_idle0 = g_idle_count_core0;
         g_last_idle1 = g_idle_count_core1;
 
-        // More idle calls = less busy. Calibrate MAX based on your observed idle counts.
-        const uint32_t MAX_IDLE_PER_SEC = 1500000;  // Adjust if needed
-        int cpu0_percent = 100 - ((delta0 * 100) / MAX_IDLE_PER_SEC);
-        int cpu1_percent = 100 - ((delta1 * 100) / MAX_IDLE_PER_SEC);
+        // More idle calls = less busy. Use dynamic calibration based on max observed.
+        // Typical idle counts are ~300k-800k per second per core when mostly idle
+        static uint32_t max_idle0 = 500000, max_idle1 = 500000;
+        if (delta0 > max_idle0) max_idle0 = delta0;
+        if (delta1 > max_idle1) max_idle1 = delta1;
+
+        int cpu0_percent = (max_idle0 > 0) ? (100 - ((delta0 * 100) / max_idle0)) : 0;
+        int cpu1_percent = (max_idle1 > 0) ? (100 - ((delta1 * 100) / max_idle1)) : 0;
         if (cpu0_percent < 0) cpu0_percent = 0;
         if (cpu1_percent < 0) cpu1_percent = 0;
         if (cpu0_percent > 100) cpu0_percent = 100;
@@ -3314,17 +3320,16 @@ void loop() {
 
         update_utility_label(flush_count, cpu0_percent, cpu1_percent);
 
-        Serial.printf("[STATUS] loops=%u flushes=%u cpu=%u%% heap=%u psram=%u mode=%s\n",
-            loop_count, flush_count, (cpu_busy_time * 100) / 1000,
-            ESP.getFreeHeap(), ESP.getFreePsram(),
-            g_demo_mode ? "DEMO" : "LIVE");
+        Serial.printf("[STATUS] fps=%u cpu0=%d%% cpu1=%d%% idle0=%u idle1=%u heap=%u mode=%s\n",
+            flush_count, cpu0_percent, cpu1_percent, delta0, delta1,
+            ESP.getFreeHeap(), g_demo_mode ? "DEMO" : "LIVE");
         flush_count = 0;
         cpu_busy_time = 0;
         last_status = now;
     }
 
     // Update data and UI
-    #if ENABLE_UI_UPDATES
+#if ENABLE_UI_UPDATES
 
     if (now - last_update >= UPDATE_INTERVAL_MS) {
         update_count++;
@@ -3339,16 +3344,16 @@ void loop() {
         updateCharts();
 
         // Step 4: Log data to SD card
-        #if ENABLE_SD_LOGGING
+#if ENABLE_SD_LOGGING
 
         sdLogData();
 
-        #endif
+#endif
 
 
         last_update = now;
     }
-    #endif
+#endif
 
     uint32_t t0 = micros();
     lv_timer_handler();

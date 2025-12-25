@@ -460,7 +460,7 @@ static lv_obj_t* g_dim_overlay = NULL;
 static lv_timer_t* g_util_single_tap_timer = NULL;
 static lv_obj_t* utility_label = NULL;
 static lv_obj_t* mode_indicator = NULL;  // Shows "DEMO" or "LIVE"
-static bool utilities_visible = true;
+static bool utilities_visible = false;  // Start hidden, double-tap to reveal
 
 // Long press tracking for demo mode toggle
 static uint32_t g_utility_press_start = 0;
@@ -531,8 +531,8 @@ static lv_obj_t* tap_box_steer_temp = NULL;
 static lv_obj_t* tap_box_diff_temp = NULL;
 
 // Debug mode for tap boxes (set to 0 for transparent in production)
-#define TAP_BOX_DEBUG 1  // Set to 0 to hide tap boxes
-#define TAP_BOX_OPACITY (TAP_BOX_DEBUG ? LV_OPA_30 : LV_OPA_TRANSP)
+#define TAP_BOX_DEBUG 1  // Set to 0 to hide tap boxes in demo mode
+#define TAP_BOX_OPACITY LV_OPA_COVER  // No expensive transparency - fully visible or invisible
 
 //=================================================================
 // UI RESET FUNCTIONS (defined after all variables are declared)
@@ -943,7 +943,7 @@ void initOBD() {
     // - Configure MCP2515 or ESP32's built-in CAN controller
     // - Set baud rate (typically 500kbps for OBD-II)
     // - Set up message filters for relevant PIDs
-    
+
     Serial.println("[OBD] OBD initialization - NOT IMPLEMENTED");
 }
 
@@ -956,7 +956,7 @@ void updateOBDData() {
     //     g_vehicle_data.rpm = parseRPM(rpm_data);
     //     g_vehicle_data.rpm_valid = true;
     // }
-    
+
     // For now, mark OBD data as invalid
     g_vehicle_data.rpm_valid = false;
 }
@@ -1004,7 +1004,7 @@ static struct {
     uint32_t boot_count;        // Persisted boot counter
     uint64_t total_bytes;       // Total card size
     uint64_t used_bytes;        // Used space
-} g_sd_state = {0};
+} g_sd_state = { 0 };
 
 // Forward declarations
 bool sdInit();
@@ -1022,12 +1022,12 @@ bool sdDetectRTC();
 // Initialize SD card
 bool sdInit() {
     Serial.println("[SD] Initializing SD card...");
-    
+
     // CRITICAL: The Waveshare ESP32-S3 7" Touch LCD uses:
     // - GPIO10 for display Blue channel B7 - DO NOT TOUCH!
     // - IO expander bit 4 (EXIO_SD_CS) for SD card chip select
     // - SPI pins: SCK=12, MISO=13, MOSI=11
-    
+
     // Deselect SD card CS via IO expander (set high)
     if (g_ioexp_ok) {
         exio_set(EXIO_SD_CS, true);  // CS high = deselected
@@ -1037,22 +1037,22 @@ bool sdInit() {
         Serial.println("[SD] ERROR: IO expander not available for CS control!");
         return false;
     }
-    
+
     // Configure SPI for SD card - DO NOT include CS pin!
     // Using HSPI peripheral on ESP32-S3
     SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN);  // No CS pin - we control it via IO expander
-    
+
     // Select SD card via IO expander for initialization
     exio_set(EXIO_SD_CS, false);  // CS low = selected
     delay(10);
-    
+
     // Initialize SD card with software CS control
     // The actual CS is controlled via IO expander (EXIO_SD_CS)
     // We need to pass SOME pin to SD.begin() - use GPIO15 as dummy
     // (GPIO6 might be used by flash on some ESP32-S3 variants)
     pinMode(15, OUTPUT);
     digitalWrite(15, HIGH);  // Keep dummy CS high (deselected)
-    
+
     if (!SD.begin(15, SPI, SD_SPI_FREQ)) {
         Serial.println("[SD] Card mount failed!");
         exio_set(EXIO_SD_CS, true);  // Deselect on failure
@@ -1060,7 +1060,7 @@ bool sdInit() {
         g_sd_state.card_present = false;
         return false;
     }
-    
+
     // Check card type
     uint8_t cardType = SD.cardType();
     if (cardType == CARD_NONE) {
@@ -1113,15 +1113,15 @@ bool sdStartSession() {
     if (!g_sd_state.initialized || !g_sd_state.card_present) {
         return false;
     }
-    
+
     // Check space before starting
     if (!sdCheckAndManageSpace()) {
         return false;
     }
-    
+
     // Generate filename
     sdGenerateFilename();
-    
+
     // Open file for APPEND (safer than WRITE for corruption prevention)
     g_sd_state.data_file = SD.open(g_sd_state.current_filename, FILE_APPEND);
     if (!g_sd_state.data_file) {
@@ -1159,7 +1159,7 @@ bool sdStartSession() {
 
     g_sd_state.bytes_written += written;
     sdSafeFlush();  // Immediate flush after header
-    
+
     Serial.printf("[SD] Session started: %s\n", g_sd_state.current_filename);
     return true;
 }
@@ -1167,10 +1167,10 @@ bool sdStartSession() {
 // End current logging session
 void sdEndSession() {
     if (!g_sd_state.file_open) return;
-    
+
     // Final flush and sync
     sdSafeFlush();
-    
+
     // Close file
     g_sd_state.data_file.close();
     g_sd_state.file_open = false;
@@ -1197,11 +1197,11 @@ void sdLogData() {
     if (!g_sd_state.file_open || !g_sd_state.logging_enabled) return;
 
     uint32_t now = millis();
-    
+
     // Check if it's time to write
     if ((now - g_sd_state.last_write_ms) < SD_WRITE_INTERVAL_MS) return;
     g_sd_state.last_write_ms = now;
-    
+
     // Periodic space check (every 60 writes = ~1 minute at 1Hz)
     if (g_sd_state.write_count % 60 == 0 && g_sd_state.write_count > 0) {
         if (!sdCheckAndManageSpace()) {
@@ -1209,11 +1209,11 @@ void sdLogData() {
             return;
         }
     }
-    
+
     // Calculate elapsed time and CPU load
     float elapsed_s = (float)(now - g_sd_state.session_start_ms) / 1000.0f;
     float cpu_pct = getCpuLoadPercent();
-    
+
     // Format and write data line directly (no buffering for safety)
     char line[256];
     int len = snprintf(line, sizeof(line),
@@ -1236,7 +1236,7 @@ void sdLogData() {
         g_vehicle_data.fuel_trust_percent, g_vehicle_data.fuel_trust_valid ? 1 : 0,
         g_vehicle_data.rpm, g_vehicle_data.rpm_valid ? 1 : 0
     );
-    
+
     // Write with retry
     bool success = false;
     for (int retry = 0; retry < SD_MAX_RETRIES && !success; retry++) {
@@ -1245,7 +1245,7 @@ void sdLogData() {
             g_sd_state.bytes_written += written;
             g_sd_state.write_count++;
             success = true;
-            
+
             // IMMEDIATE FLUSH after every write for corruption safety
             sdSafeFlush();
         }
@@ -1273,7 +1273,7 @@ bool sdTestWrite() {
 
     testFile.println("timestamp_ms,cpu_percent,test_value");
     testFile.flush();
-    
+
     // Write 10 test entries with flush after each
     uint32_t start = millis();
     for (int i = 0; i < 10; i++) {
@@ -1303,8 +1303,8 @@ uint32_t sdReadBootCount() {
     if (!f) {
         return 0;  // First boot or file missing
     }
-    
-    char buf[16] = {0};
+
+    char buf[16] = { 0 };
     f.readBytes(buf, sizeof(buf) - 1);
     f.close();
 
@@ -1317,7 +1317,7 @@ void sdWriteBootCount(uint32_t count) {
         Serial.println("[SD] Warning: Could not write boot count");
         return;
     }
-    
+
     f.printf("%lu", count);
     f.flush();
     f.close();
@@ -1346,7 +1346,7 @@ bool sdDetectRTC() {
 // Check if enough free space, delete old files if needed
 bool sdCheckAndManageSpace() {
     if (!g_sd_state.initialized) return false;
-    
+
     // Update space tracking
     g_sd_state.total_bytes = SD.totalBytes();
     g_sd_state.used_bytes = SD.usedBytes();
@@ -1369,7 +1369,8 @@ bool sdCheckAndManageSpace() {
             // Refresh space calculation
             g_sd_state.used_bytes = SD.usedBytes();
             free_bytes = g_sd_state.total_bytes - g_sd_state.used_bytes;
-        } else {
+        }
+        else {
             break;  // No more files to delete
         }
     }
@@ -1419,12 +1420,11 @@ bool sdDeleteOldestLog() {
     char path[40];
     snprintf(path, sizeof(path), "/%s", oldest_name);
 
+    //=================================================================
+    // STATUS AND CONTROL FUNCTIONS
+    //=================================================================
     return SD.remove(path);
 }
-
-//=================================================================
-// STATUS AND CONTROL FUNCTIONS
-//=================================================================
 
 // Pause SD logging (keeps file open)
 void sdPauseLogging() {
@@ -1468,7 +1468,8 @@ void sdGetStatusString(char* buf, size_t buf_size) {
     }
     else if (g_sd_state.error_count > 0) {
         snprintf(buf, buf_size, "SD:E%lu", g_sd_state.error_count);
-    } else {
+    }
+    else {
         // Show KB written
         uint32_t kb = g_sd_state.bytes_written / 1024;
         if (kb < 1000) {
@@ -1510,13 +1511,13 @@ static uint8_t g_sd_pdrv = 0xFF;  // physical drive number (0xFF means “not re
 // USB MSC callbacks
 static int32_t onMscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
     if (g_sd_pdrv == 0xFF) return -1;
-    
+
     // Reject partial-sector requests (offset must be 0)
     if (offset != 0) return -1;
 
     uint32_t sectors = bufsize / g_sd_sector_size;
     if (sectors == 0) sectors = 1;
-    
+
     // Read sectors one at a time
     for (uint32_t i = 0; i < sectors; i++) {
         if (!sd_read_raw(g_sd_pdrv, (uint8_t*)buffer + (i * 512), lba + i)) {
@@ -1528,13 +1529,13 @@ static int32_t onMscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t b
 
 static int32_t onMscWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
     if (g_sd_pdrv == 0xFF) return -1;
-    
+
     // Reject partial-sector requests (offset must be 0)
     if (offset != 0) return -1;
 
     uint32_t sectors = bufsize / g_sd_sector_size;
     if (sectors == 0) sectors = 1;
-    
+
     // Write sectors one at a time
     for (uint32_t i = 0; i < sectors; i++) {
         if (!sd_write_raw(g_sd_pdrv, buffer + (i * 512), lba + i)) {
@@ -1554,7 +1555,7 @@ bool checkUSBMSCMode() {
     // BOOT button is active LOW (pressed = LOW)
     pinMode(USB_MSC_BOOT_PIN, INPUT_PULLUP);
     delay(50);  // Short debounce
-    
+
     // Check multiple times for reliability
     int pressed = 0;
     for (int i = 0; i < 10; i++) {
@@ -1584,22 +1585,22 @@ void runUSBMSCMode() {
     // VISUAL FEEDBACK - Initialize display to show USB MSC mode
     // Serial won't work when USB is in MSC mode!
     // =========================================================
-    
+
     // Initialize I2C for IO expander
     Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ_HZ);
     Wire.setTimeOut(50);
     delay(50);
-    
+
     // Initialize IO expander
     g_ioexp_ok = initIOExtension();
     if (!g_ioexp_ok) {
         // Can't do much without IO expander - just hang
-        while(1) { delay(1000); }
+        while (1) { delay(1000); }
     }
-    
+
     // Turn on backlight
     setBacklight(true);
-    
+
     // Initialize display for visual feedback
     gfx->begin();
     gfx->fillScreen(GRAY_BG);
@@ -1617,20 +1618,20 @@ void runUSBMSCMode() {
     gfx->setCursor(262, 272);
     gfx->setTextColor(WHITE);
     gfx->print("Initializing SD card...");
-    
+
     // Initialize SPI for SD card
     SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN);
     SPI.setFrequency(SD_SPI_FREQ);
-    
+
     // CRITICAL: Select SD card via IO expander BEFORE SD.begin()
     // The IO expander controls the real CS pin, not GPIO15
     exio_set(EXIO_SD_CS, false);  // CS LOW = selected
     delay(10);
-    
+
     // Use GPIO15 as dummy CS for SD library (not physically connected)
     pinMode(15, OUTPUT);
     digitalWrite(15, HIGH);  // Keep dummy high
-    
+
     // Initialize SD card using Arduino library (for card info)
     if (!SD.begin(15, SPI, SD_SPI_FREQ)) {
         // SD init failed - show error
@@ -1640,7 +1641,7 @@ void runUSBMSCMode() {
         gfx->print("ERROR: SD card not found!");
         while (1) { delay(500); }
     }
-    
+
     // Get SD card info
     uint8_t cardType = SD.cardType();
     if (cardType == CARD_NONE) {
@@ -1653,7 +1654,7 @@ void runUSBMSCMode() {
 
     uint64_t cardSize = SD.cardSize();
     g_sd_sector_count = cardSize / g_sd_sector_size;
-    
+
     // Update display with card info
     gfx->fillRect(100, 262, 600, 80, GRAY_BG);
     gfx->setCursor(226, 312);
@@ -1671,7 +1672,7 @@ void runUSBMSCMode() {
     msc.onWrite(onMscWrite);
     msc.mediaPresent(true);
     msc.begin(g_sd_sector_count, g_sd_sector_size);
-    
+
     // Start USB, money line
     USB.begin();
 
@@ -1921,28 +1922,26 @@ static void utility_box_tap_cb(lv_event_t* e) {
 }
 
 // Press event - track start time for long press detection + visual feedback
-static void utility_box_press_cb(lv_event_t * e) {
+static void utility_box_press_cb(lv_event_t* e) {
     LV_UNUSED(e);
     g_utility_press_start = millis();
     g_utility_long_press_triggered = false;
-    
-    // Visual feedback: darken background on press
+
+    // Visual feedback: lighten background on press (no transparency)
     if (utility_box) {
         lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x666666), 0);  // Lighter gray
-        lv_obj_set_style_bg_opa(utility_box, LV_OPA_90, 0);  // More opaque
     }
 }
 
 // Release event - reset tracking + visual feedback
-static void utility_box_release_cb(lv_event_t * e) {
+static void utility_box_release_cb(lv_event_t* e) {
     LV_UNUSED(e);
     g_utility_press_start = 0;
     g_utility_long_press_triggered = false;
-    
-    // Visual feedback: restore normal background
+
+    // Visual feedback: restore normal background (no transparency)
     if (utility_box) {
         lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x444444), 0);  // Original dark gray
-        lv_obj_set_style_bg_opa(utility_box, LV_OPA_70, 0);  // Original opacity
     }
 }
 
@@ -1955,20 +1954,20 @@ static void checkUtilityLongPress() {
             // 5-second hold detected - toggle demo mode
             g_demo_mode = !g_demo_mode;
             g_utility_long_press_triggered = true;
-            
+
             // Cancel any pending single-tap timer
             if (g_util_single_tap_timer) {
                 lv_timer_del(g_util_single_tap_timer);
                 g_util_single_tap_timer = NULL;
             }
-            
+
             // IMPORTANT: Reset all data when switching modes
             // This ensures clean separation between demo and live data
             resetVehicleData();
             resetSmoothingState();
             resetUIElements();  // Reset bars and labels
             resetCharts();      // Reset chart data
-            
+
             if (g_demo_mode) {
                 // Entering demo mode - reset demo animation state
                 resetDemoState();
@@ -2004,19 +2003,21 @@ static void update_utility_label(int fps, int cpu_percent) {
 
 #pragma region Unit Tap Box Callbacks
 
-// Press feedback - darken on press
+// Press feedback - show on press (demo mode only)
 static void tap_box_press_cb(lv_event_t* e) {
     lv_obj_t* box = (lv_obj_t*)lv_event_get_target(e);
-#if TAP_BOX_DEBUG
-    lv_obj_set_style_bg_opa(box, LV_OPA_60, 0);
-#endif
+    // Only show visual feedback in demo mode
+    if (g_demo_mode) {
+        lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+    }
 }
 
 static void tap_box_release_cb(lv_event_t* e) {
     lv_obj_t* box = (lv_obj_t*)lv_event_get_target(e);
-#if TAP_BOX_DEBUG
-    lv_obj_set_style_bg_opa(box, TAP_BOX_OPACITY, 0);
-#endif
+    // Only show visual feedback in demo mode
+    if (g_demo_mode) {
+        lv_obj_set_style_bg_opa(box, TAP_BOX_OPACITY, 0);
+    }
 }
 
 // Pressure tap - cycles PSI/Bar/kPa
@@ -2453,7 +2454,7 @@ void updateUI() {
             smooth_oil_pressure = smooth_oil_pressure * (1.0f - SMOOTH_FACTOR) + display_pressure * SMOOTH_FACTOR;
         }
         int display_val = (int)(smooth_oil_pressure + 0.5f);
-        
+
         // Update bar
         if (ui_OIL_PRESS_Bar) {
             // Bar always uses PSI internally for range
@@ -2499,7 +2500,7 @@ void updateUI() {
             &oil_press_was_critical, &oil_press_visible, &oil_press_exit_time);
     }
     // If not valid, don't update - UI stays at reset state ("---" and 0)
-    
+
     // ----- Oil Temperature -----
     if (g_vehicle_data.oil_temp_valid) {
         const char* oilTempUnit = getTempUnitStr(g_oil_temp_unit);
@@ -3085,7 +3086,7 @@ void setup() {
 
     // Load unit preferences from flash
     loadUnitPreferences();
-    
+
     // I2C init
     Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ_HZ);
     Wire.setTimeOut(50);
@@ -3184,19 +3185,20 @@ void setup() {
 #endif
         lv_obj_align(utility_box, LV_ALIGN_TOP_LEFT, 5, 5);
         lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x444444), 0);
-        lv_obj_set_style_bg_opa(utility_box, LV_OPA_70, 0);
+        lv_obj_set_style_bg_opa(utility_box, LV_OPA_COVER, 0);  // Fully opaque background (no transparency)
+        lv_obj_set_style_opa(utility_box, LV_OPA_TRANSP, 0);    // Start hidden (double-tap to reveal)
         lv_obj_set_style_border_color(utility_box, lv_color_hex(0x444444), 0);
         lv_obj_set_style_border_width(utility_box, 1, 0);
         lv_obj_set_style_radius(utility_box, 5, 0);
         lv_obj_set_style_pad_all(utility_box, 5, 0);
         lv_obj_add_flag(utility_box, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_flag(utility_box, LV_OBJ_FLAG_SCROLLABLE);
-        
+
         // Event callbacks for tap and long-press
         lv_obj_add_event_cb(utility_box, utility_box_tap_cb, LV_EVENT_CLICKED, NULL);
         lv_obj_add_event_cb(utility_box, utility_box_press_cb, LV_EVENT_PRESSED, NULL);
         lv_obj_add_event_cb(utility_box, utility_box_release_cb, LV_EVENT_RELEASED, NULL);
-        
+
         // FPS/CPU/BRI/SD label
         utility_label = lv_label_create(utility_box);
 #if ENABLE_SD_LOGGING
@@ -3207,7 +3209,7 @@ void setup() {
         lv_obj_set_style_text_color(utility_label, lv_color_hex(0xffff00), 0);
         lv_obj_set_style_text_font(utility_label, &lv_font_montserrat_14, 0);
         lv_obj_align(utility_label, LV_ALIGN_TOP_LEFT, 0, 0);
-        
+
         // Mode indicator (DEMO/LIVE)
         mode_indicator = lv_label_create(utility_box);
         lv_obj_set_style_text_font(mode_indicator, &lv_font_montserrat_14, 0);
@@ -3267,17 +3269,17 @@ void loop() {
     static uint32_t last_update = 0;
 
     uint32_t now = millis();
-    
+
     // LVGL tick
     if (last_tick == 0) last_tick = now;
     lv_tick_inc(now - last_tick);
     last_tick = now;
 
     loop_count++;
-    
+
     // Check for long press on utility box (for demo mode toggle)
     checkUtilityLongPress();
-    
+
     // Status every 1 second
     if (now - last_status >= 1000) {
         int cpu_percent = (cpu_busy_time * 100) / 1000;
@@ -3299,19 +3301,21 @@ void loop() {
 
     if (now - last_update >= UPDATE_INTERVAL_MS) {
         update_count++;
-        
+
         // Step 1: Get data from appropriate provider
         updateVehicleData();
-        
+
         // Step 2: Update UI from g_vehicle_data
         updateUI();
-        
+
         // Step 3: Update charts
         updateCharts();
-        
+
         // Step 4: Log data to SD card
         #if ENABLE_SD_LOGGING
+
         sdLogData();
+
         #endif
 
 

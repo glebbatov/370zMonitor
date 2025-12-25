@@ -20,12 +20,13 @@
 #include <lvgl.h>
 #include <esp_heap_caps.h>
 #include <esp32-hal-psram.h>
-#include <TAMC_GT911.h>  // Touch controller
+#include <TAMC_GT911.h>             // Touch controller
 #include <SD.h>
 #include <SPI.h>
-#include <Preferences.h>  // For persistent unit preferences
-#include "USB.h"        // ESP32-S3 native USB
-#include "USBMSC.h"     // USB Mass Storage Class
+#include <Preferences.h>            // For persistent unit preferences
+#include "USB.h"                    // ESP32-S3 native USB
+#include "USBMSC.h"                 // USB Mass Storage Class
+#include "esp_freertos_hooks.h"     // to see the CPU load
 
  //-----------------------------------------------------------------
 
@@ -461,6 +462,15 @@ static lv_timer_t* g_util_single_tap_timer = NULL;
 static lv_obj_t* utility_label = NULL;
 static lv_obj_t* mode_indicator = NULL;  // Shows "DEMO" or "LIVE"
 static bool utilities_visible = false;  // Start hidden, double-tap to reveal
+
+// Per-core CPU measurement using idle hooks
+static volatile uint32_t g_idle_count_core0 = 0;
+static volatile uint32_t g_idle_count_core1 = 0;
+static uint32_t g_last_idle0 = 0, g_last_idle1 = 0;
+
+// Idle hooks - called when each core is idle
+static bool idle_hook_core0() { g_idle_count_core0++; return true; }
+static bool idle_hook_core1() { g_idle_count_core1++; return true; }
 
 // Long press tracking for demo mode toggle
 static uint32_t g_utility_press_start = 0;
@@ -1980,7 +1990,7 @@ static void checkUtilityLongPress() {
     }
 }
 
-static void update_utility_label(int fps, int cpu_percent) {
+static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
     if (utility_label) {
         char buf[64];
         int bri_percent = (g_brightness_level * 100) / 255;
@@ -1988,9 +1998,10 @@ static void update_utility_label(int fps, int cpu_percent) {
 #if ENABLE_SD_LOGGING
         char sd_status[16];
         sdGetStatusString(sd_status, sizeof(sd_status));
-        snprintf(buf, sizeof(buf), "%3d FPS\n%3d%% CPU\n%3d%% BRI\n%s", fps, cpu_percent, bri_percent, sd_status);
+
+        snprintf(buf, sizeof(buf), "%3d FPS\n%3d%%/%3d%%\n%3d%% BRI\n%s", fps, cpu0_percent, cpu1_percent, bri_percent, sd_status);
 #else
-        snprintf(buf, sizeof(buf), "%3d FPS\n%3d%% CPU\n%3d%% BRI", fps, cpu_percent, bri_percent);
+        snprintf(buf, sizeof(buf), "%3d FPS\n%3d%%/%3d%%\n%3d%% BRI", fps, cpu0_percent, cpu1_percent, bri_percent);
 #endif
 
         lv_label_set_text(utility_label, buf);
@@ -2376,7 +2387,7 @@ void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, 
             *is_visible = true;
             lv_obj_set_style_text_opa(label, 255, LV_PART_MAIN);
             lv_obj_set_style_bg_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(label, 225, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(label, LV_OPA_COVER, LV_PART_MAIN);
             lv_obj_set_style_pad_all(label, 4, LV_PART_MAIN);
 
             lv_anim_t anim;
@@ -3199,12 +3210,16 @@ void setup() {
         lv_obj_add_event_cb(utility_box, utility_box_press_cb, LV_EVENT_PRESSED, NULL);
         lv_obj_add_event_cb(utility_box, utility_box_release_cb, LV_EVENT_RELEASED, NULL);
 
+        // CPU load hooks register
+        esp_register_freertos_idle_hook_for_cpu(idle_hook_core0, 0);
+        esp_register_freertos_idle_hook_for_cpu(idle_hook_core1, 1);
+
         // FPS/CPU/BRI/SD label
         utility_label = lv_label_create(utility_box);
 #if ENABLE_SD_LOGGING
-        lv_label_set_text(utility_label, "--- FPS\n---% CPU\n---% BRI\nSD: ---");
+        lv_label_set_text(utility_label, "--- FPS\n---%/---% CPU\n---% BRI\nSD: ---");
 #else
-        lv_label_set_text(utility_label, "--- FPS\n---% CPU\n---% BRI");
+        lv_label_set_text(utility_label, "--- FPS\n---%/---% CPU\n---% BRI");
 #endif
         lv_obj_set_style_text_color(utility_label, lv_color_hex(0xffff00), 0);
         lv_obj_set_style_text_font(utility_label, &lv_font_montserrat_14, 0);
@@ -3282,10 +3297,22 @@ void loop() {
 
     // Status every 1 second
     if (now - last_status >= 1000) {
-        int cpu_percent = (cpu_busy_time * 100) / 1000;
-        if (cpu_percent > 100) cpu_percent = 100;
+        // Calculate per-core CPU usage from idle counts
+        uint32_t delta0 = g_idle_count_core0 - g_last_idle0;
+        uint32_t delta1 = g_idle_count_core1 - g_last_idle1;
+        g_last_idle0 = g_idle_count_core0;
+        g_last_idle1 = g_idle_count_core1;
 
-        update_utility_label(flush_count, cpu_percent);
+        // More idle calls = less busy. Calibrate MAX based on your observed idle counts.
+        const uint32_t MAX_IDLE_PER_SEC = 1500000;  // Adjust if needed
+        int cpu0_percent = 100 - ((delta0 * 100) / MAX_IDLE_PER_SEC);
+        int cpu1_percent = 100 - ((delta1 * 100) / MAX_IDLE_PER_SEC);
+        if (cpu0_percent < 0) cpu0_percent = 0;
+        if (cpu1_percent < 0) cpu1_percent = 0;
+        if (cpu0_percent > 100) cpu0_percent = 100;
+        if (cpu1_percent > 100) cpu1_percent = 100;
+
+        update_utility_label(flush_count, cpu0_percent, cpu1_percent);
 
         Serial.printf("[STATUS] loops=%u flushes=%u cpu=%u%% heap=%u psram=%u mode=%s\n",
             loop_count, flush_count, (cpu_busy_time * 100) / 1000,

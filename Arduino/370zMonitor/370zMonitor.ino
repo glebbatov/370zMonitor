@@ -2184,17 +2184,17 @@ void updateTapBoxVisibility() {
 
 void setupUnitTapHandlers() {
     if (ui_OIL_PRESS_Value)
-        tap_box_oil_press = createTapBox(ui_Screen1, ui_OIL_PRESS_Value, 154, 50, 0x00FFFF, oil_press_tap_cb);
+        tap_box_oil_press = createTapBox(ui_Screen1, ui_OIL_PRESS_Value, 150, 55, 0x00FFFF, oil_press_tap_cb);  // 150 width, 65 height
     if (ui_OIL_TEMP_Value_P)
-        tap_box_oil_temp = createTapBox(ui_Screen1, ui_OIL_TEMP_Value_P, 154, 69, 0xFF00FF, oil_temp_tap_cb);
+        tap_box_oil_temp = createTapBox(ui_Screen1, ui_OIL_TEMP_Value_P, 150, 65, 0xFF00FF, oil_temp_tap_cb);
     if (ui_W_TEMP_Value_H)
-        tap_box_water_temp = createTapBox(ui_Screen1, ui_W_TEMP_Value_H, 154, 69, 0x00FFFF, water_temp_tap_cb);
+        tap_box_water_temp = createTapBox(ui_Screen1, ui_W_TEMP_Value_H, 150, 65, 0x00FFFF, water_temp_tap_cb);
     if (ui_TRAN_TEMP_Value_H)
-        tap_box_trans_temp = createTapBox(ui_Screen1, ui_TRAN_TEMP_Value_H, 154, 69, 0xFF00FF, trans_temp_tap_cb);
+        tap_box_trans_temp = createTapBox(ui_Screen1, ui_TRAN_TEMP_Value_H, 150, 65, 0xFF00FF, trans_temp_tap_cb);
     if (ui_STEER_TEMP_Value_H)
-        tap_box_steer_temp = createTapBox(ui_Screen1, ui_STEER_TEMP_Value_H, 154, 69, 0x00FFFF, steer_temp_tap_cb);
+        tap_box_steer_temp = createTapBox(ui_Screen1, ui_STEER_TEMP_Value_H, 150, 65, 0x00FFFF, steer_temp_tap_cb);
     if (ui_DIFF_TEMP_Value_H)
-        tap_box_diff_temp = createTapBox(ui_Screen1, ui_DIFF_TEMP_Value_H, 154, 69, 0xFF00FF, diff_temp_tap_cb);
+        tap_box_diff_temp = createTapBox(ui_Screen1, ui_DIFF_TEMP_Value_H, 150, 65, 0xFF00FF, diff_temp_tap_cb);
 }
 
 #pragma endregion Unit Tap Box Callbacks
@@ -3215,11 +3215,11 @@ void setup() {
         // FPS/CPU/BRI/SD label
         utility_label = lv_label_create(utility_box);
 
-        #if ENABLE_SD_LOGGING
+#if ENABLE_SD_LOGGING
         lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nBRI:   ---%\nSD:    ---");
-        #else
+#else
         lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nBRI:   ---%");
-        #endif
+#endif
 
         lv_obj_set_style_text_color(utility_label, lv_color_hex(0xffff00), 0);
         lv_obj_set_style_text_font(utility_label, &lv_font_unscii_16, 0);

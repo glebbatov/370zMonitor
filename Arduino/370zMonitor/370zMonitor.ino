@@ -1419,6 +1419,9 @@ bool sdDeleteOldestLog() {
     char path[40];
     snprintf(path, sizeof(path), "/%s", oldest_name);
 
+    return SD.remove(path);
+}
+
 //=================================================================
 // STATUS AND CONTROL FUNCTIONS
 //=================================================================
@@ -3309,7 +3312,6 @@ void loop() {
         // Step 4: Log data to SD card
         #if ENABLE_SD_LOGGING
         sdLogData();
-            sdLogData();
         #endif
 
 

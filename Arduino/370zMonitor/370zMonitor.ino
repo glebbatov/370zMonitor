@@ -479,7 +479,8 @@ TAMC_GT911 touch = TAMC_GT911(I2C_SDA, I2C_SCL, TOUCH_INT_PIN, -1, 800, 480);
 
 // Counters and tracking
 static uint32_t loop_count = 0;
-static uint32_t flush_count = 0;
+static volatile uint32_t flush_count = 0;   // flushes per second (partial screen updates)
+static volatile uint32_t frame_count = 0;   // REAL frames per second (complete screen refreshes)
 static uint32_t update_count = 0;
 static uint32_t cpu_busy_time = 0;
 
@@ -2337,8 +2338,23 @@ void my_disp_flush(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
     }
 
     gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t*)px_map, w, h);
-    lv_display_flush_ready(disp);
+
+    // Count flushes (for diagnostics)
     flush_count++;
+
+    // Count REAL frames: only when this is the last flush of the current refresh
+    // LVGL can flush multiple rectangles per frame, so we only count complete refreshes
+#if LVGL_VERSION_MAJOR >= 9
+    if (lv_display_flush_is_last(disp)) {
+        frame_count++;
+    }
+#else
+    if (lv_disp_flush_is_last((lv_disp_t*)disp)) {
+        frame_count++;
+    }
+#endif
+
+    lv_display_flush_ready(disp);
 }
 
 #pragma endregion LVGL Callbacks
@@ -3523,6 +3539,17 @@ void loop() {
 
     // Status every 1 second
     if (now - last_status >= 1000) {
+        uint32_t dt_ms = now - last_status;
+
+        // Snapshot and reset frame/flush counts
+        uint32_t frames = frame_count;
+        uint32_t flushes = flush_count;
+        frame_count = 0;
+        flush_count = 0;
+
+        // FPS = real frames per second (scaled by actual elapsed time for accuracy)
+        int fps = (dt_ms > 0) ? (int)((frames * 1000UL + dt_ms / 2) / dt_ms) : 0;
+
         // Calculate per-core CPU usage from idle counts
         uint32_t delta0 = g_idle_count_core0 - g_last_idle0;
         uint32_t delta1 = g_idle_count_core1 - g_last_idle1;
@@ -3542,12 +3569,13 @@ void loop() {
         if (cpu0_percent > 100) cpu0_percent = 100;
         if (cpu1_percent > 100) cpu1_percent = 100;
 
-        update_utility_label(flush_count, cpu0_percent, cpu1_percent);
+        // Update utility box with REAL FPS
+        update_utility_label(fps, cpu0_percent, cpu1_percent);
 
-        Serial.printf("[STATUS] fps=%u cpu0=%d%% cpu1=%d%% idle0=%u idle1=%u heap=%u mode=%s\n",
-            flush_count, cpu0_percent, cpu1_percent, delta0, delta1,
+        // Log with both frames and flushes for diagnostics
+        Serial.printf("[STATUS] fps=%d (frames=%u flushes=%u) cpu0=%d%% cpu1=%d%% idle0=%u idle1=%u heap=%u mode=%s\n",
+            fps, frames, flushes, cpu0_percent, cpu1_percent, delta0, delta1,
             ESP.getFreeHeap(), g_demo_mode ? "DEMO" : "LIVE");
-        flush_count = 0;
         cpu_busy_time = 0;
         last_status = now;
     }

@@ -21,6 +21,7 @@
  * I2C_FREQ_HZ - speed of communication with the GT911 touch controller
  * CHART_BLINK_INTERVAL_MS - how fast critical chart bars blink red/dim
  * LVGL_BUFFER_SIZE - how much of the screen LVGL renders at once
+ * SD_FLUSH_INTERVAL_MS - flush to sd card interval in ms
 */
 
 #include <Arduino_GFX_Library.h>
@@ -1063,6 +1064,7 @@ void updateOBDData() {
 #define SD_CS_PIN         -1      // Use -1 for manual CS control via IO expander
 #define SD_SPI_FREQ       4000000 // 4MHz SPI (conservative for reliability)
 #define SD_WRITE_INTERVAL_MS 1000 // Write every 1 second (configurable)
+#define SD_FLUSH_INTERVAL_MS 1000 // Flush to card every 1 second (not every write)
 #define SD_BUFFER_SIZE    256     // Smaller buffer for more frequent flushes
 #define SD_MAX_RETRIES    3       // Max retries on write failure
 #define SD_FREE_SPACE_PERCENT 5   // Keep at least 5% free space
@@ -1082,6 +1084,7 @@ static struct {
     uint32_t write_count;
     uint32_t error_count;
     uint32_t bytes_written;
+    uint32_t last_flush_ms;     // Time-based flush tracking
     uint32_t boot_count;        // Persisted boot counter
     uint64_t total_bytes;       // Total card size
     uint64_t used_bytes;        // Used space
@@ -1220,6 +1223,7 @@ bool sdStartSession() {
     g_sd_state.write_count = 0;
     g_sd_state.error_count = 0;
     g_sd_state.bytes_written = 0;
+    g_sd_state.last_flush_ms = millis();
 
     const char* header = "timestamp_ms,elapsed_s,cpu_percent,mode,"
         "oil_press_psi,oil_press_valid,"
@@ -1327,8 +1331,8 @@ void sdLogData() {
             g_sd_state.write_count++;
             success = true;
 
-            // IMMEDIATE FLUSH after every write for corruption safety
-            sdSafeFlush();
+            // Note: Flush is now time-based (every SD_FLUSH_INTERVAL_MS)
+            // See end of sdLogData() for the flush logic
         }
         else {
             delay(5);
@@ -1340,6 +1344,13 @@ void sdLogData() {
         if (g_sd_state.error_count >= 10) {
             g_sd_state.logging_enabled = false;
         }
+    }
+
+    // Time-based flush every SD_FLUSH_INTERVAL_MS (not every write)
+    // This reduces SD card blocking while still being safe
+    if ((now - g_sd_state.last_flush_ms) >= SD_FLUSH_INTERVAL_MS) {
+        sdSafeFlush();
+        g_sd_state.last_flush_ms = now;
     }
 }
 
@@ -2044,6 +2055,10 @@ static void checkUtilityLongPress() {
 
             // IMPORTANT: Reset all data when switching modes
             // This ensures clean separation between demo and live data
+#if ENABLE_SD_LOGGING
+            // Flush SD card before mode switch (safety flush)
+            sdSafeFlush();
+#endif
             resetVehicleData();
             resetSmoothingState();
             resetTapPanelOpacity();  // Reset critical backgrounds
@@ -2398,7 +2413,6 @@ void my_touch_read(lv_indev_t* indev, lv_indev_data_t* data) {
         }
 
         consecutive_invalid = 0;
-        was_touched = true;
         data->state = LV_INDEV_STATE_PRESSED;
 
         int screen_x = (raw_y - 30) * 800 / 745;
@@ -2412,11 +2426,11 @@ void my_touch_read(lv_indev_t* indev, lv_indev_data_t* data) {
         data->point.x = screen_x;
         data->point.y = screen_y;
 
-        static uint32_t last_touch_debug = 0;
-        if (now - last_touch_debug > 200) {
+        // THROTTLED: Only log on initial touch (state change), not while held
+        if (!was_touched) {
             Serial.printf("[TOUCH] raw(%d,%d) -> screen(%d,%d)\n", raw_x, raw_y, screen_x, screen_y);
-            last_touch_debug = now;
         }
+        was_touched = true;
     }
     else {
         consecutive_invalid = 0;
@@ -3611,8 +3625,19 @@ void loop() {
     lv_timer_handler();
     uint32_t dt = micros() - t0;
 
-    if (dt > 100000) {
-        Serial.printf("[WARN] lv_timer_handler took %u us!\n", dt);
+    // THROTTLED WARN: Track max handler time, report once per second
+    static uint32_t max_handler_time_us = 0;
+    static uint32_t last_warn_report = 0;
+    if (dt > max_handler_time_us) {
+        max_handler_time_us = dt;
+    }
+    // Report max every second (only if > 100ms)
+    if (now - last_warn_report >= 1000) {
+        if (max_handler_time_us > 100000) {
+            Serial.printf("[WARN] lv_timer_handler max: %lu us (last 1s)\n", max_handler_time_us);
+        }
+        max_handler_time_us = 0;
+        last_warn_report = now;
     }
 
     uint32_t elapsed = millis() - frame_start;

@@ -1,9 +1,18 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v4.1 - Data Provider Architecture
+ * 370zMonitor v4.3 - Dual-Core Architecture
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v4.3 Changes:
+ * - Fixed USB MSC screen to show SD card type/size
+ * - Fixed duplicate CSV header bug (FILE_APPEND -> FILE_WRITE)
+ *
+ * v4.2 Changes:
+ * - Dual-core architecture: Touch + SD I/O on Core 0, LVGL on Core 1
+ * - Touch polling via dedicated FreeRTOS task with mutex
+ * - SD logging via queue-based producer/consumer pattern
  *
  * v4.1 Changes:
  * - Fixed live mode startup (shows "---" until data arrives)
@@ -20,6 +29,7 @@
  * UPDATE_INTERVAL_MS - how often the UI updates with new values
  * I2C_FREQ_HZ - speed of communication with the GT911 touch controller
  * CHART_BLINK_INTERVAL_MS - how fast critical chart bars blink red/dim
+ * LABEL_BLINK_INTERVAL_MS - how fast value_critical lable blinks
  * LVGL_BUFFER_SIZE - how much of the screen LVGL renders at once
  * SD_FLUSH_INTERVAL_MS - flush to sd card interval in ms
 */
@@ -36,6 +46,10 @@
 #include "USB.h"                    // ESP32-S3 native USB
 #include "USBMSC.h"                 // USB Mass Storage Class
 #include "esp_freertos_hooks.h"     // to see the CPU load
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "freertos/queue.h"
 
  //-----------------------------------------------------------------
 
@@ -52,7 +66,7 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_CHARTS       1   // Enable charts
 #define ENABLE_SD_LOGGING   1   // Enable SD card data logging
 #define ENABLE_USB_MSC      1   // Enable USB Mass Storage mode (hold BOOT at startup)
-#define UPDATE_INTERVAL_MS  250 // Update every 250ms
+#define UPDATE_INTERVAL_MS  500 // Update every 250ms
 
 // USB MSC Configuration
 #define USB_MSC_BOOT_PIN    0   // GPIO0 = BOOT button on most ESP32-S3 boards
@@ -256,7 +270,7 @@ void resetUIElements();
 #define CH422_ADDR_IOWR   0x38
 #define I2C_SDA 8
 #define I2C_SCL 9
-#define I2C_FREQ_HZ 100000  // 400000 - max value
+#define I2C_FREQ_HZ 400000  // 400000 - max value
 #define EXIO_TP_RST   1
 #define EXIO_DISP     2
 #define EXIO_SD_CS    4
@@ -476,6 +490,40 @@ static uint8_t* disp_draw_buf2;
 // GT911 Touch Controller
 TAMC_GT911 touch = TAMC_GT911(I2C_SDA, I2C_SCL, TOUCH_INT_PIN, -1, 800, 480);
 
+//=================================================================
+// DUAL-CORE ARCHITECTURE
+// Core 0: Touch polling task + SD write task
+// Core 1: Main loop (LVGL rendering, data processing)
+//=================================================================
+
+// Touch state shared between Core 0 (producer) and Core 1 (consumer)
+struct TouchState {
+    volatile int16_t x;
+    volatile int16_t y;
+    volatile bool pressed;
+    volatile bool valid;           // false if touch data is garbage
+    volatile uint32_t timestamp;   // when this touch was recorded
+};
+static TouchState g_touch_state = {0, 0, false, false, 0};
+static SemaphoreHandle_t g_touch_mutex = NULL;
+
+// Task handle for touch (always needed)
+static TaskHandle_t g_touch_task_handle = NULL;
+
+// SD logging queue - main loop pushes data, Core 0 task writes to SD
+#if ENABLE_SD_LOGGING
+struct SDLogEntry {
+    uint32_t timestamp_ms;
+    float elapsed_s;
+    float cpu_pct;
+    bool demo_mode;
+    VehicleData data;
+};
+#define SD_QUEUE_SIZE 16
+static QueueHandle_t g_sd_queue = NULL;
+static TaskHandle_t g_sd_task_handle = NULL;
+#endif
+
 //-----------------------------------------------------------------
 
 // Counters and tracking
@@ -551,7 +599,7 @@ static int32_t fuel_trust_sum = 0;
 static uint32_t fuel_trust_samples = 0;
 static uint32_t fuel_trust_start = 0;
 
-#define CHART_BUCKET_MS 5000
+#define CHART_BUCKET_MS 5000    // crate a new bar every (ms)
 
 #define CHART_POINTS 24
 static int32_t oil_press_history[CHART_POINTS] = { 0 };
@@ -574,7 +622,8 @@ static bool g_chart_has_critical_fuel_trust = false;
 // Critical bar blinking
 static bool g_critical_blink_phase = false;
 static uint32_t g_last_blink_toggle = 0;
-#define CHART_BLINK_INTERVAL_MS 500     // 200 default
+#define CHART_BLINK_INTERVAL_MS 1000     // Chart bars blink rate (ms)
+#define LABEL_BLINK_INTERVAL_MS 1000     // Critical labels blink rate (ms)
 
 // Value Tap Panels from SquareLine Studio - used for tap detection AND critical background
 // These are declared in ui_Screen1.h:
@@ -1206,12 +1255,9 @@ bool sdStartSession() {
     // Generate filename
     sdGenerateFilename();
 
-    // Open file for APPEND (safer than WRITE for corruption prevention)
-    g_sd_state.data_file = SD.open(g_sd_state.current_filename, FILE_APPEND);
-    if (!g_sd_state.data_file) {
-        // Try FILE_WRITE if file doesn't exist
-        g_sd_state.data_file = SD.open(g_sd_state.current_filename, FILE_WRITE);
-    }
+    // Always use FILE_WRITE to create fresh file (each boot has unique count)
+    // FILE_APPEND was causing duplicate headers when boot count got reused
+    g_sd_state.data_file = SD.open(g_sd_state.current_filename, FILE_WRITE);
     if (!g_sd_state.data_file) {
         Serial.printf("[SD] Failed to create file: %s\n", g_sd_state.current_filename);
         return false;
@@ -1277,80 +1323,121 @@ float getCpuLoadPercent() {
     return (float)(cpu_busy_time * 100) / 1000.0f;
 }
 
-// Log current data point to SD card - IMMEDIATE WRITE for corruption safety
+//=================================================================
+// SD WRITE TASK - RUNS ON CORE 0
+// Receives log entries via queue, writes to SD card
+//=================================================================
+
+void sdWriteTask(void* parameter) {
+    Serial.println("[CORE0] SD write task started");
+    
+    SDLogEntry entry;
+    char line[256];
+    
+    while (true) {
+        // Wait for data from queue (blocks until data available or timeout)
+        if (xQueueReceive(g_sd_queue, &entry, pdMS_TO_TICKS(100)) == pdTRUE) {
+            if (!g_sd_state.file_open || !g_sd_state.logging_enabled) {
+                continue;  // Discard if logging disabled
+            }
+            
+            // Periodic space check (every 60 writes)
+            if (g_sd_state.write_count % 60 == 0 && g_sd_state.write_count > 0) {
+                if (!sdCheckAndManageSpace()) {
+                    g_sd_state.logging_enabled = false;
+                    continue;
+                }
+            }
+            
+            // Format data line
+            int len = snprintf(line, sizeof(line),
+                "%lu,%.2f,%.1f,%s,"
+                "%d,%d,"
+                "%d,%d,%d,"
+                "%d,%d,%d,"
+                "%d,%d,%d,"
+                "%d,%d,%d,"
+                "%d,%d,%d,"
+                "%d,%d,"
+                "%d,%d\n",
+                entry.timestamp_ms, entry.elapsed_s, entry.cpu_pct, 
+                entry.demo_mode ? "DEMO" : "LIVE",
+                entry.data.oil_pressure_psi, entry.data.oil_pressure_valid ? 1 : 0,
+                entry.data.oil_temp_pan_f, entry.data.oil_temp_cooled_f, 
+                entry.data.oil_temp_valid ? 1 : 0,
+                entry.data.water_temp_hot_f, entry.data.water_temp_cooled_f, 
+                entry.data.water_temp_valid ? 1 : 0,
+                entry.data.trans_temp_hot_f, entry.data.trans_temp_cooled_f, 
+                entry.data.trans_temp_valid ? 1 : 0,
+                entry.data.steer_temp_hot_f, entry.data.steer_temp_cooled_f, 
+                entry.data.steer_temp_valid ? 1 : 0,
+                entry.data.diff_temp_hot_f, entry.data.diff_temp_cooled_f, 
+                entry.data.diff_temp_valid ? 1 : 0,
+                entry.data.fuel_trust_percent, entry.data.fuel_trust_valid ? 1 : 0,
+                entry.data.rpm, entry.data.rpm_valid ? 1 : 0
+            );
+            
+            // Write with retry
+            bool success = false;
+            for (int retry = 0; retry < SD_MAX_RETRIES && !success; retry++) {
+                size_t written = g_sd_state.data_file.print(line);
+                if (written > 0) {
+                    g_sd_state.bytes_written += written;
+                    g_sd_state.write_count++;
+                    success = true;
+                }
+                else {
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                }
+            }
+            
+            if (!success) {
+                g_sd_state.error_count++;
+                if (g_sd_state.error_count >= 10) {
+                    g_sd_state.logging_enabled = false;
+                    Serial.println("[SD/CORE0] Too many errors, logging disabled");
+                }
+            }
+            
+            // Time-based flush
+            uint32_t now = millis();
+            if ((now - g_sd_state.last_flush_ms) >= SD_FLUSH_INTERVAL_MS) {
+                g_sd_state.data_file.flush();
+                g_sd_state.last_flush_ms = now;
+            }
+        }
+        // No data received - just continue waiting
+    }
+}
+
+// Queue data for SD logging - called from main loop (Core 1)
+// Non-blocking: if queue is full, data is dropped
 void sdLogData() {
     if (!g_sd_state.file_open || !g_sd_state.logging_enabled) return;
+    if (!g_sd_queue) return;
 
     uint32_t now = millis();
 
-    // Check if it's time to write
+    // Check if it's time to log
     if ((now - g_sd_state.last_write_ms) < SD_WRITE_INTERVAL_MS) return;
     g_sd_state.last_write_ms = now;
 
-    // Periodic space check (every 60 writes = ~1 minute at 1Hz)
-    if (g_sd_state.write_count % 60 == 0 && g_sd_state.write_count > 0) {
-        if (!sdCheckAndManageSpace()) {
-            g_sd_state.logging_enabled = false;
-            return;
+    // Prepare log entry
+    SDLogEntry entry;
+    entry.timestamp_ms = now;
+    entry.elapsed_s = (float)(now - g_sd_state.session_start_ms) / 1000.0f;
+    entry.cpu_pct = getCpuLoadPercent();
+    entry.demo_mode = g_demo_mode;
+    entry.data = g_vehicle_data;  // Copy current vehicle data
+
+    // Queue the entry (non-blocking)
+    if (xQueueSend(g_sd_queue, &entry, 0) != pdTRUE) {
+        // Queue full - data dropped (happens if Core 0 is backed up)
+        static uint32_t last_drop_warn = 0;
+        if (now - last_drop_warn > 5000) {
+            Serial.println("[SD] Warning: Queue full, data dropped");
+            last_drop_warn = now;
         }
-    }
-
-    // Calculate elapsed time and CPU load
-    float elapsed_s = (float)(now - g_sd_state.session_start_ms) / 1000.0f;
-    float cpu_pct = getCpuLoadPercent();
-
-    // Format and write data line directly (no buffering for safety)
-    char line[256];
-    int len = snprintf(line, sizeof(line),
-        "%lu,%.2f,%.1f,%s,"
-        "%d,%d,"
-        "%d,%d,%d,"
-        "%d,%d,%d,"
-        "%d,%d,%d,"
-        "%d,%d,%d,"
-        "%d,%d,%d,"
-        "%d,%d,"
-        "%d,%d\n",
-        now, elapsed_s, cpu_pct, g_demo_mode ? "DEMO" : "LIVE",
-        g_vehicle_data.oil_pressure_psi, g_vehicle_data.oil_pressure_valid ? 1 : 0,
-        g_vehicle_data.oil_temp_pan_f, g_vehicle_data.oil_temp_cooled_f, g_vehicle_data.oil_temp_valid ? 1 : 0,
-        g_vehicle_data.water_temp_hot_f, g_vehicle_data.water_temp_cooled_f, g_vehicle_data.water_temp_valid ? 1 : 0,
-        g_vehicle_data.trans_temp_hot_f, g_vehicle_data.trans_temp_cooled_f, g_vehicle_data.trans_temp_valid ? 1 : 0,
-        g_vehicle_data.steer_temp_hot_f, g_vehicle_data.steer_temp_cooled_f, g_vehicle_data.steer_temp_valid ? 1 : 0,
-        g_vehicle_data.diff_temp_hot_f, g_vehicle_data.diff_temp_cooled_f, g_vehicle_data.diff_temp_valid ? 1 : 0,
-        g_vehicle_data.fuel_trust_percent, g_vehicle_data.fuel_trust_valid ? 1 : 0,
-        g_vehicle_data.rpm, g_vehicle_data.rpm_valid ? 1 : 0
-    );
-
-    // Write with retry
-    bool success = false;
-    for (int retry = 0; retry < SD_MAX_RETRIES && !success; retry++) {
-        size_t written = g_sd_state.data_file.print(line);
-        if (written > 0) {
-            g_sd_state.bytes_written += written;
-            g_sd_state.write_count++;
-            success = true;
-
-            // Note: Flush is now time-based (every SD_FLUSH_INTERVAL_MS)
-            // See end of sdLogData() for the flush logic
-        }
-        else {
-            delay(5);
-        }
-    }
-
-    if (!success) {
-        g_sd_state.error_count++;
-        if (g_sd_state.error_count >= 10) {
-            g_sd_state.logging_enabled = false;
-        }
-    }
-
-    // Time-based flush every SD_FLUSH_INTERVAL_MS (not every write)
-    // This reduces SD card blocking while still being safe
-    if ((now - g_sd_state.last_flush_ms) >= SD_FLUSH_INTERVAL_MS) {
-        sdSafeFlush();
-        g_sd_state.last_flush_ms = now;
     }
 }
 
@@ -1748,9 +1835,20 @@ void runUSBMSCMode() {
     g_sd_sector_count = cardSize / g_sd_sector_size;
 
     // Update display with card info
-    gfx->fillRect(100, 262, 600, 80, GRAY_BG);
-    gfx->setCursor(226, 312);
+    const char* cardTypeName = "UNKNOWN";
+    switch (cardType) {
+    case CARD_MMC:  cardTypeName = "MMC";  break;
+    case CARD_SD:   cardTypeName = "SD";   break;
+    case CARD_SDHC: cardTypeName = "SDHC"; break;
+    }
+    
+    gfx->fillRect(100, 262, 600, 100, GRAY_BG);
+    gfx->setCursor(245, 272);
     gfx->setTextColor(WHITE);
+    char infoLine[64];
+    snprintf(infoLine, sizeof(infoLine), "Card: %s  Size: %llu MB", cardTypeName, cardSize / (1024 * 1024));
+    gfx->print(infoLine);
+    gfx->setCursor(226, 312);
     gfx->print("Connect USB-C to computer now");
     // Initialize USB Mass Storage
 
@@ -1856,7 +1954,7 @@ static void oil_press_chart_draw_cb(lv_event_t* e) {
         fill_dsc->color = g_critical_blink_phase ? lv_color_hex(0xFFFFFF) : lv_color_hex(hexRed);
     }
     else {
-        fill_dsc->color = lv_color_hex(hexOrange);
+        fill_dsc->color = lv_color_hex(hexRed);
     }
 }
 
@@ -2079,15 +2177,20 @@ static void checkUtilityLongPress() {
 
 static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
     if (utility_label) {
-        char buf[80];
+        char buf[120];
         int bri_percent = (g_brightness_level * 100) / 255;
+
+        // Calculate RAM usage percentage (internal SRAM)
+        size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        size_t total_internal = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+        int ram_percent = (total_internal > 0) ? (100 - (free_internal * 100 / total_internal)) : 0;
 
 #if ENABLE_SD_LOGGING
         char sd_status[16];
         sdGetStatusString(sd_status, sizeof(sd_status));
-        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nBRI:  %3d%%\nSD:   %s", fps, cpu0_percent, cpu1_percent, bri_percent, sd_status);
+        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nRAM:  %3d%%\nBRI:  %3d%%\nSD:   %s", fps, cpu0_percent, cpu1_percent, ram_percent, bri_percent, sd_status);
 #else
-        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nBRI:  %3d%%", fps, cpu0_percent, cpu1_percent, bri_percent);
+        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nRAM:  %3d%%\nBRI:  %3d%%", fps, cpu0_percent, cpu1_percent, ram_percent, bri_percent);
 #endif
 
         lv_label_set_text(utility_label, buf);
@@ -2376,73 +2479,125 @@ void my_disp_flush(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
 
 //-----------------------------------------------------------------
 
-#pragma region Touch Callbacks
+#pragma region Touch Callbacks - DUAL CORE
 
 #define MAX_CONSECUTIVE_INVALID 50
 #define TOUCH_RESET_COOLDOWN_MS 5000
+#define TOUCH_POLL_INTERVAL_MS 10   // Poll touch every 10ms on Core 0
 
-void my_touch_read(lv_indev_t* indev, lv_indev_data_t* data) {
-    touch.read();
-
+// Core 0 Touch Task - polls GT911 and updates shared state
+void touchTask(void* parameter) {
+    Serial.println("[CORE0] Touch task started");
+    
     static bool was_touched = false;
-    uint32_t now = millis();
-
-    if (touch.isTouched) {
-        int raw_x = touch.points[0].x;
-        int raw_y = touch.points[0].y;
-
-        if (raw_x == 65535 || raw_y == 65535 || raw_x > 800 || raw_y > 800) {
-            consecutive_invalid++;
-
-            if (consecutive_invalid >= MAX_CONSECUTIVE_INVALID &&
-                (now - last_touch_reset) > TOUCH_RESET_COOLDOWN_MS) {
-                Serial.println("[TOUCH] Controller stuck - hardware reset");
-                exio_set(EXIO_TP_RST, false);
-                delay(10);
-                exio_set(EXIO_TP_RST, true);
-                delay(50);
-                touch.begin();
-                touch.setRotation(0);
-                consecutive_invalid = 0;
-                last_touch_reset = now;
+    static uint32_t local_consecutive_invalid = 0;
+    static uint32_t local_last_reset = 0;
+    
+    while (true) {
+        uint32_t now = millis();
+        
+        // Read touch controller (I2C operation)
+        touch.read();
+        
+        TouchState new_state = {0, 0, false, false, now};
+        
+        if (touch.isTouched) {
+            int raw_x = touch.points[0].x;
+            int raw_y = touch.points[0].y;
+            
+            // Validate touch data
+            if (raw_x == 65535 || raw_y == 65535 || raw_x > 800 || raw_y > 800) {
+                local_consecutive_invalid++;
+                
+                // Hardware reset if stuck
+                if (local_consecutive_invalid >= MAX_CONSECUTIVE_INVALID &&
+                    (now - local_last_reset) > TOUCH_RESET_COOLDOWN_MS) {
+                    Serial.println("[TOUCH/CORE0] Controller stuck - hardware reset");
+                    exio_set(EXIO_TP_RST, false);
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    exio_set(EXIO_TP_RST, true);
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                    touch.begin();
+                    touch.setRotation(0);
+                    local_consecutive_invalid = 0;
+                    local_last_reset = now;
+                }
+                
+                new_state.valid = false;
+                new_state.pressed = false;
             }
-
-            data->state = LV_INDEV_STATE_RELEASED;
-            was_touched = false;
-            return;
+            else {
+                // Valid touch - convert coordinates
+                local_consecutive_invalid = 0;
+                
+                int screen_x = (raw_y - 30) * 800 / 745;
+                int screen_y = (770 - raw_x) * 480 / 420;
+                
+                if (screen_x < 0) screen_x = 0;
+                if (screen_x > 799) screen_x = 799;
+                if (screen_y < 0) screen_y = 0;
+                if (screen_y > 479) screen_y = 479;
+                
+                new_state.x = screen_x;
+                new_state.y = screen_y;
+                new_state.pressed = true;
+                new_state.valid = true;
+                
+                // Log on initial touch only
+                if (!was_touched) {
+                    Serial.printf("[TOUCH/CORE0] raw(%d,%d) -> screen(%d,%d)\n", 
+                                  raw_x, raw_y, screen_x, screen_y);
+                }
+                was_touched = true;
+            }
         }
-
-        consecutive_invalid = 0;
-        data->state = LV_INDEV_STATE_PRESSED;
-
-        int screen_x = (raw_y - 30) * 800 / 745;
-        int screen_y = (770 - raw_x) * 480 / 420;
-
-        if (screen_x < 0) screen_x = 0;
-        if (screen_x > 799) screen_x = 799;
-        if (screen_y < 0) screen_y = 0;
-        if (screen_y > 479) screen_y = 479;
-
-        data->point.x = screen_x;
-        data->point.y = screen_y;
-
-        // THROTTLED: Only log on initial touch (state change), not while held
-        if (!was_touched) {
-            Serial.printf("[TOUCH] raw(%d,%d) -> screen(%d,%d)\n", raw_x, raw_y, screen_x, screen_y);
+        else {
+            local_consecutive_invalid = 0;
+            new_state.valid = true;
+            new_state.pressed = false;
+            
+            if (was_touched) {
+                Serial.println("[TOUCH/CORE0] Released");
+                was_touched = false;
+            }
         }
-        was_touched = true;
+        
+        // Update shared state (thread-safe)
+        if (xSemaphoreTake(g_touch_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+            g_touch_state = new_state;
+            xSemaphoreGive(g_touch_mutex);
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_INTERVAL_MS));
+    }
+}
+
+// LVGL indev callback - reads from shared state (runs on Core 1)
+void my_touch_read(lv_indev_t* indev, lv_indev_data_t* data) {
+    TouchState local_state;
+    
+    // Read shared state (thread-safe)
+    if (xSemaphoreTake(g_touch_mutex, pdMS_TO_TICKS(2)) == pdTRUE) {
+        local_state = g_touch_state;
+        xSemaphoreGive(g_touch_mutex);
     }
     else {
-        consecutive_invalid = 0;
-        if (was_touched) {
-            Serial.println("[TOUCH] Released");
-            was_touched = false;
-        }
+        // Mutex timeout - report no touch
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
+    
+    if (local_state.valid && local_state.pressed) {
+        data->state = LV_INDEV_STATE_PRESSED;
+        data->point.x = local_state.x;
+        data->point.y = local_state.y;
+    }
+    else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
 }
 
-#pragma endregion Touch Callbacks
+#pragma endregion Touch Callbacks - DUAL CORE
 
 //=================================================================
 // CRITICAL LABEL ANIMATION HELPER
@@ -2468,9 +2623,9 @@ void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, 
             lv_anim_init(&anim);
             lv_anim_set_var(&anim, label);
             lv_anim_set_values(&anim, 0, 255);
-            lv_anim_set_duration(&anim, 200);
+            lv_anim_set_duration(&anim, LABEL_BLINK_INTERVAL_MS);
             lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
-            lv_anim_set_playback_duration(&anim, 200);
+            lv_anim_set_playback_duration(&anim, LABEL_BLINK_INTERVAL_MS);
             lv_anim_set_exec_cb(&anim, [](void* obj, int32_t val) {
                 lv_obj_t* lbl = (lv_obj_t*)obj;
             if (val < 128) {
@@ -3338,7 +3493,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v4.1 - Unit Conversion");
+    Serial.println("   370zMonitor v4.3 - Dual-Core");
     Serial.println("========================================");
 
     if (psramFound()) {
@@ -3364,7 +3519,14 @@ void setup() {
     delay(100);
     touch.begin();
     touch.setRotation(0);
-    Serial.println("      GT911 initialized");
+    
+    // Create touch mutex for dual-core architecture
+    g_touch_mutex = xSemaphoreCreateMutex();
+    if (!g_touch_mutex) {
+        Serial.println("      FATAL: Touch mutex creation failed!");
+        while (1) delay(100);
+    }
+    Serial.println("      GT911 initialized + mutex created");
 
     Serial.println("[3/8] Display init...");
     gfx->begin();
@@ -3425,6 +3587,15 @@ void setup() {
 
 #if ENABLE_SD_LOGGING
     Serial.println("[8/8] SD Card...");
+    
+    // Create SD queue for dual-core architecture
+    g_sd_queue = xQueueCreate(SD_QUEUE_SIZE, sizeof(SDLogEntry));
+    if (!g_sd_queue) {
+        Serial.println("      WARNING: SD queue creation failed!");
+    } else {
+        Serial.println("      SD queue created");
+    }
+    
     if (sdInit()) {
         sdTestWrite();
         sdStartSession();
@@ -3443,9 +3614,9 @@ void setup() {
     if (ui_Screen1) {
         utility_box = lv_obj_create(ui_Screen1);
 #if ENABLE_SD_LOGGING
-        lv_obj_set_size(utility_box, 200, 120);  // Height for 5 lines: FPS, CPU1, CPU2, BRI, SD
+        lv_obj_set_size(utility_box, 200, 138);  // Height for 6 lines: FPS, CPU0, CPU1, RAM, BRI, SD
 #else
-        lv_obj_set_size(utility_box, 200, 100);  // Height for 4 lines: FPS, CPU1, CPU2, BRI
+        lv_obj_set_size(utility_box, 200, 118);  // Height for 5 lines: FPS, CPU0, CPU1, RAM, BRI
 #endif
         lv_obj_align(utility_box, LV_ALIGN_TOP_LEFT, 5, 5);
         lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x444444), 0);
@@ -3471,9 +3642,9 @@ void setup() {
         utility_label = lv_label_create(utility_box);
 
 #if ENABLE_SD_LOGGING
-        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nBRI:   ---%\nSD:    ---");
+        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nRAM:  ---%\nBRI:  ---%\nSD:   ---");
 #else
-        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nBRI:   ---%");
+        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nRAM:  ---%\nBRI:  ---%");
 #endif
 
         lv_obj_set_style_text_color(utility_label, lv_color_hex(0xffff00), 0);
@@ -3518,12 +3689,56 @@ void setup() {
     lv_refr_now(NULL);
     Serial.printf("Initial render took: %u ms\n", millis() - t0);
 
+    //=================================================================
+    // CREATE CORE 0 TASKS
+    // These run independently from the main loop on Core 1
+    //=================================================================
+    Serial.println("\n[CORE0] Creating Core 0 tasks...");
+    
+    // Touch task on Core 0 - polls GT911 every 10ms
+    BaseType_t touchTaskResult = xTaskCreatePinnedToCore(
+        touchTask,           // Task function
+        "TouchTask",         // Task name
+        4096,                // Stack size (bytes)
+        NULL,                // Parameters
+        2,                   // Priority (higher than idle)
+        &g_touch_task_handle, // Task handle (reuse SD handle variable location)
+        0                    // Core 0
+    );
+    if (touchTaskResult == pdPASS) {
+        Serial.println("[CORE0] Touch task created on Core 0");
+    } else {
+        Serial.println("[CORE0] ERROR: Touch task creation failed!");
+    }
+    
+#if ENABLE_SD_LOGGING
+    // SD write task on Core 0 - handles all SD card I/O
+    if (g_sd_queue && g_sd_state.initialized) {
+        BaseType_t sdTaskResult = xTaskCreatePinnedToCore(
+            sdWriteTask,         // Task function
+            "SDWriteTask",       // Task name
+            8192,                // Stack size (bytes) - larger for file I/O
+            NULL,                // Parameters
+            1,                   // Priority (lower than touch)
+            &g_sd_task_handle,   // Task handle
+            0                    // Core 0
+        );
+        if (sdTaskResult == pdPASS) {
+            Serial.println("[CORE0] SD write task created on Core 0");
+        } else {
+            Serial.println("[CORE0] ERROR: SD task creation failed!");
+        }
+    }
+#endif
+
     Serial.println("\n========================================");
-    Serial.println("         RUNNING");
+    Serial.println("         RUNNING (DUAL-CORE)");
     Serial.printf("  Mode: %s\n", g_demo_mode ? "DEMO" : "LIVE");
     Serial.printf("  Pressure Unit: %s\n", getPressureUnitStr(g_pressure_unit));
     Serial.println("  Temp units: Per-gauge (tap to cycle)");
     Serial.println("  Hold utility box 5s to toggle mode");
+    Serial.println("  Core 0: Touch + SD I/O");
+    Serial.println("  Core 1: LVGL + Data Processing");
     Serial.println("========================================\n");
 }
 

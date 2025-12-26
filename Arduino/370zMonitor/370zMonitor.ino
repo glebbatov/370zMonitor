@@ -68,7 +68,7 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_CHARTS           1   // Enable charts
 #define ENABLE_SD_LOGGING       1   // Enable SD card data logging
 #define ENABLE_USB_MSC          1   // Enable USB Mass Storage mode (hold BOOT at startup)
-#define UPDATE_INTERVAL_MS      100 // default 250ms
+#define UPDATE_INTERVAL_MS      25 // default 250ms
 
 // USB MSC Configuration
 #define USB_MSC_BOOT_PIN    0   // GPIO0 = BOOT button on most ESP32-S3 boards

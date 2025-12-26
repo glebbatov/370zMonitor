@@ -61,12 +61,14 @@ __attribute__((constructor)) void configurePSRAM() {
 //-----------------------------------------------------------------
 
 // ===== FEATURE FLAGS =====
-#define ENABLE_TOUCH        1
-#define ENABLE_UI_UPDATES   1   // Enable bar/label updates
-#define ENABLE_CHARTS       1   // Enable charts
-#define ENABLE_SD_LOGGING   1   // Enable SD card data logging
-#define ENABLE_USB_MSC      1   // Enable USB Mass Storage mode (hold BOOT at startup)
-#define UPDATE_INTERVAL_MS  500 // Update every 250ms
+#define ENABLE_TOUCH            1
+#define ENABLE_UI_UPDATES       1   // Enable all UI updates (master switch)
+#define ENABLE_BARS             1   // Enable bar widgets
+#define ENABLE_VALUE_CRITICAL   1   // Enable "Value Critical" labels
+#define ENABLE_CHARTS           1   // Enable charts
+#define ENABLE_SD_LOGGING       1   // Enable SD card data logging
+#define ENABLE_USB_MSC          1   // Enable USB Mass Storage mode (hold BOOT at startup)
+#define UPDATE_INTERVAL_MS      100 // default 250ms
 
 // USB MSC Configuration
 #define USB_MSC_BOOT_PIN    0   // GPIO0 = BOOT button on most ESP32-S3 boards
@@ -2785,6 +2787,7 @@ void updateUI() {
         int display_val = (int)(smooth_oil_pressure + 0.5f);
 
         // Update bar
+#if ENABLE_BARS
         if (ui_OIL_PRESS_Bar) {
             // Bar always uses PSI internally for range
             lv_bar_set_value(ui_OIL_PRESS_Bar, pressure_psi, LV_ANIM_OFF);
@@ -2793,6 +2796,7 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
+#endif
 
         // Only update label if value changed OR unit changed
         if (ui_OIL_PRESS_Value && (display_val != last_oil_press_display || pressure_unit_changed)) {
@@ -2829,8 +2833,10 @@ void updateUI() {
             }
         }
 
+#if ENABLE_VALUE_CRITICAL
         updateCriticalLabel(ui_OIL_PRESS_VALUE_CRITICAL_Label, isOilPressureCritical(),
             &oil_press_was_critical, &oil_press_visible, &oil_press_exit_time);
+#endif
     }
     // If not valid, don't update - UI stays at reset state ("---" and 0)
 
@@ -2847,6 +2853,7 @@ void updateUI() {
             smooth_oil_temp_f = smooth_oil_temp_f * (1.0f - SMOOTH_FACTOR) + temp_pan_disp * SMOOTH_FACTOR;
         }
 
+#if ENABLE_BARS
         if (ui_OIL_TEMP_Bar) {
             lv_bar_set_value(ui_OIL_TEMP_Bar, g_vehicle_data.oil_temp_pan_f, LV_ANIM_OFF);
             bool critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
@@ -2854,6 +2861,7 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
+#endif
 
         if (ui_OIL_TEMP_Value_P) {
             int pan_display_val = (int)(temp_pan_disp + 0.5f);
@@ -2909,9 +2917,11 @@ void updateUI() {
             g_oil_temp_panel_was_critical = oil_temp_critical;
         }
 
+#if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
         updateCriticalLabel(ui_OIL_TEMP_VALUE_CRITICAL_Label, critical,
             &oil_temp_was_critical, &oil_temp_visible, &oil_temp_exit_time);
+#endif
     }
 
     // ----- Water Temperature -----
@@ -2972,6 +2982,7 @@ void updateUI() {
             }
             g_water_temp_panel_was_critical = water_temp_critical;
         }
+#if ENABLE_BARS
         if (ui_W_TEMP_Bar) {
             lv_bar_set_value(ui_W_TEMP_Bar, g_vehicle_data.water_temp_hot_f, LV_ANIM_OFF);
             bool critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
@@ -2979,10 +2990,13 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
+#endif
 
+#if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_W_TEMP_VALUE_CRITICAL_Label, critical,
             &water_temp_was_critical, &water_temp_visible, &water_temp_exit_time);
+#endif
     }
 
     // ----- Trans Temperature -----
@@ -3043,6 +3057,7 @@ void updateUI() {
             }
             g_trans_temp_panel_was_critical = trans_temp_critical;
         }
+#if ENABLE_BARS
         if (ui_TRAN_TEMP_Bar) {
             lv_bar_set_value(ui_TRAN_TEMP_Bar, g_vehicle_data.trans_temp_hot_f, LV_ANIM_OFF);
             bool critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
@@ -3050,10 +3065,13 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
+#endif
 
+#if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_TRAN_TEMP_VALUE_CRITICAL_Label, critical,
             &trans_temp_was_critical, &trans_temp_visible, &trans_temp_exit_time);
+#endif
     }
 
     // ----- Steering Temperature -----
@@ -3114,6 +3132,7 @@ void updateUI() {
             }
             g_steer_temp_panel_was_critical = steer_temp_critical;
         }
+#if ENABLE_BARS
         if (ui_STEER_TEMP_Bar) {
             lv_bar_set_value(ui_STEER_TEMP_Bar, g_vehicle_data.steer_temp_hot_f, LV_ANIM_OFF);
             bool critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
@@ -3121,10 +3140,13 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
+#endif
 
+#if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_STEER_TEMP_VALUE_CRITICAL_Label, critical,
             &steer_temp_was_critical, &steer_temp_visible, &steer_temp_exit_time);
+#endif
     }
 
     // ----- Diff Temperature -----
@@ -3185,6 +3207,7 @@ void updateUI() {
             }
             g_diff_temp_panel_was_critical = diff_temp_critical;
         }
+#if ENABLE_BARS
         if (ui_DIFF_TEMP_Bar) {
             lv_bar_set_value(ui_DIFF_TEMP_Bar, g_vehicle_data.diff_temp_hot_f, LV_ANIM_OFF);
             bool critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
@@ -3192,10 +3215,13 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
+#endif
 
+#if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_DIFF_TEMP_VALUE_CRITICAL_Label, critical,
             &diff_temp_was_critical, &diff_temp_visible, &diff_temp_exit_time);
+#endif
     }
 
     // ----- Fuel Trust -----
@@ -3210,6 +3236,7 @@ void updateUI() {
         }
         int display_fuel = (int)(smooth_fuel_trust + 0.5f);
 
+#if ENABLE_BARS
         if (ui_FUEL_TRUST_Bar) {
             lv_bar_set_value(ui_FUEL_TRUST_Bar, display_fuel, LV_ANIM_OFF);
             bool critical = (fuel < FUEL_TRUST_ValueCritical);
@@ -3217,6 +3244,7 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
+#endif
 
         if (ui_FUEL_TRUST_Value) {
             if (display_fuel != last_fuel_trust_display) {
@@ -3249,9 +3277,11 @@ void updateUI() {
             g_fuel_panel_was_critical = fuel_critical;
         }
 
+#if ENABLE_VALUE_CRITICAL
         bool critical = (fuel < FUEL_TRUST_ValueCritical);
         updateCriticalLabel(ui_FUEL_TRUST_VALUE_CRITICAL_Label, critical,
             &fuel_trust_was_critical, &fuel_trust_visible, &fuel_trust_exit_time);
+#endif
     }
 }
 

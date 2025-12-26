@@ -17,10 +17,10 @@
 
 /*
  * Quick performance points:
- * UPDATE_INTERVAL_MS
- * I2C_FREQ_HZ
- * CHART_BLINK_INTERVAL_MS
- * LVGL_BUFFER_SIZE
+ * UPDATE_INTERVAL_MS - how often the UI updates with new values
+ * I2C_FREQ_HZ - speed of communication with the GT911 touch controller
+ * CHART_BLINK_INTERVAL_MS - how fast critical chart bars blink red/dim
+ * LVGL_BUFFER_SIZE - how much of the screen LVGL renders at once
 */
 
 #include <Arduino_GFX_Library.h>
@@ -51,7 +51,7 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_CHARTS       1   // Enable charts
 #define ENABLE_SD_LOGGING   1   // Enable SD card data logging
 #define ENABLE_USB_MSC      1   // Enable USB Mass Storage mode (hold BOOT at startup)
-#define UPDATE_INTERVAL_MS  250 // Update every 150ms
+#define UPDATE_INTERVAL_MS  250 // Update every 250ms
 
 // USB MSC Configuration
 #define USB_MSC_BOOT_PIN    0   // GPIO0 = BOOT button on most ESP32-S3 boards
@@ -255,7 +255,7 @@ void resetUIElements();
 #define CH422_ADDR_IOWR   0x38
 #define I2C_SDA 8
 #define I2C_SCL 9
-#define I2C_FREQ_HZ 400000
+#define I2C_FREQ_HZ 100000  // 400000 - max value
 #define EXIO_TP_RST   1
 #define EXIO_DISP     2
 #define EXIO_SD_CS    4

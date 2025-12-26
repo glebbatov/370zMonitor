@@ -243,6 +243,7 @@ void resetVehicleData() {
 
 // Forward declarations for reset functions (defined after variables)
 void resetSmoothingState();
+void resetTapPanelOpacity();
 void resetDemoState();
 void updateTapBoxVisibility();
 void resetUIElements();
@@ -341,6 +342,22 @@ void resetSmoothingState() {
     smooth_fuel_trust = -1.0f;
 }
 
+// Panel critical state tracking (file-scoped for reset capability)
+static bool g_oil_press_panel_was_critical = false;
+static bool g_oil_temp_panel_was_critical = false;
+static bool g_water_temp_panel_was_critical = false;
+static bool g_trans_temp_panel_was_critical = false;
+static bool g_steer_temp_panel_was_critical = false;
+static bool g_diff_temp_panel_was_critical = false;
+static bool g_fuel_panel_was_critical = false;
+
+// Flag to force panel opacity reset on next updateGauges() call
+static bool g_force_panel_reset = false;
+
+void resetTapPanelOpacity() {
+    g_force_panel_reset = true;
+}
+
 #pragma endregion Animation/Smoothing
 
 //-----------------------------------------------------------------
@@ -364,6 +381,7 @@ extern lv_obj_t* ui_OIL_PRESS_Bar;
 extern lv_obj_t* ui_OIL_PRESS_CHART;
 extern lv_obj_t* ui_OIL_PRESS_Value;
 extern lv_obj_t* ui_OIL_PRESS_VALUE_CRITICAL_Label;
+extern lv_obj_t* ui_OIL_PRESS_Value_Tap_Panel;
 
 //OIL TEMP [Oil pan/C]
 extern lv_obj_t* ui_OIL_TEMP_Bar;
@@ -371,6 +389,7 @@ extern lv_obj_t* ui_OIL_TEMP_CHART;
 extern lv_obj_t* ui_OIL_TEMP_Value_P;
 extern lv_obj_t* ui_OIL_TEMP_Value_C;
 extern lv_obj_t* ui_OIL_TEMP_VALUE_CRITICAL_Label;
+extern lv_obj_t* ui_OIL_TEMP_Value_Tap_Panel;
 
 //WATER TEMP [H/C]
 extern lv_obj_t* ui_W_TEMP_Bar;
@@ -378,6 +397,7 @@ extern lv_obj_t* ui_W_TEMP_CHART;
 extern lv_obj_t* ui_W_TEMP_Value_H;
 extern lv_obj_t* ui_W_TEMP_Value_c;
 extern lv_obj_t* ui_W_TEMP_VALUE_CRITICAL_Label;
+extern lv_obj_t* ui_W_TEMP_Value_Tap_Panel;
 
 //TRAN TEMP [H/C]
 extern lv_obj_t* ui_TRAN_TEMP_Bar;
@@ -385,6 +405,7 @@ extern lv_obj_t* ui_TRAN_TEMP_CHART;
 extern lv_obj_t* ui_TRAN_TEMP_Value_H;
 extern lv_obj_t* ui_TRAN_TEMP_Value_C;
 extern lv_obj_t* ui_TRAN_TEMP_VALUE_CRITICAL_Label;
+extern lv_obj_t* ui_TRAN_TEMP_Value_Tap_Panel;
 
 //STEER TEMP [H/C]
 extern lv_obj_t* ui_STEER_TEMP_Bar;
@@ -392,6 +413,7 @@ extern lv_obj_t* ui_STEER_TEMP_CHART;
 extern lv_obj_t* ui_STEER_TEMP_Value_H;
 extern lv_obj_t* ui_STEER_TEMP_Value_C;
 extern lv_obj_t* ui_STEER_TEMP_VALUE_CRITICAL_Label;
+extern lv_obj_t* ui_STEER_TEMP_Value_Tap_Panel;
 
 //DIFF TEMP [H/C]
 extern lv_obj_t* ui_DIFF_TEMP_Bar;
@@ -399,12 +421,14 @@ extern lv_obj_t* ui_DIFF_TEMP_CHART;
 extern lv_obj_t* ui_DIFF_TEMP_Value_H;
 extern lv_obj_t* ui_DIFF_TEMP_Value_C;
 extern lv_obj_t* ui_DIFF_TEMP_VALUE_CRITICAL_Label;
+extern lv_obj_t* ui_DIFF_TEMP_Value_Tap_Panel;
 
 //FUEL TRUST
 extern lv_obj_t* ui_FUEL_TRUST_Bar;
 extern lv_obj_t* ui_FUEL_TRUST_CHART;
 extern lv_obj_t* ui_FUEL_TRUST_Value;
 extern lv_obj_t* ui_FUEL_TRUST_VALUE_CRITICAL_Label;
+extern lv_obj_t* ui_FUEL_TRUST_Value_Tap_Panel;
 
 #pragma endregion UI Objects
 
@@ -2021,6 +2045,7 @@ static void checkUtilityLongPress() {
             // This ensures clean separation between demo and live data
             resetVehicleData();
             resetSmoothingState();
+            resetTapPanelOpacity();  // Reset critical backgrounds
             resetUIElements();  // Reset bars and labels
             resetCharts();      // Reset chart data
 
@@ -2484,6 +2509,29 @@ void updateUI() {
     static int last_diff_temp_cooled_display = -9999;
     static int last_fuel_trust_display = -9999;
 
+    // Handle panel opacity reset request (from mode switching)
+    if (g_force_panel_reset) {
+        // Reset all panels to transparent
+        if (ui_OIL_PRESS_Value_Tap_Panel) lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        if (ui_OIL_TEMP_Value_Tap_Panel) lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        if (ui_W_TEMP_Value_Tap_Panel) lv_obj_set_style_bg_opa(ui_W_TEMP_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        if (ui_TRAN_TEMP_Value_Tap_Panel) lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        if (ui_STEER_TEMP_Value_Tap_Panel) lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        if (ui_DIFF_TEMP_Value_Tap_Panel) lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        if (ui_FUEL_TRUST_Value_Tap_Panel) lv_obj_set_style_bg_opa(ui_FUEL_TRUST_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        
+        // Reset tracking state
+        g_oil_press_panel_was_critical = false;
+        g_oil_temp_panel_was_critical = false;
+        g_water_temp_panel_was_critical = false;
+        g_trans_temp_panel_was_critical = false;
+        g_steer_temp_panel_was_critical = false;
+        g_diff_temp_panel_was_critical = false;
+        g_fuel_panel_was_critical = false;
+        
+        g_force_panel_reset = false;
+    }
+
     // Track last units to force update on unit change
     static PressureUnit last_pressure_unit = (PressureUnit)-1;
     static TempUnit last_oil_temp_unit = (TempUnit)-1;
@@ -2549,8 +2597,7 @@ void updateUI() {
 
             // Style label text color based on critical
             bool value_critical = isOilPressureCritical();
-            static bool was_value_critical = false;
-            if (value_critical != was_value_critical) {
+            if (value_critical != g_oil_press_panel_was_critical) {
                 if (value_critical) {
                     // Critical: black text, panel shows red background
                     lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0x000000), 0);
@@ -2565,7 +2612,7 @@ void updateUI() {
                         lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value_Tap_Panel, LV_OPA_TRANSP, 0);
                     }
                 }
-                was_value_critical = value_critical;
+                g_oil_press_panel_was_critical = value_critical;
             }
         }
 
@@ -2641,13 +2688,12 @@ void updateUI() {
 
         // Panel background for critical state (covers both P and C labels)
         bool oil_temp_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
-        static bool oil_temp_panel_was_critical = false;
-        if (oil_temp_critical != oil_temp_panel_was_critical) {
+        if (oil_temp_critical != g_oil_temp_panel_was_critical) {
             if (ui_OIL_TEMP_Value_Tap_Panel) {
                 lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_Tap_Panel, 
                     oil_temp_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
             }
-            oil_temp_panel_was_critical = oil_temp_critical;
+            g_oil_temp_panel_was_critical = oil_temp_critical;
         }
 
         bool critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
@@ -2706,13 +2752,12 @@ void updateUI() {
 
         // Panel background for critical state
         bool water_temp_critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
-        static bool water_temp_panel_was_critical = false;
-        if (water_temp_critical != water_temp_panel_was_critical) {
+        if (water_temp_critical != g_water_temp_panel_was_critical) {
             if (ui_W_TEMP_Value_Tap_Panel) {
                 lv_obj_set_style_bg_opa(ui_W_TEMP_Value_Tap_Panel,
                     water_temp_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
             }
-            water_temp_panel_was_critical = water_temp_critical;
+            g_water_temp_panel_was_critical = water_temp_critical;
         }
         if (ui_W_TEMP_Bar) {
             lv_bar_set_value(ui_W_TEMP_Bar, g_vehicle_data.water_temp_hot_f, LV_ANIM_OFF);
@@ -2778,13 +2823,12 @@ void updateUI() {
 
         // Panel background for critical state
         bool trans_temp_critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
-        static bool trans_temp_panel_was_critical = false;
-        if (trans_temp_critical != trans_temp_panel_was_critical) {
+        if (trans_temp_critical != g_trans_temp_panel_was_critical) {
             if (ui_TRAN_TEMP_Value_Tap_Panel) {
                 lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_Tap_Panel,
                     trans_temp_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
             }
-            trans_temp_panel_was_critical = trans_temp_critical;
+            g_trans_temp_panel_was_critical = trans_temp_critical;
         }
         if (ui_TRAN_TEMP_Bar) {
             lv_bar_set_value(ui_TRAN_TEMP_Bar, g_vehicle_data.trans_temp_hot_f, LV_ANIM_OFF);
@@ -2850,13 +2894,12 @@ void updateUI() {
 
         // Panel background for critical state
         bool steer_temp_critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
-        static bool steer_temp_panel_was_critical = false;
-        if (steer_temp_critical != steer_temp_panel_was_critical) {
+        if (steer_temp_critical != g_steer_temp_panel_was_critical) {
             if (ui_STEER_TEMP_Value_Tap_Panel) {
                 lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_Tap_Panel,
                     steer_temp_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
             }
-            steer_temp_panel_was_critical = steer_temp_critical;
+            g_steer_temp_panel_was_critical = steer_temp_critical;
         }
         if (ui_STEER_TEMP_Bar) {
             lv_bar_set_value(ui_STEER_TEMP_Bar, g_vehicle_data.steer_temp_hot_f, LV_ANIM_OFF);
@@ -2922,13 +2965,12 @@ void updateUI() {
 
         // Panel background for critical state
         bool diff_temp_critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
-        static bool diff_temp_panel_was_critical = false;
-        if (diff_temp_critical != diff_temp_panel_was_critical) {
+        if (diff_temp_critical != g_diff_temp_panel_was_critical) {
             if (ui_DIFF_TEMP_Value_Tap_Panel) {
                 lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_Tap_Panel,
                     diff_temp_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
             }
-            diff_temp_panel_was_critical = diff_temp_critical;
+            g_diff_temp_panel_was_critical = diff_temp_critical;
         }
         if (ui_DIFF_TEMP_Bar) {
             lv_bar_set_value(ui_DIFF_TEMP_Bar, g_vehicle_data.diff_temp_hot_f, LV_ANIM_OFF);
@@ -2986,13 +3028,12 @@ void updateUI() {
 
         // Panel background for critical state
         bool fuel_critical = (fuel < FUEL_TRUST_ValueCritical);
-        static bool fuel_panel_was_critical = false;
-        if (fuel_critical != fuel_panel_was_critical) {
+        if (fuel_critical != g_fuel_panel_was_critical) {
             if (ui_FUEL_TRUST_Value_Tap_Panel) {
                 lv_obj_set_style_bg_opa(ui_FUEL_TRUST_Value_Tap_Panel,
                     fuel_critical ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
             }
-            fuel_panel_was_critical = fuel_critical;
+            g_fuel_panel_was_critical = fuel_critical;
         }
 
         bool critical = (fuel < FUEL_TRUST_ValueCritical);
@@ -3438,6 +3479,7 @@ void setup() {
     // CRITICAL: Reset UI to show "---" on startup in live mode
     resetVehicleData();
     resetSmoothingState();
+    resetTapPanelOpacity();  // Ensure panels start transparent
     resetUIElements();
     resetCharts();
 

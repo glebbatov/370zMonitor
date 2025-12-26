@@ -2484,6 +2484,7 @@ void my_disp_flush(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
 #define MAX_CONSECUTIVE_INVALID 50
 #define TOUCH_RESET_COOLDOWN_MS 5000
 #define TOUCH_POLL_INTERVAL_MS 10   // Poll touch every 10ms on Core 0
+#define TOUCH_RELEASE_DEBOUNCE 3     // Require 3 consecutive "no touch" reads before releasing (30ms)
 
 // Core 0 Touch Task - polls GT911 and updates shared state
 void touchTask(void* parameter) {
@@ -2492,6 +2493,8 @@ void touchTask(void* parameter) {
     static bool was_touched = false;
     static uint32_t local_consecutive_invalid = 0;
     static uint32_t local_last_reset = 0;
+    static uint8_t release_debounce_count = 0;  // Debounce counter for release
+    static int16_t last_valid_x = 0, last_valid_y = 0;  // Last known good position
     
     while (true) {
         uint32_t now = millis();
@@ -2529,6 +2532,7 @@ void touchTask(void* parameter) {
             else {
                 // Valid touch - convert coordinates
                 local_consecutive_invalid = 0;
+                release_debounce_count = 0;  // Reset release debounce
                 
                 int screen_x = (raw_y - 30) * 800 / 745;
                 int screen_y = (770 - raw_x) * 480 / 420;
@@ -2543,6 +2547,10 @@ void touchTask(void* parameter) {
                 new_state.pressed = true;
                 new_state.valid = true;
                 
+                // Save last valid position
+                last_valid_x = screen_x;
+                last_valid_y = screen_y;
+                
                 // Log on initial touch only
                 if (!was_touched) {
                     Serial.printf("[TOUCH/CORE0] raw(%d,%d) -> screen(%d,%d)\n", 
@@ -2553,12 +2561,27 @@ void touchTask(void* parameter) {
         }
         else {
             local_consecutive_invalid = 0;
-            new_state.valid = true;
-            new_state.pressed = false;
             
+            // Debounce release - require multiple consecutive "no touch" reads
             if (was_touched) {
-                Serial.println("[TOUCH/CORE0] Released");
-                was_touched = false;
+                release_debounce_count++;
+                if (release_debounce_count < TOUCH_RELEASE_DEBOUNCE) {
+                    // Still debouncing - keep reporting as pressed at last position
+                    new_state.x = last_valid_x;
+                    new_state.y = last_valid_y;
+                    new_state.pressed = true;
+                    new_state.valid = true;
+                } else {
+                    // Debounce complete - actually released
+                    new_state.valid = true;
+                    new_state.pressed = false;
+                    Serial.println("[TOUCH/CORE0] Released");
+                    was_touched = false;
+                    release_debounce_count = 0;
+                }
+            } else {
+                new_state.valid = true;
+                new_state.pressed = false;
             }
         }
         

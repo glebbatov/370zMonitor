@@ -2177,20 +2177,25 @@ static void checkUtilityLongPress() {
 
 static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
     if (utility_label) {
-        char buf[120];
+        char buf[160];
         int bri_percent = (g_brightness_level * 100) / 255;
 
-        // Calculate RAM usage percentage (internal SRAM)
+        // Internal SRAM (fast, limited ~320KB usable)
         size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         size_t total_internal = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
-        int ram_percent = (total_internal > 0) ? (100 - (free_internal * 100 / total_internal)) : 0;
+        int sram_percent = (total_internal > 0) ? (100 - (free_internal * 100 / total_internal)) : 0;
+
+        // PSRAM (external, large ~8MB)
+        size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        size_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+        int psram_percent = (total_psram > 0) ? (100 - (free_psram * 100 / total_psram)) : 0;
 
 #if ENABLE_SD_LOGGING
         char sd_status[16];
         sdGetStatusString(sd_status, sizeof(sd_status));
-        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nRAM:  %3d%%\nBRI:  %3d%%\nSD:   %s", fps, cpu0_percent, cpu1_percent, ram_percent, bri_percent, sd_status);
+        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nSRAM: %3d%%\nPSRAM:%3d%%\nBRI:  %3d%%\nSD:   %s", fps, cpu0_percent, cpu1_percent, sram_percent, psram_percent, bri_percent, sd_status);
 #else
-        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nRAM:  %3d%%\nBRI:  %3d%%", fps, cpu0_percent, cpu1_percent, ram_percent, bri_percent);
+        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nSRAM: %3d%%\nPSRAM:%3d%%\nBRI:  %3d%%", fps, cpu0_percent, cpu1_percent, sram_percent, psram_percent, bri_percent);
 #endif
 
         lv_label_set_text(utility_label, buf);
@@ -3637,9 +3642,9 @@ void setup() {
     if (ui_Screen1) {
         utility_box = lv_obj_create(ui_Screen1);
 #if ENABLE_SD_LOGGING
-        lv_obj_set_size(utility_box, 200, 138);  // Height for 6 lines: FPS, CPU0, CPU1, RAM, BRI, SD
+        lv_obj_set_size(utility_box, 200, 156);  // Height for 7 lines: FPS, CPU0, CPU1, SRAM, PSRAM, BRI, SD
 #else
-        lv_obj_set_size(utility_box, 200, 118);  // Height for 5 lines: FPS, CPU0, CPU1, RAM, BRI
+        lv_obj_set_size(utility_box, 200, 138);  // Height for 6 lines: FPS, CPU0, CPU1, SRAM, PSRAM, BRI
 #endif
         lv_obj_align(utility_box, LV_ALIGN_TOP_LEFT, 5, 5);
         lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x444444), 0);
@@ -3665,9 +3670,9 @@ void setup() {
         utility_label = lv_label_create(utility_box);
 
 #if ENABLE_SD_LOGGING
-        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nRAM:  ---%\nBRI:  ---%\nSD:   ---");
+        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nSRAM: ---%\nPSRAM:  ---%\nBRI:  ---%\nSD:   ---");
 #else
-        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nRAM:  ---%\nBRI:  ---%");
+        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nSRAM: ---%\nPSRAM:  ---%\nBRI:  ---%");
 #endif
 
         lv_obj_set_style_text_color(utility_label, lv_color_hex(0xffff00), 0);

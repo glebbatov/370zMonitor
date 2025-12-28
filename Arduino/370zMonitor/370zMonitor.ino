@@ -50,6 +50,8 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
+#include <WiFi.h>                   // WiFi for NTP time sync
+#include <time.h>                   // Time functions
 
  //-----------------------------------------------------------------
 
@@ -1121,6 +1123,18 @@ void updateOBDData() {
 #define SD_FREE_SPACE_PERCENT 5   // Keep at least 5% free space
 #define SD_MIN_FREE_BYTES (1024 * 1024)  // Absolute minimum 1MB free
 
+// ===== TIMEKEEPING CONFIGURATION =====
+// WiFi credentials for NTP time sync (fallback when RTC unavailable)
+#define WIFI_SSID "NETGEAR68"
+#define WIFI_PASSWORD "quickviolet005"
+#define NTP_SERVER_1 "pool.ntp.org"
+#define NTP_SERVER_2 "time.nist.gov"
+#define NTP_SERVER_3 "time.google.com"
+#define GMT_OFFSET_SEC (-6 * 3600)       // CST = UTC-6 (adjust for your timezone)
+#define DAYLIGHT_OFFSET_SEC 0            // Set to 3600 if DST is active
+#define WIFI_CONNECT_TIMEOUT_MS 10000    // 10 second timeout for WiFi connection
+#define NTP_SYNC_TIMEOUT_MS 3000         // 3 second timeout per NTP server
+
 // SD Card State
 static struct {
     bool initialized;
@@ -1141,6 +1155,21 @@ static struct {
     uint64_t used_bytes;        // Used space
 } g_sd_state = { 0 };
 
+// Timekeeping State
+enum TimeSyncStatus { TIME_SYNC_IDLE, TIME_SYNC_CONNECTING, TIME_SYNC_SYNCING, TIME_SYNC_OK, TIME_SYNC_FAILED };
+static struct {
+    bool time_available;        // True if we have valid time from any source
+    bool rtc_active;            // Using DS3231 RTC
+    bool wifi_time_active;      // Using WiFi NTP time
+    TimeSyncStatus sync_status; // Background sync status
+    struct tm current_time;     // Current time structure
+    char time_string[24];       // "MM/DD/YYYY HH:MM:SS" or status
+    uint32_t last_update_ms;    // Last time update timestamp
+} g_time_state = { 0 };
+
+// Time sync task handle
+static TaskHandle_t g_time_sync_task_handle = NULL;
+
 // Forward declarations
 bool sdInit();
 bool sdStartSession();
@@ -1153,6 +1182,12 @@ bool sdDeleteOldestLog();
 uint32_t sdReadBootCount();
 void sdWriteBootCount(uint32_t count);
 bool sdDetectRTC();
+void initTimeKeeping();
+void timeSyncTask(void* parameter);
+bool tryNTPSync(const char* server);
+bool readRTC(struct tm* timeinfo);
+void updateTime();
+uint8_t bcdToDec(uint8_t val);
 
 // Initialize SD card
 bool sdInit() {
@@ -1273,7 +1308,7 @@ bool sdStartSession() {
     g_sd_state.bytes_written = 0;
     g_sd_state.last_flush_ms = millis();
 
-    const char* header = "timestamp_ms,elapsed_s,cpu_percent,mode,"
+    const char* header = "datetime,timestamp_ms,elapsed_s,cpu_percent,mode,"
         "oil_press_psi,oil_press_valid,"
         "oil_temp_pan_f,oil_temp_cooled_f,oil_temp_valid,"
         "water_temp_hot_f,water_temp_cooled_f,water_temp_valid,"
@@ -1334,7 +1369,7 @@ void sdWriteTask(void* parameter) {
     Serial.println("[CORE0] SD write task started");
     
     SDLogEntry entry;
-    char line[256];
+    char line[300];  // Increased for datetime column
     
     while (true) {
         // Wait for data from queue (blocks until data available or timeout)
@@ -1351,9 +1386,9 @@ void sdWriteTask(void* parameter) {
                 }
             }
             
-            // Format data line
+            // Format data line (datetime first, then existing columns)
             int len = snprintf(line, sizeof(line),
-                "%lu,%.2f,%.1f,%s,"
+                "%s,%lu,%.2f,%.1f,%s,"
                 "%d,%d,"
                 "%d,%d,%d,"
                 "%d,%d,%d,"
@@ -1362,6 +1397,7 @@ void sdWriteTask(void* parameter) {
                 "%d,%d,%d,"
                 "%d,%d,"
                 "%d,%d\n",
+                g_time_state.time_string,  // datetime first
                 entry.timestamp_ms, entry.elapsed_s, entry.cpu_pct, 
                 entry.demo_mode ? "DEMO" : "LIVE",
                 entry.data.oil_pressure_psi, entry.data.oil_pressure_valid ? 1 : 0,
@@ -1516,8 +1552,218 @@ bool sdDetectRTC() {
     return (Wire.endTransmission() == 0);
 }
 
-// TODO: If RTC detected, add functions to read/write time
-// For now, just detection - full RTC support can be added later
+//=================================================================
+// TIMEKEEPING FUNCTIONS
+// DS3231 RTC (primary) -> WiFi NTP background task (fallback)
+// WiFi sync runs on Core 0 and does NOT block startup
+//=================================================================
+
+// BCD to decimal conversion helper
+uint8_t bcdToDec(uint8_t val) {
+    return ((val / 16 * 10) + (val % 16));
+}
+
+// Read time from DS3231 RTC
+bool readRTC(struct tm* timeinfo) {
+    if (!g_sd_state.rtc_available) return false;
+    
+    Wire.beginTransmission(DS3231_ADDR);
+    Wire.write(0x00);  // Start at register 0 (seconds)
+    if (Wire.endTransmission() != 0) {
+        return false;
+    }
+    
+    Wire.requestFrom(DS3231_ADDR, 7);
+    if (Wire.available() < 7) {
+        return false;
+    }
+    
+    uint8_t seconds = bcdToDec(Wire.read() & 0x7F);
+    uint8_t minutes = bcdToDec(Wire.read());
+    uint8_t hours = bcdToDec(Wire.read() & 0x3F);  // 24-hour mode
+    Wire.read();  // Skip day of week
+    uint8_t day = bcdToDec(Wire.read());
+    uint8_t month = bcdToDec(Wire.read() & 0x1F);
+    uint8_t year = bcdToDec(Wire.read());
+    
+    timeinfo->tm_sec = seconds;
+    timeinfo->tm_min = minutes;
+    timeinfo->tm_hour = hours;
+    timeinfo->tm_mday = day;
+    timeinfo->tm_mon = month - 1;      // tm_mon is 0-11
+    timeinfo->tm_year = year + 100;    // tm_year is years since 1900
+    
+    return true;
+}
+
+// Try to sync time from a specific NTP server
+bool tryNTPSync(const char* server) {
+    Serial.printf("[TIME] Trying NTP server: %s\n", server);
+    configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, server);
+    
+    struct tm timeinfo;
+    uint32_t start_ms = millis();
+    while ((millis() - start_ms) < NTP_SYNC_TIMEOUT_MS) {
+        if (getLocalTime(&timeinfo, 100)) {  // 100ms timeout per attempt
+            Serial.printf("[TIME] NTP sync successful from %s\n", server);
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    Serial.printf("[TIME] NTP server %s timeout\n", server);
+    return false;
+}
+
+// Background task for WiFi time sync (runs on Core 0)
+void timeSyncTask(void* parameter) {
+    Serial.println("[TIME/CORE0] Time sync task started");
+    
+    // Check if WiFi credentials are configured
+    if (strlen(WIFI_SSID) < 2 || strcmp(WIFI_SSID, "YOUR_WIFI_SSID") == 0) {
+        Serial.println("[TIME/CORE0] WiFi SSID not configured");
+        g_time_state.sync_status = TIME_SYNC_FAILED;
+        strcpy(g_time_state.time_string, "N/A");    // NO WIFI CFG
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    // Connect to WiFi
+    g_time_state.sync_status = TIME_SYNC_CONNECTING;
+    Serial.println("[TIME/CORE0] Connecting to WiFi...");
+    
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    
+    uint32_t start_ms = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+        if (millis() - start_ms > WIFI_CONNECT_TIMEOUT_MS) {
+            Serial.println("[TIME/CORE0] WiFi connection timeout");
+            WiFi.disconnect(true);
+            WiFi.mode(WIFI_OFF);
+            g_time_state.sync_status = TIME_SYNC_FAILED;
+            strcpy(g_time_state.time_string, "N/A");   // WIFI FAIL
+            vTaskDelete(NULL);
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+    Serial.printf("[TIME/CORE0] WiFi connected: %s\n", WiFi.localIP().toString().c_str());
+    
+    // Try NTP servers in sequence
+    g_time_state.sync_status = TIME_SYNC_SYNCING;
+    const char* servers[] = { NTP_SERVER_1, NTP_SERVER_2, NTP_SERVER_3 };
+    bool synced = false;
+    
+    for (int i = 0; i < 3 && !synced; i++) {
+        synced = tryNTPSync(servers[i]);
+    }
+    
+    // Disconnect WiFi to save power
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    Serial.println("[TIME/CORE0] WiFi disconnected");
+    
+    if (synced) {
+        g_time_state.wifi_time_active = true;
+        g_time_state.sync_status = TIME_SYNC_OK;
+        updateTime();
+        Serial.printf("[TIME/CORE0] Time synced: %s\n", g_time_state.time_string);
+    } else {
+        g_time_state.sync_status = TIME_SYNC_FAILED;
+        strcpy(g_time_state.time_string, "N/A");   // NTP FAIL
+        Serial.println("[TIME/CORE0] All NTP servers failed");
+    }
+    
+    // Task complete - delete self
+    g_time_sync_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+// Update current time from best available source
+void updateTime() {
+    bool success = false;
+    struct tm timeinfo;
+    
+    // Priority 1: DS3231 RTC
+    if (g_sd_state.rtc_available) {
+        if (readRTC(&timeinfo)) {
+            g_time_state.current_time = timeinfo;
+            g_time_state.rtc_active = true;
+            success = true;
+        } else {
+            g_time_state.rtc_active = false;
+        }
+    }
+    
+    // Priority 2: WiFi/NTP time (cached in ESP32 internal RTC)
+    if (!success && g_time_state.wifi_time_active) {
+        if (getLocalTime(&timeinfo)) {
+            g_time_state.current_time = timeinfo;
+            success = true;
+        }
+    }
+    
+    g_time_state.time_available = success;
+    g_time_state.last_update_ms = millis();
+    
+    // Format time string based on state
+    if (success) {
+        strftime(g_time_state.time_string, sizeof(g_time_state.time_string),
+                 "%m/%d/%Y %H:%M:%S", &g_time_state.current_time);
+    } else if (g_time_state.sync_status == TIME_SYNC_CONNECTING) {
+        strcpy(g_time_state.time_string, "WIFI...");
+    } else if (g_time_state.sync_status == TIME_SYNC_SYNCING) {
+        strcpy(g_time_state.time_string, "NTP...");
+    } else if (g_time_state.sync_status == TIME_SYNC_FAILED) {
+        // Keep the failure message already set
+    } else {
+        strcpy(g_time_state.time_string, "N/A");    // NO TIME
+    }
+}
+
+// Initialize timekeeping - NON-BLOCKING
+// RTC check is immediate, WiFi sync runs in background task
+void initTimeKeeping() {
+    Serial.println("[TIME] Initializing timekeeping...");
+    g_time_state.sync_status = TIME_SYNC_IDLE;
+    strcpy(g_time_state.time_string, "---");
+    
+    // Check for DS3231 RTC first (already detected in sdInit)
+    if (g_sd_state.rtc_available) {
+        Serial.println("[TIME] DS3231 RTC detected - using RTC");
+        g_time_state.rtc_active = true;
+        updateTime();
+        if (g_time_state.time_available) {
+            Serial.printf("[TIME] RTC time: %s\n", g_time_state.time_string);
+            g_time_state.sync_status = TIME_SYNC_OK;
+            return;  // RTC is available, no need for WiFi
+        }
+        Serial.println("[TIME] RTC read failed, will try WiFi in background...");
+    } else {
+        Serial.println("[TIME] No RTC detected, will try WiFi in background...");
+    }
+    
+    // Start background WiFi sync task on Core 0
+    // This does NOT block - the UI will show "WIFI..." while syncing
+    strcpy(g_time_state.time_string, "SYNC...");
+    BaseType_t result = xTaskCreatePinnedToCore(
+        timeSyncTask,           // Task function
+        "TimeSyncTask",         // Task name
+        4096,                   // Stack size
+        NULL,                   // Parameters
+        1,                      // Priority (low, background task)
+        &g_time_sync_task_handle, // Task handle
+        0                       // Core 0
+    );
+    
+    if (result == pdPASS) {
+        Serial.println("[TIME] Background sync task started on Core 0");
+    } else {
+        Serial.println("[TIME] ERROR: Failed to create sync task");
+        g_time_state.sync_status = TIME_SYNC_FAILED;
+        strcpy(g_time_state.time_string, "TASK ERR");
+    }
+}
 
 //=================================================================
 // FREE SPACE MANAGEMENT
@@ -2179,7 +2425,7 @@ static void checkUtilityLongPress() {
 
 static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
     if (utility_label) {
-        char buf[160];
+        char buf[200];  // Increased for TIME line
         int bri_percent = (g_brightness_level * 100) / 255;
 
         // Internal SRAM (fast, limited ~320KB usable)
@@ -2195,7 +2441,21 @@ static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
 #if ENABLE_SD_LOGGING
         char sd_status[16];
         sdGetStatusString(sd_status, sizeof(sd_status));
-        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nSRAM: %3d%%\nPSRAM:%3d%%\nBRI:  %3d%%\nSD:   %s", fps, cpu0_percent, cpu1_percent, sram_percent, psram_percent, bri_percent, sd_status);
+        
+        // Format time and date display on two lines
+        char time_line[20];   // "TIME: HH:MM:SS"
+        char date_line[20];   // "      MM/DD/YY" (right-aligned)
+        if (g_time_state.time_available) {
+            strftime(time_line, sizeof(time_line), "TIME: %H:%M:%S", &g_time_state.current_time);
+            strftime(date_line, sizeof(date_line), "      %m/%d/%y", &g_time_state.current_time);
+        } else {
+            // Show sync status on time line, blank date line
+            snprintf(time_line, sizeof(time_line), "TIME: %s", g_time_state.time_string);
+            strcpy(date_line, "");
+        }
+        
+        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nSRAM: %3d%%\nPSRAM:%3d%%\nBRI:  %3d%%\nSD:   %s\n%s\n%s", 
+                 fps, cpu0_percent, cpu1_percent, sram_percent, psram_percent, bri_percent, sd_status, time_line, date_line);
 #else
         snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nSRAM: %3d%%\nPSRAM:%3d%%\nBRI:  %3d%%", fps, cpu0_percent, cpu1_percent, sram_percent, psram_percent, bri_percent);
 #endif
@@ -3659,6 +3919,9 @@ void setup() {
         sdStartSession();
     }
     Serial.println("      OK");
+    
+    // Initialize timekeeping (RTC or WiFi NTP)
+    initTimeKeeping();
 #endif
 
     // Bar animation speeds
@@ -3672,9 +3935,9 @@ void setup() {
     if (ui_Screen1) {
         utility_box = lv_obj_create(ui_Screen1);
 #if ENABLE_SD_LOGGING
-        lv_obj_set_size(utility_box, 200, 156);  // Height for 7 lines: FPS, CPU0, CPU1, SRAM, PSRAM, BRI, SD
+        lv_obj_set_size(utility_box, 250, 192);  // Height for 9 lines: FPS, CPU0, CPU1, SRAM, PSRAM, BRI, SD, TIME, DATE
 #else
-        lv_obj_set_size(utility_box, 200, 138);  // Height for 6 lines: FPS, CPU0, CPU1, SRAM, PSRAM, BRI
+        lv_obj_set_size(utility_box, 250, 138);  // Height for 6 lines: FPS, CPU0, CPU1, SRAM, PSRAM, BRI
 #endif
         lv_obj_align(utility_box, LV_ALIGN_TOP_LEFT, 5, 5);
         lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x444444), 0);
@@ -3700,7 +3963,7 @@ void setup() {
         utility_label = lv_label_create(utility_box);
 
 #if ENABLE_SD_LOGGING
-        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nSRAM: ---%\nPSRAM:  ---%\nBRI:  ---%\nSD:   ---");
+        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nSRAM: ---%\nPSRAM:---%\nBRI:  ---%\nSD:   ---\nTIME: ---\n      --/--/--");
 #else
         lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nSRAM: ---%\nPSRAM:  ---%\nBRI:  ---%");
 #endif
@@ -3827,6 +4090,9 @@ void loop() {
     // Status every 1 second
     if (now - last_status >= 1000) {
         uint32_t dt_ms = now - last_status;
+        
+        // Update time from RTC/NTP
+        updateTime();
 
         // Snapshot and reset frame/flush counts
         uint32_t frames = frame_count;

@@ -203,6 +203,7 @@ void loadUnitPreferences() {
 // This structure holds all vehicle data from either demo or real sources
 // The UI layer reads from this - it doesn't care where the data comes from
 // All values stored internally in base units: Fahrenheit for temp, PSI for pressure
+// (!) valid - flags indicate whether real sensor data has been received for that value
 
 struct VehicleData {
     // Oil Pressure (stored in PSI internally)
@@ -1124,9 +1125,13 @@ void updateOBDData() {
 #define SD_MIN_FREE_BYTES (1024 * 1024)  // Absolute minimum 1MB free
 
 // ===== TIMEKEEPING CONFIGURATION =====
-// WiFi credentials for NTP time sync (fallback when RTC unavailable)
-#define WIFI_SSID "NETGEAR68"
-#define WIFI_PASSWORD "quickviolet005"
+// WiFi credentials loaded from SD card config file (/wifi.cfg)
+// Config file format (one per line):
+//   WIFI_SSID=YourNetworkName
+//   WIFI_PASSWORD=YourPassword
+#define WIFI_CONFIG_FILE "/wifi.cfg"
+static char g_wifi_ssid[64] = "";      // Loaded from SD config
+static char g_wifi_password[64] = ""; // Loaded from SD config
 #define NTP_SERVER_1 "pool.ntp.org"
 #define NTP_SERVER_2 "time.nist.gov"
 #define NTP_SERVER_3 "time.google.com"
@@ -1173,6 +1178,7 @@ static TaskHandle_t g_time_sync_task_handle = NULL;
 // Forward declarations
 bool sdInit();
 bool sdStartSession();
+bool loadWifiConfig();  // Load WiFi credentials from SD card
 void sdEndSession();
 void sdLogData();
 void sdSafeFlush();
@@ -1553,6 +1559,84 @@ bool sdDetectRTC() {
 }
 
 //=================================================================
+// WIFI CONFIG LOADING
+// Reads SSID and password from /wifi.cfg on SD card
+//=================================================================
+
+bool loadWifiConfig() {
+    if (!g_sd_state.initialized) {
+        Serial.println("[WIFI] SD not initialized, cannot load config");
+        return false;
+    }
+    
+    File configFile = SD.open(WIFI_CONFIG_FILE, FILE_READ);
+    if (!configFile) {
+        Serial.printf("[WIFI] Config file %s not found, creating template...\n", WIFI_CONFIG_FILE);
+        
+        // Create template config file
+        File templateFile = SD.open(WIFI_CONFIG_FILE, FILE_WRITE);
+        if (templateFile) {
+            templateFile.println("WIFI_SSID=");
+            templateFile.println("WIFI_PASSWORD=");
+            templateFile.close();
+            Serial.printf("[WIFI] Template created at %s - please edit with your credentials\n", WIFI_CONFIG_FILE);
+        } else {
+            Serial.println("[WIFI] Failed to create template config file");
+        }
+        return false;
+    }
+    
+    Serial.printf("[WIFI] Loading config from %s\n", WIFI_CONFIG_FILE);
+    
+    bool ssid_found = false;
+    bool pass_found = false;
+    
+    while (configFile.available()) {
+        String line = configFile.readStringUntil('\n');
+        line.trim();  // Remove whitespace and CR/LF
+        
+        // Skip empty lines and comments
+        if (line.length() == 0 || line.startsWith("#") || line.startsWith("//")) {
+            continue;
+        }
+        
+        // Parse key=value format
+        int eqPos = line.indexOf('=');
+        if (eqPos > 0) {
+            String key = line.substring(0, eqPos);
+            String value = line.substring(eqPos + 1);
+            key.trim();
+            value.trim();
+            
+            if (key.equalsIgnoreCase("WIFI_SSID") || key.equalsIgnoreCase("SSID")) {
+                strncpy(g_wifi_ssid, value.c_str(), sizeof(g_wifi_ssid) - 1);
+                g_wifi_ssid[sizeof(g_wifi_ssid) - 1] = '\0';
+                ssid_found = true;
+                Serial.printf("[WIFI] SSID loaded: %s\n", g_wifi_ssid);
+            }
+            else if (key.equalsIgnoreCase("WIFI_PASSWORD") || key.equalsIgnoreCase("PASSWORD")) {
+                strncpy(g_wifi_password, value.c_str(), sizeof(g_wifi_password) - 1);
+                g_wifi_password[sizeof(g_wifi_password) - 1] = '\0';
+                pass_found = true;
+                Serial.println("[WIFI] Password loaded: ********");
+            }
+        }
+    }
+    
+    configFile.close();
+    
+    if (ssid_found && pass_found) {
+        Serial.println("[WIFI] Config loaded successfully");
+        return true;
+    } else {
+        Serial.printf("[WIFI] Config incomplete - SSID:%s PASS:%s\n", 
+                      ssid_found ? "OK" : "MISSING", 
+                      pass_found ? "OK" : "MISSING");
+        return false;
+    }
+}
+
+//=================================================================
 // TIMEKEEPING FUNCTIONS
 // DS3231 RTC (primary) -> WiFi NTP background task (fallback)
 // WiFi sync runs on Core 0 and does NOT block startup
@@ -1618,9 +1702,9 @@ bool tryNTPSync(const char* server) {
 void timeSyncTask(void* parameter) {
     Serial.println("[TIME/CORE0] Time sync task started");
     
-    // Check if WiFi credentials are configured
-    if (strlen(WIFI_SSID) < 2 || strcmp(WIFI_SSID, "YOUR_WIFI_SSID") == 0) {
-        Serial.println("[TIME/CORE0] WiFi SSID not configured");
+    // Check if WiFi credentials are configured (loaded from SD card)
+    if (strlen(g_wifi_ssid) < 2) {
+        Serial.println("[TIME/CORE0] WiFi SSID not configured (check /wifi.cfg on SD)");
         g_time_state.sync_status = TIME_SYNC_FAILED;
         strcpy(g_time_state.time_string, "N/A");    // NO WIFI CFG
         vTaskDelete(NULL);
@@ -1629,10 +1713,10 @@ void timeSyncTask(void* parameter) {
     
     // Connect to WiFi
     g_time_state.sync_status = TIME_SYNC_CONNECTING;
-    Serial.println("[TIME/CORE0] Connecting to WiFi...");
+    Serial.printf("[TIME/CORE0] Connecting to WiFi: %s\n", g_wifi_ssid);
     
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    WiFi.begin(g_wifi_ssid, g_wifi_password);
     
     uint32_t start_ms = millis();
     while (WiFi.status() != WL_CONNECTED) {
@@ -1727,6 +1811,9 @@ void initTimeKeeping() {
     Serial.println("[TIME] Initializing timekeeping...");
     g_time_state.sync_status = TIME_SYNC_IDLE;
     strcpy(g_time_state.time_string, "---");
+    
+    // Load WiFi config from SD card (needed for NTP fallback)
+    loadWifiConfig();
     
     // Check for DS3231 RTC first (already detected in sdInit)
     if (g_sd_state.rtc_available) {

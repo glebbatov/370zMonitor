@@ -1935,8 +1935,12 @@ static uint32_t g_sd_sector_count = 0;
 static const uint16_t g_sd_sector_size = 512;
 static uint8_t g_sd_pdrv = 0xFF;  // physical drive number (0xFF means “not ready”)
 
+// USB MSC state
+static volatile bool g_usb_connected = false;  // Set when host connects
+
 // USB MSC callbacks
 static int32_t onMscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
+    g_usb_connected = true;  // PC is reading - definitely connected!
     if (g_sd_pdrv == 0xFF) return -1;
 
     // Reject partial-sector requests (offset must be 0)
@@ -1973,6 +1977,7 @@ static int32_t onMscWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32
 }
 
 static bool onMscStartStop(uint8_t power_condition, bool start, bool load_eject) {
+    g_usb_connected = true;  // Host has connected!
     return true;
 }
 
@@ -2114,18 +2119,37 @@ void runUSBMSCMode() {
     // Start USB, money line
     USB.begin();
 
-    bool blink = false;
+    // Reset connection flag AFTER USB.begin() - callbacks during init don't count
+    g_usb_connected = false;
+
+    // Show static "USB is initializing..." - NO display updates during USB enumeration!
+    // This prevents screen shaking caused by SPI/USB conflicts
+    gfx->fillRect(100, 342, 600, 40, GRAY_BG);
+    gfx->setCursor(286, 352);
+    gfx->setTextColor(WHITE);
+    gfx->print("USB is initializing...");
+
+    // Wait for USB host to connect (detected via onStartStop callback)
+    // No display updates during this time to prevent shaking
+    while (!g_usb_connected) {
+        delay(100);  // Check every 100ms, but no display updates
+    }
+
+    // Clear the "USB is initializing..." text before showing "USB Ready!"
+    // Use larger clear area to ensure complete removal
+    gfx->fillRect(50, 340, 700, 50, GRAY_BG);
+
+    // USB is now connected - start blinking "USB Ready!"
+    bool blink = true;  // Start with text visible
     while (1) {
-        delay(500);
-        blink = !blink;
-
-        // clear just the "USB Ready!" strip
-        gfx->fillRect(100, 342, 600, 40, GRAY_BG);
-
-        // force solid overwrite: foreground + background
-        gfx->setCursor(340, 352);
+        // Draw first, then delay (so text appears immediately)
+        gfx->fillRect(50, 340, 700, 50, GRAY_BG);
+        gfx->setCursor(340, 352);  // Centered position for "USB Ready!"
         gfx->setTextColor(blink ? WHITE : GRAY_BG, GRAY_BG);
         gfx->print("USB Ready!");
+        
+        delay(500);
+        blink = !blink;
     }
 }
 

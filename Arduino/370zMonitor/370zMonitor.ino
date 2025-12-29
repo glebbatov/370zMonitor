@@ -52,8 +52,104 @@
 #include "freertos/queue.h"
 #include <WiFi.h>                   // WiFi for NTP time sync
 #include <time.h>                   // Time functions
+#include <stdarg.h>                 // For va_list in SerialLogf
 
- //-----------------------------------------------------------------
+//-----------------------------------------------------------------
+
+// ===== FEATURE FLAGS (must be before TeeSerial) =====
+#define ENABLE_SD_LOGGING       1   // Enable SD card data logging
+
+//=================================================================
+// TESERIAL - TRANSPARENT SERIAL WRAPPER (must be early in file!)
+// Captures ALL Serial output to SD card automatically
+// No code changes needed - just use Serial.println() as normal!
+//=================================================================
+
+#if ENABLE_SD_LOGGING
+
+#define SERIAL_LOG_MAX_MSG_LEN 256
+
+// Forward declaration for SD queue function
+void sdLogSerialWrite(const char* msg);
+
+// Store reference to the REAL Serial before we redefine it
+HardwareSerial& _RealSerial = Serial;
+
+class TeeSerial : public Print {
+private:
+    char _lineBuffer[SERIAL_LOG_MAX_MSG_LEN];
+    size_t _linePos;
+    
+public:
+    TeeSerial() : _linePos(0) {
+        memset(_lineBuffer, 0, sizeof(_lineBuffer));
+    }
+    
+    // Core write function - called by all print/println variants
+    size_t write(uint8_t c) override {
+        // Always forward to real Serial immediately
+        _RealSerial.write(c);
+        
+        // Buffer the character for SD logging
+        if (c == '\n' || c == '\r') {
+            // End of line - queue the buffer if we have content
+            if (_linePos > 0) {
+                _lineBuffer[_linePos] = '\0';
+                sdLogSerialWrite(_lineBuffer);
+                _linePos = 0;
+            }
+        } else {
+            // Add to buffer if there's room
+            if (_linePos < sizeof(_lineBuffer) - 1) {
+                _lineBuffer[_linePos++] = c;
+            }
+        }
+        
+        return 1;
+    }
+    
+    // Bulk write - more efficient for larger outputs
+    size_t write(const uint8_t* buffer, size_t size) override {
+        for (size_t i = 0; i < size; i++) {
+            write(buffer[i]);
+        }
+        return size;
+    }
+    
+    // Forward HardwareSerial methods we need
+    void begin(unsigned long baud) { _RealSerial.begin(baud); }
+    void begin(unsigned long baud, uint32_t config) { _RealSerial.begin(baud, config); }
+    void end() { _RealSerial.end(); }
+    int available() { return _RealSerial.available(); }
+    int read() { return _RealSerial.read(); }
+    int peek() { return _RealSerial.peek(); }
+    void flush() { _RealSerial.flush(); }
+    
+    // Implement printf (not inherited from Print)
+    int printf(const char* format, ...) __attribute__((format(printf, 2, 3))) {
+        char buf[SERIAL_LOG_MAX_MSG_LEN];
+        va_list args;
+        va_start(args, format);
+        int len = vsnprintf(buf, sizeof(buf), format, args);
+        va_end(args);
+        write((const uint8_t*)buf, len > 0 ? len : 0);
+        return len;
+    }
+    
+    // Explicit bool conversion for if(Serial) checks
+    explicit operator bool() const { return true; }
+};
+
+// Create global instance
+TeeSerial _TeeSerialInstance;
+
+// MAGIC: Redefine Serial to use our wrapper
+// All Serial.print/println/printf calls now automatically go to SD card too!
+#define Serial _TeeSerialInstance
+
+#endif // ENABLE_SD_LOGGING
+
+//-----------------------------------------------------------------
 
  // ===== CRITICAL: Configure ESP32 to prefer PSRAM for malloc =====
 __attribute__((constructor)) void configurePSRAM() {
@@ -68,7 +164,7 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_BARS             1   // Enable bar widgets
 #define ENABLE_VALUE_CRITICAL   1   // Enable "Value Critical" labels
 #define ENABLE_CHARTS           1   // Enable charts
-#define ENABLE_SD_LOGGING       1   // Enable SD card data logging
+// ENABLE_SD_LOGGING defined at top of file (before TeeSerial)
 #define ENABLE_USB_MSC          1   // Enable USB Mass Storage mode (hold BOOT at startup)
 #define UPDATE_INTERVAL_MS      25 // default 250ms
 
@@ -1158,7 +1254,28 @@ static struct {
     uint32_t boot_count;        // Persisted boot counter
     uint64_t total_bytes;       // Total card size
     uint64_t used_bytes;        // Used space
+    // Serial log state
+    File log_file;
+    char log_filename[32];
+    bool log_file_open;
+    uint32_t log_bytes_written;
+    uint32_t last_log_flush_ms;
 } g_sd_state = { 0 };
+
+//=================================================================
+// SERIAL LOG QUEUE - Buffers serial output for SD card writing
+// (TeeSerial class that intercepts Serial is defined at top of file)
+//=================================================================
+
+#define SERIAL_LOG_QUEUE_SIZE 32
+// SERIAL_LOG_MAX_MSG_LEN is defined at top of file with TeeSerial
+
+struct SerialLogEntry {
+    uint32_t timestamp_ms;
+    char message[SERIAL_LOG_MAX_MSG_LEN];
+};
+
+static QueueHandle_t g_serial_log_queue = NULL;
 
 // Timekeeping State
 enum TimeSyncStatus { TIME_SYNC_IDLE, TIME_SYNC_CONNECTING, TIME_SYNC_SYNCING, TIME_SYNC_OK, TIME_SYNC_FAILED };
@@ -1194,6 +1311,9 @@ bool tryNTPSync(const char* server);
 bool readRTC(struct tm* timeinfo);
 void updateTime();
 uint8_t bcdToDec(uint8_t val);
+bool sdStartLogSession();
+void sdEndLogSession();
+void sdLogSerialFlush();
 
 // Initialize SD card
 bool sdInit() {
@@ -1281,7 +1401,10 @@ void sdGenerateFilename() {
     // If RTC available in future: YYYY-MM-DD_HH-MM-SS.csv
     snprintf(g_sd_state.current_filename, sizeof(g_sd_state.current_filename),
         "/SESS_%05lu.csv", g_sd_state.boot_count);
-    Serial.printf("[SD] Session file: %s\n", g_sd_state.current_filename);
+    // Also generate matching log filename
+    snprintf(g_sd_state.log_filename, sizeof(g_sd_state.log_filename),
+        "/SESS_%05lu.log", g_sd_state.boot_count);
+    Serial.printf("[SD] Session files: %s, %s\n", g_sd_state.current_filename, g_sd_state.log_filename);
 }
 
 // Start a new logging session
@@ -1335,7 +1458,49 @@ bool sdStartSession() {
     sdSafeFlush();  // Immediate flush after header
 
     Serial.printf("[SD] Session started: %s\n", g_sd_state.current_filename);
+    
+    // Also start the serial log session
+    sdStartLogSession();
+    
     return true;
+}
+
+// Start serial log session (creates .log file)
+bool sdStartLogSession() {
+    if (!g_sd_state.initialized || !g_sd_state.card_present) {
+        return false;
+    }
+    
+    // Create log file (fresh file for each boot)
+    g_sd_state.log_file = SD.open(g_sd_state.log_filename, FILE_WRITE);
+    if (!g_sd_state.log_file) {
+        Serial.printf("[SD] Failed to create log file: %s\n", g_sd_state.log_filename);
+        return false;
+    }
+    
+    g_sd_state.log_file_open = true;
+    g_sd_state.log_bytes_written = 0;
+    g_sd_state.last_log_flush_ms = millis();
+    
+    // Write header
+    char header[128];
+    snprintf(header, sizeof(header), "=== 370zMonitor Serial Log - Session %lu ===\n", g_sd_state.boot_count);
+    g_sd_state.log_file.print(header);
+    g_sd_state.log_bytes_written += strlen(header);
+    g_sd_state.log_file.flush();
+    
+    Serial.printf("[SD] Log session started: %s\n", g_sd_state.log_filename);
+    return true;
+}
+
+// End serial log session
+void sdEndLogSession() {
+    if (!g_sd_state.log_file_open) return;
+    
+    g_sd_state.log_file.flush();
+    g_sd_state.log_file.close();
+    g_sd_state.log_file_open = false;
+    Serial.printf("[SD] Log session ended: %lu bytes\n", g_sd_state.log_bytes_written);
 }
 
 // End current logging session
@@ -1350,6 +1515,9 @@ void sdEndSession() {
     g_sd_state.file_open = false;
     Serial.printf("[SD] Session ended: %lu writes, %lu bytes\n",
         g_sd_state.write_count, g_sd_state.bytes_written);
+    
+    // Also end log session
+    sdEndLogSession();
 }
 
 // Safe flush - ensures data is written to card
@@ -1375,9 +1543,34 @@ void sdWriteTask(void* parameter) {
     Serial.println("[CORE0] SD write task started");
     
     SDLogEntry entry;
+    SerialLogEntry logEntry;
     char line[300];  // Increased for datetime column
     
     while (true) {
+        // Process serial log entries first (higher priority for responsiveness)
+        while (g_serial_log_queue && 
+               xQueueReceive(g_serial_log_queue, &logEntry, 0) == pdTRUE) {
+            if (g_sd_state.log_file_open) {
+                // Format: [timestamp_ms] message
+                char logLine[SERIAL_LOG_MAX_MSG_LEN + 32];
+                int len = snprintf(logLine, sizeof(logLine), "[%lu] %s\n", 
+                                   logEntry.timestamp_ms, logEntry.message);
+                
+                size_t written = g_sd_state.log_file.print(logLine);
+                if (written > 0) {
+                    g_sd_state.log_bytes_written += written;
+                }
+            }
+        }
+        
+        // Periodic flush of log file
+        uint32_t now = millis();
+        if (g_sd_state.log_file_open && 
+            (now - g_sd_state.last_log_flush_ms) >= SD_FLUSH_INTERVAL_MS) {
+            g_sd_state.log_file.flush();
+            g_sd_state.last_log_flush_ms = now;
+        }
+        
         // Wait for data from queue (blocks until data available or timeout)
         if (xQueueReceive(g_sd_queue, &entry, pdMS_TO_TICKS(100)) == pdTRUE) {
             if (!g_sd_state.file_open || !g_sd_state.logging_enabled) {
@@ -1452,6 +1645,24 @@ void sdWriteTask(void* parameter) {
         }
         // No data received - just continue waiting
     }
+}
+
+//=================================================================
+// SERIAL LOGGING FUNCTIONS
+// Queue handler for SD card logging (TeeSerial class is at top of file)
+//=================================================================
+
+// Queue a message for SD card logging (called by TeeSerial)
+void sdLogSerialWrite(const char* msg) {
+    if (!g_serial_log_queue) return;
+    
+    SerialLogEntry entry;
+    entry.timestamp_ms = millis();
+    strncpy(entry.message, msg, SERIAL_LOG_MAX_MSG_LEN - 1);
+    entry.message[SERIAL_LOG_MAX_MSG_LEN - 1] = '\0';
+    
+    // Non-blocking queue send - drop if full
+    xQueueSend(g_serial_log_queue, &entry, 0);
 }
 
 // Queue data for SD logging - called from main loop (Core 1)
@@ -4023,6 +4234,14 @@ void setup() {
         Serial.println("      WARNING: SD queue creation failed!");
     } else {
         Serial.println("      SD queue created");
+    }
+    
+    // Create serial log queue
+    g_serial_log_queue = xQueueCreate(SERIAL_LOG_QUEUE_SIZE, sizeof(SerialLogEntry));
+    if (!g_serial_log_queue) {
+        Serial.println("      WARNING: Serial log queue creation failed!");
+    } else {
+        Serial.println("      Serial log queue created");
     }
     
     if (sdInit()) {

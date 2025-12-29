@@ -1331,8 +1331,12 @@ void initTimeKeeping();
 void timeSyncTask(void* parameter);
 bool tryNTPSync(const char* server);
 bool readRTC(struct tm* timeinfo);
+bool writeRTC(struct tm* timeinfo);
+bool isRTCTimeValid();
+void clearRTCOSFlag();
 void updateTime();
 uint8_t bcdToDec(uint8_t val);
+uint8_t decToBcd(uint8_t val);
 bool sdStartLogSession();
 void sdEndLogSession();
 void sdLogSerialFlush();
@@ -1880,6 +1884,11 @@ uint8_t bcdToDec(uint8_t val) {
     return ((val / 16 * 10) + (val % 16));
 }
 
+// Decimal to BCD conversion (for writing to RTC)
+uint8_t decToBcd(uint8_t val) {
+    return ((val / 10 * 16) + (val % 10));
+}
+
 // Read time from DS3231 RTC
 bool readRTC(struct tm* timeinfo) {
     if (!g_sd_state.rtc_available) return false;
@@ -1913,6 +1922,83 @@ bool readRTC(struct tm* timeinfo) {
     return true;
 }
 
+// Write time TO DS3231 RTC (used after NTP sync)
+bool writeRTC(struct tm* timeinfo) {
+    if (!g_sd_state.rtc_available) return false;
+    
+    Wire.beginTransmission(DS3231_ADDR);
+    Wire.write(0x00);  // Start at register 0 (seconds)
+    Wire.write(decToBcd(timeinfo->tm_sec));
+    Wire.write(decToBcd(timeinfo->tm_min));
+    Wire.write(decToBcd(timeinfo->tm_hour));   // 24-hour format
+    Wire.write(decToBcd(timeinfo->tm_wday + 1)); // Day of week (1-7)
+    Wire.write(decToBcd(timeinfo->tm_mday));
+    Wire.write(decToBcd(timeinfo->tm_mon + 1)); // Month (1-12)
+    Wire.write(decToBcd(timeinfo->tm_year - 100)); // Year (0-99)
+    
+    return (Wire.endTransmission() == 0);
+}
+
+// Check if RTC has valid time (not factory default or lost power without battery)
+// Returns false if oscillator stopped flag is set or time is clearly invalid
+bool isRTCTimeValid() {
+    if (!g_sd_state.rtc_available) return false;
+    
+    // Read status register (0x0F) to check oscillator stopped flag (OSF)
+    Wire.beginTransmission(DS3231_ADDR);
+    Wire.write(0x0F);  // Status register address
+    if (Wire.endTransmission() != 0) return false;
+    
+    Wire.requestFrom(DS3231_ADDR, 1);
+    if (Wire.available() < 1) return false;
+    
+    uint8_t status = Wire.read();
+    
+    // Bit 7 (OSF) = Oscillator Stop Flag
+    // If set, oscillator stopped at some point (battery dead or first power on)
+    if (status & 0x80) {
+        Serial.println("[RTC] OSF flag set - time not reliable");
+        return false;
+    }
+    
+    // Additionally check if time is reasonable (year >= 2024)
+    struct tm timeinfo;
+    if (!readRTC(&timeinfo)) return false;
+    
+    // If year is before 2024, time was never set properly
+    if ((timeinfo.tm_year + 1900) < 2024) {
+        Serial.printf("[RTC] Year %d too old - time not set\n", timeinfo.tm_year + 1900);
+        return false;
+    }
+    
+    return true;
+}
+
+// Clear the OSF flag after setting time (acknowledges new time is valid)
+void clearRTCOSFlag() {
+    if (!g_sd_state.rtc_available) return;
+    
+    // Read current status register
+    Wire.beginTransmission(DS3231_ADDR);
+    Wire.write(0x0F);
+    Wire.endTransmission();
+    
+    Wire.requestFrom(DS3231_ADDR, 1);
+    if (Wire.available() < 1) return;
+    
+    uint8_t status = Wire.read();
+    
+    // Clear OSF (bit 7) by writing 0 to it
+    status &= ~0x80;
+    
+    Wire.beginTransmission(DS3231_ADDR);
+    Wire.write(0x0F);
+    Wire.write(status);
+    Wire.endTransmission();
+    
+    Serial.println("[RTC] OSF flag cleared");
+}
+
 // Try to sync time from a specific NTP server
 bool tryNTPSync(const char* server) {
     Serial.printf("[TIME] Trying NTP server: %s\n", server);
@@ -1935,11 +2021,28 @@ bool tryNTPSync(const char* server) {
 void timeSyncTask(void* parameter) {
     Serial.println("[TIME/CORE0] Time sync task started");
     
-    // Check if WiFi credentials are configured (loaded from SD card)
+    bool rtc_had_valid_time = isRTCTimeValid();
+    
+    // Check if WiFi credentials are configured
     if (strlen(g_wifi_ssid) < 2) {
         Serial.println("[TIME/CORE0] WiFi SSID not configured (check /wifi.cfg on SD)");
-        g_time_state.sync_status = TIME_SYNC_FAILED;
-        strcpy(g_time_state.time_string, "N/A");    // NO WIFI CFG
+        
+        if (rtc_had_valid_time) {
+            // RTC time available, no WiFi - use RTC time
+            Serial.println("[TIME/CORE0] Using RTC time (no WiFi config)");
+            g_time_state.rtc_active = true;
+            g_time_state.time_available = true;
+            g_time_state.sync_status = TIME_SYNC_OK;
+            updateTime();
+        } else {
+            // No RTC time, no WiFi config - FAIL
+            Serial.println("[TIME/CORE0] NO TIME AVAILABLE - no RTC, no WiFi");
+            g_time_state.sync_status = TIME_SYNC_FAILED;
+            g_time_state.time_available = false;
+            strcpy(g_time_state.time_string, "N/A");
+        }
+        
+        g_time_sync_task_handle = NULL;
         vTaskDelete(NULL);
         return;
     }
@@ -1957,8 +2060,23 @@ void timeSyncTask(void* parameter) {
             Serial.println("[TIME/CORE0] WiFi connection timeout");
             WiFi.disconnect(true);
             WiFi.mode(WIFI_OFF);
-            g_time_state.sync_status = TIME_SYNC_FAILED;
-            strcpy(g_time_state.time_string, "N/A");   // WIFI FAIL
+            
+            if (rtc_had_valid_time) {
+                // WiFi failed but RTC has time - use RTC
+                Serial.println("[TIME/CORE0] WiFi failed - keeping RTC time");
+                g_time_state.rtc_active = true;
+                g_time_state.time_available = true;
+                g_time_state.sync_status = TIME_SYNC_OK;
+                updateTime();
+            } else {
+                // WiFi failed and no RTC time - FAIL
+                Serial.println("[TIME/CORE0] WiFi failed - NO TIME AVAILABLE");
+                g_time_state.sync_status = TIME_SYNC_FAILED;
+                g_time_state.time_available = false;
+                strcpy(g_time_state.time_string, "N/A");
+            }
+            
+            g_time_sync_task_handle = NULL;
             vTaskDelete(NULL);
             return;
         }
@@ -1975,23 +2093,56 @@ void timeSyncTask(void* parameter) {
         synced = tryNTPSync(servers[i]);
     }
     
+    // Handle NTP result
+    if (synced) {
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo)) {
+            Serial.printf("[TIME/CORE0] NTP time: %02d/%02d/%04d %02d:%02d:%02d\n",
+                timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_year + 1900,
+                timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+            
+            // *** WRITE NTP TIME TO RTC ***
+            if (g_sd_state.rtc_available) {
+                if (writeRTC(&timeinfo)) {
+                    clearRTCOSFlag();  // Mark time as valid
+                    Serial.println("[TIME/CORE0] RTC updated from NTP");
+                    g_time_state.rtc_active = true;
+                } else {
+                    Serial.println("[TIME/CORE0] Failed to write to RTC");
+                }
+            }
+            
+            g_time_state.wifi_time_active = true;
+            g_time_state.time_available = true;
+            g_time_state.sync_status = TIME_SYNC_OK;
+            updateTime();
+            Serial.printf("[TIME/CORE0] Time synced: %s\n", g_time_state.time_string);
+        }
+    } else {
+        // NTP failed
+        Serial.println("[TIME/CORE0] All NTP servers failed");
+        
+        if (rtc_had_valid_time) {
+            // NTP failed but RTC has time - use RTC
+            Serial.println("[TIME/CORE0] NTP failed - keeping RTC time");
+            g_time_state.rtc_active = true;
+            g_time_state.time_available = true;
+            g_time_state.sync_status = TIME_SYNC_OK;
+            updateTime();
+        } else {
+            // NTP failed and no RTC time - FAIL
+            g_time_state.sync_status = TIME_SYNC_FAILED;
+            g_time_state.time_available = false;
+            strcpy(g_time_state.time_string, "N/A");
+        }
+    }
+    
     // Disconnect WiFi to save power
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     Serial.println("[TIME/CORE0] WiFi disconnected");
     
-    if (synced) {
-        g_time_state.wifi_time_active = true;
-        g_time_state.sync_status = TIME_SYNC_OK;
-        updateTime();
-        Serial.printf("[TIME/CORE0] Time synced: %s\n", g_time_state.time_string);
-    } else {
-        g_time_state.sync_status = TIME_SYNC_FAILED;
-        strcpy(g_time_state.time_string, "N/A");   // NTP FAIL
-        Serial.println("[TIME/CORE0] All NTP servers failed");
-    }
-    
-    // Task complete - delete self
+    // Task complete
     g_time_sync_task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -2040,48 +2191,72 @@ void updateTime() {
 
 // Initialize timekeeping - NON-BLOCKING
 // RTC check is immediate, WiFi sync runs in background task
+// Initialize timekeeping - Implements user's specified logic:
+// 1. Check if RTC has valid time
+// 2. Always try WiFi sync (even if RTC time exists) to keep RTC accurate
+// 3. Fallback logic: RTC → WiFi → N/A
 void initTimeKeeping() {
     Serial.println("[TIME] Initializing timekeeping...");
     g_time_state.sync_status = TIME_SYNC_IDLE;
+    g_time_state.time_available = false;
+    g_time_state.rtc_active = false;
+    g_time_state.wifi_time_active = false;
     strcpy(g_time_state.time_string, "---");
     
-    // Load WiFi config from SD card (needed for NTP fallback)
+    // Load WiFi config from SD card
     loadWifiConfig();
     
-    // Check for DS3231 RTC first (already detected in sdInit)
+    // Check RTC status
     if (g_sd_state.rtc_available) {
-        Serial.println("[TIME] DS3231 RTC detected - using RTC");
-        g_time_state.rtc_active = true;
-        updateTime();
-        if (g_time_state.time_available) {
-            Serial.printf("[TIME] RTC time: %s\n", g_time_state.time_string);
-            g_time_state.sync_status = TIME_SYNC_OK;
-            return;  // RTC is available, no need for WiFi
+        Serial.println("[TIME] DS3231 RTC detected on I2C");
+        
+        if (isRTCTimeValid()) {
+            // RTC has valid time - use it immediately
+            // WiFi sync will run in background and update if successful
+            struct tm timeinfo;
+            if (readRTC(&timeinfo)) {
+                g_time_state.current_time = timeinfo;
+                g_time_state.time_available = true;
+                g_time_state.rtc_active = true;
+                strftime(g_time_state.time_string, sizeof(g_time_state.time_string),
+                         "%m/%d/%Y %H:%M:%S", &timeinfo);
+                Serial.printf("[TIME] RTC time valid: %s\n", g_time_state.time_string);
+                Serial.println("[TIME] Will attempt WiFi sync in background to update RTC");
+            }
+        } else {
+            Serial.println("[TIME] RTC time not valid (first use or battery was dead)");
+            Serial.println("[TIME] Will set RTC from WiFi/NTP if available");
         }
-        Serial.println("[TIME] RTC read failed, will try WiFi in background...");
     } else {
-        Serial.println("[TIME] No RTC detected, will try WiFi in background...");
+        Serial.println("[TIME] No RTC detected - relying on WiFi/NTP only");
     }
     
-    // Start background WiFi sync task on Core 0
-    // This does NOT block - the UI will show "WIFI..." while syncing
-    strcpy(g_time_state.time_string, "SYNC...");
+    // Always start background WiFi sync task
+    // - If RTC had valid time: sync updates RTC to keep it accurate
+    // - If RTC had no time: sync sets RTC for first time
+    // - If no RTC: sync provides WiFi time only
+    if (!g_time_state.time_available) {
+        strcpy(g_time_state.time_string, "SYNC...");
+    }
+    
     BaseType_t result = xTaskCreatePinnedToCore(
-        timeSyncTask,           // Task function
-        "TimeSyncTask",         // Task name
-        4096,                   // Stack size
-        NULL,                   // Parameters
-        1,                      // Priority (low, background task)
-        &g_time_sync_task_handle, // Task handle
-        0                       // Core 0
+        timeSyncTask,           
+        "TimeSyncTask",         
+        4096,                   
+        NULL,                   
+        1,                      
+        &g_time_sync_task_handle,
+        0                       
     );
     
     if (result == pdPASS) {
         Serial.println("[TIME] Background sync task started on Core 0");
     } else {
         Serial.println("[TIME] ERROR: Failed to create sync task");
-        g_time_state.sync_status = TIME_SYNC_FAILED;
-        strcpy(g_time_state.time_string, "TASK ERR");
+        if (!g_time_state.time_available) {
+            g_time_state.sync_status = TIME_SYNC_FAILED;
+            strcpy(g_time_state.time_string, "TASK ERR");
+        }
     }
 }
 

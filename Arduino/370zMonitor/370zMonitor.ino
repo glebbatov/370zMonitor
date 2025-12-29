@@ -642,7 +642,29 @@ static uint32_t last_touch_reset = 0;
 static lv_obj_t* utility_box = NULL;
 static lv_obj_t* g_dim_overlay = NULL;
 static lv_timer_t* g_util_single_tap_timer = NULL;
-static lv_obj_t* utility_label = NULL;
+// Individual labels for utility box (allows per-line coloring)
+#if ENABLE_SD_LOGGING
+static lv_obj_t* util_labels[9] = {NULL};  // FPS, CPU0, CPU1, SRAM, PSRAM, BRI, SD, TIME, DATE
+#define UTIL_IDX_FPS   0
+#define UTIL_IDX_CPU0  1
+#define UTIL_IDX_CPU1  2
+#define UTIL_IDX_SRAM  3
+#define UTIL_IDX_PSRAM 4
+#define UTIL_IDX_BRI   5
+#define UTIL_IDX_SD    6
+#define UTIL_IDX_TIME  7
+#define UTIL_IDX_DATE  8
+#define UTIL_LABEL_COUNT 9
+#else
+static lv_obj_t* util_labels[6] = {NULL};  // FPS, CPU0, CPU1, SRAM, PSRAM, BRI
+#define UTIL_IDX_FPS   0
+#define UTIL_IDX_CPU0  1
+#define UTIL_IDX_CPU1  2
+#define UTIL_IDX_SRAM  3
+#define UTIL_IDX_PSRAM 4
+#define UTIL_IDX_BRI   5
+#define UTIL_LABEL_COUNT 6
+#endif
 static lv_obj_t* mode_indicator = NULL;  // Shows "DEMO" or "LIVE"
 static bool utilities_visible = false;  // Start hidden, double-tap to reveal
 
@@ -2746,44 +2768,78 @@ static void checkUtilityLongPress() {
 }
 
 static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
-    if (utility_label) {
-        char buf[200];  // Increased for TIME line
-        int bri_percent = (g_brightness_level * 100) / 255;
+    if (!util_labels[0]) return;  // Not initialized yet
+    
+    char buf[32];
+    int bri_percent = (g_brightness_level * 100) / 255;
 
-        // Internal SRAM (fast, limited ~320KB usable)
-        size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        size_t total_internal = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
-        int sram_percent = (total_internal > 0) ? (100 - (free_internal * 100 / total_internal)) : 0;
+    // Internal SRAM (fast, limited ~320KB usable)
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t total_internal = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+    int sram_percent = (total_internal > 0) ? (100 - (free_internal * 100 / total_internal)) : 0;
 
-        // PSRAM (external, large ~8MB)
-        size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-        size_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
-        int psram_percent = (total_psram > 0) ? (100 - (free_psram * 100 / total_psram)) : 0;
+    // PSRAM (external, large ~8MB)
+    size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    int psram_percent = (total_psram > 0) ? (100 - (free_psram * 100 / total_psram)) : 0;
+
+    // Critical color (red) vs normal (yellow)
+    lv_color_t clr_yellow = lv_color_hex(0xffff00);
+    lv_color_t clr_red = lv_color_hex(0xff0000);
+
+    // FPS - always yellow
+    snprintf(buf, sizeof(buf), "FPS:  %3d", fps);
+    lv_label_set_text(util_labels[UTIL_IDX_FPS], buf);
+
+    // CPU0 - red if >95%
+    snprintf(buf, sizeof(buf), "CPU0: %3d%%", cpu0_percent);
+    lv_label_set_text(util_labels[UTIL_IDX_CPU0], buf);
+    lv_obj_set_style_text_color(util_labels[UTIL_IDX_CPU0], (cpu0_percent > 95) ? clr_red : clr_yellow, 0);
+
+    // CPU1 - red if >95%
+    snprintf(buf, sizeof(buf), "CPU1: %3d%%", cpu1_percent);
+    lv_label_set_text(util_labels[UTIL_IDX_CPU1], buf);
+    lv_obj_set_style_text_color(util_labels[UTIL_IDX_CPU1], (cpu1_percent > 95) ? clr_red : clr_yellow, 0);
+
+    // SRAM - red if >95%
+    snprintf(buf, sizeof(buf), "SRAM: %3d%%", sram_percent);
+    lv_label_set_text(util_labels[UTIL_IDX_SRAM], buf);
+    lv_obj_set_style_text_color(util_labels[UTIL_IDX_SRAM], (sram_percent > 95) ? clr_red : clr_yellow, 0);
+
+    // PSRAM - red if >95%
+    snprintf(buf, sizeof(buf), "PSRAM:%3d%%", psram_percent);
+    lv_label_set_text(util_labels[UTIL_IDX_PSRAM], buf);
+    lv_obj_set_style_text_color(util_labels[UTIL_IDX_PSRAM], (psram_percent > 95) ? clr_red : clr_yellow, 0);
+
+    // BRI - always yellow
+    snprintf(buf, sizeof(buf), "BRI:  %3d%%", bri_percent);
+    lv_label_set_text(util_labels[UTIL_IDX_BRI], buf);
 
 #if ENABLE_SD_LOGGING
-        char sd_status[16];
-        sdGetStatusString(sd_status, sizeof(sd_status));
-        
-        // Format time and date display on two lines
-        char time_line[20];   // "TIME: HH:MM:SS"
-        char date_line[20];   // "      MM/DD/YY" (right-aligned)
-        if (g_time_state.time_available) {
-            strftime(time_line, sizeof(time_line), "TIME: %H:%M:%S", &g_time_state.current_time);
-            strftime(date_line, sizeof(date_line), "      %m/%d/%y", &g_time_state.current_time);
-        } else {
-            // Show sync status on time line, blank date line
-            snprintf(time_line, sizeof(time_line), "TIME: %s", g_time_state.time_string);
-            strcpy(date_line, "");
-        }
-        
-        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nSRAM: %3d%%\nPSRAM:%3d%%\nBRI:  %3d%%\nSD:   %s\n%s\n%s", 
-                 fps, cpu0_percent, cpu1_percent, sram_percent, psram_percent, bri_percent, sd_status, time_line, date_line);
-#else
-        snprintf(buf, sizeof(buf), "FPS:  %3d\nCPU0: %3d%%\nCPU1: %3d%%\nSRAM: %3d%%\nPSRAM:%3d%%\nBRI:  %3d%%", fps, cpu0_percent, cpu1_percent, sram_percent, psram_percent, bri_percent);
-#endif
+    // SD status - always yellow
+    char sd_status[16];
+    sdGetStatusString(sd_status, sizeof(sd_status));
+    snprintf(buf, sizeof(buf), "SD:   %s", sd_status);
+    lv_label_set_text(util_labels[UTIL_IDX_SD], buf);
 
-        lv_label_set_text(utility_label, buf);
+    // TIME - red if N/A
+    bool time_critical = !g_time_state.time_available && strcmp(g_time_state.time_string, "N/A") == 0;
+    if (g_time_state.time_available) {
+        strftime(buf, sizeof(buf), "TIME: %H:%M:%S", &g_time_state.current_time);
+    } else {
+        snprintf(buf, sizeof(buf), "TIME: %s", g_time_state.time_string);
     }
+    lv_label_set_text(util_labels[UTIL_IDX_TIME], buf);
+    lv_obj_set_style_text_color(util_labels[UTIL_IDX_TIME], time_critical ? clr_red : clr_yellow, 0);
+
+    // DATE - always yellow (only shown when time available)
+    if (g_time_state.time_available) {
+        strftime(buf, sizeof(buf), "      %m/%d/%y", &g_time_state.current_time);
+        lv_label_set_text(util_labels[UTIL_IDX_DATE], buf);
+    } else {
+        lv_label_set_text(util_labels[UTIL_IDX_DATE], "");
+    }
+#endif
 }
 
 #pragma endregion Utility Box Callbacks
@@ -4289,18 +4345,29 @@ void setup() {
         esp_register_freertos_idle_hook_for_cpu(idle_hook_core0, 0);
         esp_register_freertos_idle_hook_for_cpu(idle_hook_core1, 1);
 
-        // FPS/CPU/BRI/SD label
-        utility_label = lv_label_create(utility_box);
-
+        // FPS/CPU/BRI/SD labels - individual labels for per-line coloring
+        const char* init_texts[] = {
+            "FPS:  ---",
+            "CPU0: ---%",
+            "CPU1: ---%",
+            "SRAM: ---%",
+            "PSRAM:---%",
+            "BRI:  ---%"
 #if ENABLE_SD_LOGGING
-        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nSRAM: ---%\nPSRAM:---%\nBRI:  ---%\nSD:   ---\nTIME: ---\n      --/--/--");
-#else
-        lv_label_set_text(utility_label, "FPS:  ---\nCPU0: ---%\nCPU1: ---%\nSRAM: ---%\nPSRAM:  ---%\nBRI:  ---%");
+            , "SD:   ---",
+            "TIME: ---",
+            "      --/--/--"
 #endif
-
-        lv_obj_set_style_text_color(utility_label, lv_color_hex(0xffff00), 0);
-        lv_obj_set_style_text_font(utility_label, &lv_font_unscii_16, 0);
-        lv_obj_align(utility_label, LV_ALIGN_TOP_LEFT, 0, 0);
+        };
+        
+        int line_height = 16;  // Font height for lv_font_unscii_16
+        for (int i = 0; i < UTIL_LABEL_COUNT; i++) {
+            util_labels[i] = lv_label_create(utility_box);
+            lv_label_set_text(util_labels[i], init_texts[i]);
+            lv_obj_set_style_text_color(util_labels[i], lv_color_hex(0xffff00), 0);
+            lv_obj_set_style_text_font(util_labels[i], &lv_font_unscii_16, 0);
+            lv_obj_align(util_labels[i], LV_ALIGN_TOP_LEFT, 0, i * line_height);
+        }
 
         // Mode indicator (DEMO/LIVE)
         mode_indicator = lv_label_create(utility_box);

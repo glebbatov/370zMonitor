@@ -2814,7 +2814,7 @@ static void fuel_trust_chart_draw_cb(lv_event_t* e) {
 
 #pragma region Utility Box Callbacks
 
-#define DOUBLE_TAP_TIMEOUT_MS 300
+#define DOUBLE_TAP_TIMEOUT_MS 400  // 400ms window for double-tap detection
 
 // Update mode indicator text and color
 static void updateModeIndicator() {
@@ -2848,9 +2848,12 @@ static void utility_box_single_tap_cb(lv_timer_t* t) {
 
 static void utility_box_tap_cb(lv_event_t* e) {
     LV_UNUSED(e);
+    
+    Serial.println("[UI] Utility box CLICKED event received");
 
     // If we're in a long-press situation, ignore tap
     if (g_utility_long_press_triggered) {
+        Serial.println("[UI] Ignoring - long press active");
         return;
     }
 
@@ -3028,6 +3031,7 @@ static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
 // Pressure tap - cycles PSI/Bar/kPa
 static void oil_press_tap_cb(lv_event_t* e) {
     LV_UNUSED(e);
+    Serial.println("[UI] Oil Press tap received");
     g_pressure_unit = (PressureUnit)((g_pressure_unit + 1) % 3);
     saveUnitPreferences();
     smooth_oil_pressure = -1.0f;
@@ -3304,11 +3308,91 @@ void my_disp_flush(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
 #define MAX_CONSECUTIVE_INVALID 50
 #define TOUCH_RESET_COOLDOWN_MS 5000
 #define TOUCH_POLL_INTERVAL_MS 10   // Poll touch every 10ms on Core 0
-#define TOUCH_RELEASE_DEBOUNCE 3     // Require 3 consecutive "no touch" reads before releasing (30ms)
+#define TOUCH_RELEASE_DEBOUNCE 2     // Require 2 consecutive "no touch" reads before releasing (20ms)
+#define TOUCH_RESET_MAX_RETRIES 3    // Max reset attempts before giving up
+#define GT911_I2C_ADDR 0x5D          // GT911 default I2C address
+
+// I2C bus recovery - clocks out stuck transactions WITHOUT calling Wire.end()
+// Wire.end() causes heap corruption on ESP32-S3 when other tasks use I2C
+static void i2cBusRecovery() {
+    Serial.println("[TOUCH/CORE0] I2C bus recovery...");
+    
+    // Use a simple approach: just delay and let any stuck transaction timeout
+    // The ESP32 I2C driver has built-in timeout handling
+    vTaskDelay(pdMS_TO_TICKS(50));
+    
+    // Try to unstick by sending a few dummy reads
+    for (int i = 0; i < 3; i++) {
+        Wire.beginTransmission(GT911_I2C_ADDR);
+        Wire.endTransmission(true);  // Send STOP
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    
+    Serial.println("[TOUCH/CORE0] I2C bus recovery complete");
+}
+
+// Verify GT911 is responding AND functional by reading product ID
+static bool verifyGT911() {
+    // First check basic I2C ACK
+    Wire.beginTransmission(GT911_I2C_ADDR);
+    if (Wire.endTransmission() != 0) {
+        Serial.println("[TOUCH/CORE0] GT911 no ACK");
+        return false;
+    }
+    
+    // Read Product ID register (0x8140-0x8143) to verify chip is functional
+    Wire.beginTransmission(GT911_I2C_ADDR);
+    Wire.write(0x81);  // High byte of register address
+    Wire.write(0x40);  // Low byte - Product ID register
+    if (Wire.endTransmission(false) != 0) {
+        Serial.println("[TOUCH/CORE0] GT911 register write failed");
+        return false;
+    }
+    
+    uint8_t bytesRead = Wire.requestFrom(GT911_I2C_ADDR, (uint8_t)4);
+    if (bytesRead < 4) {
+        Serial.printf("[TOUCH/CORE0] GT911 read failed (got %d bytes)\n", bytesRead);
+        return false;
+    }
+    
+    // Read and verify product ID (should be "911" in ASCII)
+    char productId[5] = {0};
+    for (int i = 0; i < 4 && Wire.available(); i++) {
+        productId[i] = Wire.read();
+    }
+    
+    // GT911 should return "911\0" or similar
+    if (productId[0] == '9' && productId[1] == '1' && productId[2] == '1') {
+        Serial.printf("[TOUCH/CORE0] GT911 verified (ID: %s)\n", productId);
+        return true;
+    }
+    
+    Serial.printf("[TOUCH/CORE0] GT911 bad product ID: 0x%02X%02X%02X%02X\n", 
+                  productId[0], productId[1], productId[2], productId[3]);
+    return false;
+}
 
 // Core 0 Touch Task - polls GT911 and updates shared state
 void touchTask(void* parameter) {
     Serial.println("[CORE0] Touch task started");
+    
+    // Wait for GT911 to fully stabilize after startup reset
+    // This prevents false "stuck" detection during initialization
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    // Verify GT911 is ready before starting polling
+    int startup_retries = 0;
+    while (!verifyGT911() && startup_retries < 5) {
+        Serial.printf("[TOUCH/CORE0] Startup: GT911 not ready, attempt %d/5\n", startup_retries + 1);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        startup_retries++;
+    }
+    
+    if (startup_retries >= 5) {
+        Serial.println("[TOUCH/CORE0] WARNING: GT911 not responding at startup");
+    } else {
+        Serial.println("[TOUCH/CORE0] GT911 ready, starting polling");
+    }
     
     static bool was_touched = false;
     static uint32_t local_consecutive_invalid = 0;
@@ -3322,44 +3406,86 @@ void touchTask(void* parameter) {
         // Read touch controller (I2C operation)
         touch.read();
         
+        // DEBUG: Log when NOT touched periodically to see if GT911 is responding
+        static uint32_t last_no_touch_log = 0;
+        if (!touch.isTouched && (now - last_no_touch_log > 10000)) {
+            Serial.printf("[TOUCH/DEBUG] No touch detected (GT911 responding)\n");
+            last_no_touch_log = now;
+        }
+        
         TouchState new_state = {0, 0, false, false, now};
         
         if (touch.isTouched) {
             int raw_x = touch.points[0].x;
             int raw_y = touch.points[0].y;
             
-            // Validate touch data
-            if (raw_x == 65535 || raw_y == 65535 || raw_x > 800 || raw_y > 800) {
+            // DEBUG: Log raw touch values periodically (reduce spam)
+            static uint32_t last_debug_log = 0;
+            if (now - last_debug_log > 2000) {  // Max once per 2s
+                Serial.printf("[TOUCH/DEBUG] raw_x=%d raw_y=%d\n", raw_x, raw_y);
+                last_debug_log = now;
+            }
+            
+            // Validate touch data - GT911 returns 65535 for invalid reads
+            // Valid range: raw_x 550-1000, raw_y 50-780
+            if (raw_x == 65535 || raw_y == 65535 || raw_x > 1000 || raw_y > 800) {
                 local_consecutive_invalid++;
                 
                 // Hardware reset if stuck
                 if (local_consecutive_invalid >= MAX_CONSECUTIVE_INVALID &&
                     (now - local_last_reset) > TOUCH_RESET_COOLDOWN_MS) {
-                    Serial.println("[TOUCH/CORE0] Controller stuck - hardware reset");
+                    Serial.println("[TOUCH/CORE0] Controller stuck - attempting recovery");
                     
                     // CRITICAL: Clear touch state BEFORE reset to prevent spurious release events
-                    // This prevents the brightness toggle bug when reset occurs during a touch
                     was_touched = false;
                     release_debounce_count = 0;
                     
-                    // Hardware reset sequence
-                    exio_set(EXIO_TP_RST, false);
-                    vTaskDelay(pdMS_TO_TICKS(20));  // Longer low pulse for reliable reset
-                    exio_set(EXIO_TP_RST, true);
-                    vTaskDelay(pdMS_TO_TICKS(100)); // Longer stabilization time for GT911
+                    bool recovery_success = false;
                     
-                    // Re-initialize the touch controller
-                    touch.begin();
-                    vTaskDelay(pdMS_TO_TICKS(50));  // Allow I2C to stabilize
-                    touch.setRotation(0);
+                    for (int attempt = 1; attempt <= TOUCH_RESET_MAX_RETRIES && !recovery_success; attempt++) {
+                        Serial.printf("[TOUCH/CORE0] Reset attempt %d/%d\n", attempt, TOUCH_RESET_MAX_RETRIES);
+                        
+                        // Try I2C bus recovery first (in case SDA is stuck)
+                        if (attempt > 1) {
+                            i2cBusRecovery();
+                        }
+                        
+                        // Hardware reset sequence
+                        exio_set(EXIO_TP_RST, false);
+                        vTaskDelay(pdMS_TO_TICKS(20));  // Hold reset low
+                        exio_set(EXIO_TP_RST, true);
+                        vTaskDelay(pdMS_TO_TICKS(200)); // GT911 needs time to boot (increased from 150)
+                        
+                        // Re-initialize the touch controller
+                        touch.begin();
+                        vTaskDelay(pdMS_TO_TICKS(100));  // Allow I2C to stabilize (increased from 50)
+                        touch.setRotation(0);
+                        
+                        // Do a dummy read to flush any stale data
+                        touch.read();
+                        vTaskDelay(pdMS_TO_TICKS(20));
+                        
+                        // Verify GT911 is responding AND functional
+                        if (verifyGT911()) {
+                            // Do another dummy read after verification
+                            touch.read();
+                            recovery_success = true;
+                        } else {
+                            Serial.println("[TOUCH/CORE0] GT911 verification failed, retrying...");
+                            vTaskDelay(pdMS_TO_TICKS(100));  // Wait before retry
+                        }
+                    }
                     
-                    // Do a dummy read to clear any pending state
-                    touch.read();
+                    if (!recovery_success) {
+                        Serial.println("[TOUCH/CORE0] WARNING: Recovery FAILED after all attempts");
+                        // Try one final I2C bus recovery
+                        i2cBusRecovery();
+                        touch.begin();
+                        touch.setRotation(0);
+                    }
                     
                     local_consecutive_invalid = 0;
-                    local_last_reset = now;
-                    
-                    Serial.println("[TOUCH/CORE0] Reset complete");
+                    local_last_reset = millis();  // Use fresh timestamp
                 }
                 
                 new_state.valid = false;
@@ -3370,8 +3496,13 @@ void touchTask(void* parameter) {
                 local_consecutive_invalid = 0;
                 release_debounce_count = 0;  // Reset release debounce
                 
-                int screen_x = (raw_y - 30) * 800 / 745;
-                int screen_y = (770 - raw_x) * 480 / 420;
+                // Convert raw coordinates to screen coordinates
+                // GT911 raw ranges (from testing): raw_x 600-1000, raw_y 75-750
+                // Screen: 800x480, origin at top-left
+                // raw_x maps to screen_y (inverted: high raw_x = top of screen)
+                // raw_y maps to screen_x (direct: low raw_y = left of screen)
+                int screen_x = (raw_y - 75) * 800 / 675;    // raw_y 75-750 -> screen_x 0-800
+                int screen_y = (1000 - raw_x) * 480 / 400;  // raw_x 600-1000 -> screen_y 480-0
                 
                 if (screen_x < 0) screen_x = 0;
                 if (screen_x > 799) screen_x = 799;
@@ -3436,7 +3567,7 @@ void my_touch_read(lv_indev_t* indev, lv_indev_data_t* data) {
     TouchState local_state;
     
     // Read shared state (thread-safe)
-    if (xSemaphoreTake(g_touch_mutex, pdMS_TO_TICKS(2)) == pdTRUE) {
+    if (xSemaphoreTake(g_touch_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         local_state = g_touch_state;
         xSemaphoreGive(g_touch_mutex);
     }
@@ -4403,8 +4534,14 @@ void setup() {
     Serial.printf("      %s\n", g_ioexp_ok ? "OK" : "FAILED");
 
     Serial.println("[2/8] Touch controller...");
-    delay(100);
+    // Hardware reset GT911 before initialization (important after crash/reset)
+    exio_set(EXIO_TP_RST, false);  // Assert reset
+    delay(20);
+    exio_set(EXIO_TP_RST, true);   // Release reset
+    delay(200);  // GT911 needs time to boot after reset
+    
     touch.begin();
+    delay(100);  // Allow I2C to stabilize
     touch.setRotation(0);
     
     // Create touch mutex for dual-core architecture

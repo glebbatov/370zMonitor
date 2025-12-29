@@ -3336,14 +3336,30 @@ void touchTask(void* parameter) {
                 if (local_consecutive_invalid >= MAX_CONSECUTIVE_INVALID &&
                     (now - local_last_reset) > TOUCH_RESET_COOLDOWN_MS) {
                     Serial.println("[TOUCH/CORE0] Controller stuck - hardware reset");
+                    
+                    // CRITICAL: Clear touch state BEFORE reset to prevent spurious release events
+                    // This prevents the brightness toggle bug when reset occurs during a touch
+                    was_touched = false;
+                    release_debounce_count = 0;
+                    
+                    // Hardware reset sequence
                     exio_set(EXIO_TP_RST, false);
-                    vTaskDelay(pdMS_TO_TICKS(10));
+                    vTaskDelay(pdMS_TO_TICKS(20));  // Longer low pulse for reliable reset
                     exio_set(EXIO_TP_RST, true);
-                    vTaskDelay(pdMS_TO_TICKS(50));
+                    vTaskDelay(pdMS_TO_TICKS(100)); // Longer stabilization time for GT911
+                    
+                    // Re-initialize the touch controller
                     touch.begin();
+                    vTaskDelay(pdMS_TO_TICKS(50));  // Allow I2C to stabilize
                     touch.setRotation(0);
+                    
+                    // Do a dummy read to clear any pending state
+                    touch.read();
+                    
                     local_consecutive_invalid = 0;
                     local_last_reset = now;
+                    
+                    Serial.println("[TOUCH/CORE0] Reset complete");
                 }
                 
                 new_state.valid = false;

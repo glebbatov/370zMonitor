@@ -2848,12 +2848,9 @@ static void utility_box_single_tap_cb(lv_timer_t* t) {
 
 static void utility_box_tap_cb(lv_event_t* e) {
     LV_UNUSED(e);
-    
-    Serial.println("[UI] Utility box CLICKED event received");
 
     // If we're in a long-press situation, ignore tap
     if (g_utility_long_press_triggered) {
-        Serial.println("[UI] Ignoring - long press active");
         return;
     }
 
@@ -3031,7 +3028,6 @@ static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
 // Pressure tap - cycles PSI/Bar/kPa
 static void oil_press_tap_cb(lv_event_t* e) {
     LV_UNUSED(e);
-    Serial.println("[UI] Oil Press tap received");
     g_pressure_unit = (PressureUnit)((g_pressure_unit + 1) % 3);
     saveUnitPreferences();
     smooth_oil_pressure = -1.0f;
@@ -3406,12 +3402,7 @@ void touchTask(void* parameter) {
         // Read touch controller (I2C operation)
         touch.read();
         
-        // DEBUG: Log when NOT touched periodically to see if GT911 is responding
-        static uint32_t last_no_touch_log = 0;
-        if (!touch.isTouched && (now - last_no_touch_log > 10000)) {
-            Serial.printf("[TOUCH/DEBUG] No touch detected (GT911 responding)\n");
-            last_no_touch_log = now;
-        }
+
         
         TouchState new_state = {0, 0, false, false, now};
         
@@ -3419,12 +3410,7 @@ void touchTask(void* parameter) {
             int raw_x = touch.points[0].x;
             int raw_y = touch.points[0].y;
             
-            // DEBUG: Log raw touch values periodically (reduce spam)
-            static uint32_t last_debug_log = 0;
-            if (now - last_debug_log > 2000) {  // Max once per 2s
-                Serial.printf("[TOUCH/DEBUG] raw_x=%d raw_y=%d\n", raw_x, raw_y);
-                last_debug_log = now;
-            }
+
             
             // Validate touch data - GT911 returns 65535 for invalid reads
             // Valid range: raw_x 550-1000, raw_y 50-780
@@ -4535,13 +4521,14 @@ void setup() {
 
     Serial.println("[2/8] Touch controller...");
     // Hardware reset GT911 before initialization (important after crash/reset)
+    // Longer delays prevent startup failures that require recovery
     exio_set(EXIO_TP_RST, false);  // Assert reset
-    delay(20);
+    delay(50);                      // Hold reset low longer
     exio_set(EXIO_TP_RST, true);   // Release reset
-    delay(200);  // GT911 needs time to boot after reset
+    delay(350);  // GT911 needs time to boot after reset (increased from 200)
     
     touch.begin();
-    delay(100);  // Allow I2C to stabilize
+    delay(150);  // Allow I2C to stabilize (increased from 100)
     touch.setRotation(0);
     
     // Create touch mutex for dual-core architecture
@@ -4861,7 +4848,11 @@ void loop() {
     // Update data and UI
 #if ENABLE_UI_UPDATES
 
-    if (now - last_update >= UPDATE_INTERVAL_MS) {
+    // DEMO mode throttling: Reduce update rate to prevent CPU1 saturation
+    // In demo mode, values change slowly anyway, so 50ms updates are plenty
+    uint32_t effective_interval = g_demo_mode ? (UPDATE_INTERVAL_MS > 50 ? UPDATE_INTERVAL_MS : 50) : UPDATE_INTERVAL_MS;
+    
+    if (now - last_update >= effective_interval) {
         update_count++;
 
         // Step 1: Get data from appropriate provider
@@ -4885,24 +4876,7 @@ void loop() {
     }
 #endif
 
-    uint32_t t0 = micros();
     lv_timer_handler();
-    uint32_t dt = micros() - t0;
-
-    // THROTTLED WARN: Track max handler time, report once per second
-    static uint32_t max_handler_time_us = 0;
-    static uint32_t last_warn_report = 0;
-    if (dt > max_handler_time_us) {
-        max_handler_time_us = dt;
-    }
-    // Report max every second (only if > 100ms)
-    if (now - last_warn_report >= 1000) {
-        if (max_handler_time_us > 100000) {
-            Serial.printf("[WARN] lv_timer_handler max: %lu us (last 1s)\n", max_handler_time_us);
-        }
-        max_handler_time_us = 0;
-        last_warn_report = now;
-    }
 
     uint32_t elapsed = millis() - frame_start;
     cpu_busy_time += elapsed;

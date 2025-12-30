@@ -159,17 +159,23 @@ __attribute__((constructor)) void configurePSRAM() {
 //-----------------------------------------------------------------
 
 // ===== FEATURE FLAGS =====
-#define ENABLE_TOUCH            1
-#define ENABLE_UI_UPDATES       1   // Enable all UI updates (master switch)
-#define ENABLE_BARS             1   // Enable bar widgets
-#define ENABLE_VALUE_CRITICAL   1   // Enable "Value Critical" labels
-#define ENABLE_CHARTS           1   // Enable charts
+#define ENABLE_TOUCH                    1
+#define ENABLE_UI_UPDATES               1       // Enable all UI updates (master switch)
+
+#define ENABLE_BARS                     1       // DISABLED - expensive SquareLine bars cause CPU spikes
+//OR
+#define ENABLE_LIGHTWEIGHT_BARS         0       // Simple rectangle overlays (much cheaper than lv_bar)
+
+#define ENABLE_CRITICAL_LABEL_BLINK     1       // 0 = static white/black, 1 = blinking animation
+#define ENABLE_VALUE_CRITICAL           1       // Enable "Value Critical" labels
+
+#define ENABLE_CHARTS                   1       // Enable charts
 // ENABLE_SD_LOGGING defined at top of file (before TeeSerial)
-#define ENABLE_USB_MSC          1   // Enable USB Mass Storage mode (hold BOOT at startup)
-#define UPDATE_INTERVAL_MS      25 // default 250ms
+#define ENABLE_USB_MSC                  1       // Enable USB Mass Storage mode (hold BOOT at startup)
+#define UPDATE_INTERVAL_MS              25      // default 250ms
 
 // USB MSC Configuration
-#define USB_MSC_BOOT_PIN    0   // GPIO0 = BOOT button on most ESP32-S3 boards
+#define USB_MSC_BOOT_PIN                0       // GPIO0 = BOOT button on most ESP32-S3 boards
 
 //-----------------------------------------------------------------
 
@@ -549,6 +555,48 @@ extern lv_obj_t* ui_FUEL_TRUST_Value_Tap_Panel;
 #pragma endregion UI Objects
 
 //-----------------------------------------------------------------
+// LIGHTWEIGHT BARS - Simple rectangles that overlay SquareLine bars
+// Much cheaper than lv_bar widgets (no gradients, no indicator styling)
+//-----------------------------------------------------------------
+#if ENABLE_LIGHTWEIGHT_BARS
+
+// Lightweight bar configuration
+struct LightweightBar {
+    lv_obj_t* obj;           // The simple rectangle object
+    lv_obj_t* parent;        // Parent panel (ui_OIL_PRESS, etc.)
+    int16_t min_val;         // Minimum value
+    int16_t max_val;         // Maximum value
+    int16_t max_width;       // Maximum width in pixels
+    int16_t last_width;      // Last rendered width (to avoid redundant updates)
+};
+
+// 7 lightweight bars
+static LightweightBar g_light_bars[7];
+
+// Only update bar if width changed by more than this many pixels
+#define LIGHT_BAR_WIDTH_THRESHOLD 4
+
+// Only update bars every N frames (reduces CPU load)
+#define LIGHT_BAR_FRAME_SKIP 3
+static uint8_t g_light_bar_frame_counter = 0;
+
+// Bar dimensions (from SquareLine)
+#define LIGHT_BAR_WIDTH     331
+#define LIGHT_BAR_HEIGHT    65
+#define LIGHT_BAR_LEFT_MARGIN 309  // Left edge position from parent left
+
+// Colors
+#define LIGHT_BAR_BG_COLOR      0x32231E  // Dark brown background
+#define LIGHT_BAR_COLOR         0xFF4500  // Orange (static - no color changes)
+
+// Forward declaration
+void initLightweightBars();
+void updateLightweightBar(int index, float value);
+bool shouldUpdateLightweightBars();
+
+#endif // ENABLE_LIGHTWEIGHT_BARS
+
+//-----------------------------------------------------------------
 
 extern lv_obj_t* ui_Screen1;
 
@@ -764,6 +812,7 @@ static uint32_t g_last_blink_toggle = 0;
 
 // Reset all UI elements to default/empty state
 void resetUIElements() {
+#if ENABLE_BARS
     // Reset all bars to 0 (no animation for instant reset)
     if (ui_OIL_PRESS_Bar) lv_bar_set_value(ui_OIL_PRESS_Bar, 0, LV_ANIM_OFF);
     if (ui_OIL_TEMP_Bar) lv_bar_set_value(ui_OIL_TEMP_Bar, 0, LV_ANIM_OFF);
@@ -772,6 +821,7 @@ void resetUIElements() {
     if (ui_STEER_TEMP_Bar) lv_bar_set_value(ui_STEER_TEMP_Bar, 0, LV_ANIM_OFF);
     if (ui_DIFF_TEMP_Bar) lv_bar_set_value(ui_DIFF_TEMP_Bar, 0, LV_ANIM_OFF);
     if (ui_FUEL_TRUST_Bar) lv_bar_set_value(ui_FUEL_TRUST_Bar, 0, LV_ANIM_OFF);
+#endif
 
     char buf[32];
 
@@ -903,12 +953,13 @@ void resetUIElements() {
 
     for (int i = 0; i < 7; i++) {
         if (critical_labels[i]) {
-            lv_anim_delete(critical_labels[i], NULL);
+            // Just hide labels - no animations to delete (static styling now)
             lv_obj_set_style_text_opa(critical_labels[i], 0, LV_PART_MAIN);
             lv_obj_set_style_bg_opa(critical_labels[i], 0, LV_PART_MAIN);
         }
     }
 
+#if ENABLE_BARS
     // Reset all bar colors to default orange
     if (ui_OIL_PRESS_Bar) lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar, lv_color_hex(hexOrange), LV_PART_INDICATOR);
     if (ui_OIL_TEMP_Bar) lv_obj_set_style_bg_color(ui_OIL_TEMP_Bar, lv_color_hex(hexOrange), LV_PART_INDICATOR);
@@ -917,7 +968,144 @@ void resetUIElements() {
     if (ui_STEER_TEMP_Bar) lv_obj_set_style_bg_color(ui_STEER_TEMP_Bar, lv_color_hex(hexOrange), LV_PART_INDICATOR);
     if (ui_DIFF_TEMP_Bar) lv_obj_set_style_bg_color(ui_DIFF_TEMP_Bar, lv_color_hex(hexOrange), LV_PART_INDICATOR);
     if (ui_FUEL_TRUST_Bar) lv_obj_set_style_bg_color(ui_FUEL_TRUST_Bar, lv_color_hex(hexOrange), LV_PART_INDICATOR);
+#endif
+
+#if ENABLE_LIGHTWEIGHT_BARS
+    resetLightweightBars();
+#endif
 }
+
+//=================================================================
+// LIGHTWEIGHT BARS - Simple rectangles (much cheaper than lv_bar)
+//=================================================================
+#if ENABLE_LIGHTWEIGHT_BARS
+
+void initLightweightBars() {
+    Serial.println("[LIGHT_BARS] Initializing lightweight bars...");
+    
+    // Reference to original SquareLine bars to clone position/size
+    lv_obj_t* original_bars[] = {
+        ui_OIL_PRESS_Bar, ui_OIL_TEMP_Bar, ui_W_TEMP_Bar,
+        ui_TRAN_TEMP_Bar, ui_STEER_TEMP_Bar, ui_DIFF_TEMP_Bar, ui_FUEL_TRUST_Bar
+    };
+    
+    // Value ranges for each bar
+    struct BarConfig {
+        int16_t min_val;
+        int16_t max_val;
+    };
+    
+    BarConfig configs[] = {
+        {5, 150},    // Oil Pressure (PSI)
+        {150, 300},  // Oil Temp (F)
+        {100, 260},  // Water Temp (F)
+        {80, 280},   // Trans Temp (F)
+        {60, 300},   // Steer Temp (F)
+        {60, 320},   // Diff Temp (F)
+        {5, 100}     // Fuel Trust (%)
+    };
+    
+    for (int i = 0; i < 7; i++) {
+        lv_obj_t* ref = original_bars[i];
+        if (!ref) {
+            g_light_bars[i].obj = NULL;
+            Serial.printf("[LIGHT_BARS] %d - no reference bar\n", i);
+            continue;
+        }
+        
+        lv_obj_t* parent = lv_obj_get_parent(ref);
+        
+        // Read real geometry from the SquareLine bar
+        lv_coord_t x = lv_obj_get_x(ref);
+        lv_coord_t y = lv_obj_get_y(ref);
+        lv_coord_t h = lv_obj_get_height(ref);
+        lv_coord_t w = lv_obj_get_width(ref);
+        
+        // Hide the original bar's indicator so only our overlay shows
+        lv_obj_set_style_bg_opa(ref, LV_OPA_TRANSP, LV_PART_INDICATOR);
+        
+        // Create overlay rectangle
+        lv_obj_t* bar = lv_obj_create(parent);
+        lv_obj_remove_style_all(bar);
+        
+        // Use FLOATING flag to bypass flex/grid layout (LVGL v9)
+        lv_obj_add_flag(bar, LV_OBJ_FLAG_FLOATING);
+        
+        // Exact overlay placement matching original bar
+        lv_obj_set_pos(bar, x, y);
+        lv_obj_set_size(bar, 1, h);  // Start 1px wide, full real height
+        
+        // Visuals
+        lv_obj_set_style_bg_color(bar, lv_color_hex(LIGHT_BAR_COLOR), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(bar, 0, LV_PART_MAIN);
+        lv_obj_set_style_border_width(bar, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(bar, 0, LV_PART_MAIN);
+        
+        // No interaction
+        lv_obj_remove_flag(bar, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        
+        // Put it right above the original bar
+        lv_obj_move_to_index(bar, lv_obj_get_index(ref) + 1);
+        
+        Serial.printf("[LIGHT_BARS] %d ref(x=%d y=%d w=%d h=%d) overlay(h=%d)\n",
+                      i, x, y, w, h, lv_obj_get_height(bar));
+        
+        // Store configuration
+        g_light_bars[i].obj = bar;
+        g_light_bars[i].parent = parent;
+        g_light_bars[i].min_val = configs[i].min_val;
+        g_light_bars[i].max_val = configs[i].max_val;
+        g_light_bars[i].max_width = w;
+        g_light_bars[i].last_width = -1;  // Force first update
+    }
+    
+    Serial.println("[LIGHT_BARS] Initialized 7 lightweight bars");
+}
+
+void updateLightweightBar(int index, float value) {
+    if (index < 0 || index >= 7) return;
+    LightweightBar& bar = g_light_bars[index];
+    if (!bar.obj) return;
+    
+    // Calculate width based on value
+    float range = bar.max_val - bar.min_val;
+    float normalized = (value - bar.min_val) / range;
+    normalized = constrain(normalized, 0.0f, 1.0f);
+    
+    int16_t new_width = (int16_t)(normalized * bar.max_width);
+    if (new_width < 1) new_width = 1;  // Minimum 1 pixel
+    
+    // Only update if width changed by threshold (reduces redraws)
+    int16_t diff = new_width - bar.last_width;
+    if (diff < 0) diff = -diff;  // abs
+    
+    if (diff >= LIGHT_BAR_WIDTH_THRESHOLD || bar.last_width < 0) {
+        lv_obj_set_width(bar.obj, new_width);  // Direct object width, not style
+        bar.last_width = new_width;
+    }
+}
+
+// Call this once per UI update cycle - returns true if bars should update this frame
+bool shouldUpdateLightweightBars() {
+    g_light_bar_frame_counter++;
+    if (g_light_bar_frame_counter >= LIGHT_BAR_FRAME_SKIP) {
+        g_light_bar_frame_counter = 0;
+        return true;
+    }
+    return false;
+}
+
+void resetLightweightBars() {
+    for (int i = 0; i < 7; i++) {
+        if (g_light_bars[i].obj) {
+            lv_obj_set_width(g_light_bars[i].obj, 1);  // Direct object width, not style
+            g_light_bars[i].last_width = 1;
+        }
+    }
+}
+
+#endif // ENABLE_LIGHTWEIGHT_BARS
 
 // Reset chart data and history
 void resetCharts() {
@@ -2596,7 +2784,7 @@ void runUSBMSCMode() {
     char infoLine[64];
     snprintf(infoLine, sizeof(infoLine), "Card: %s  Size: %llu MB", cardTypeName, cardSize / (1024 * 1024));
     gfx->print(infoLine);
-    gfx->setCursor(226, 312);
+    gfx->setCursor(226, 309);
     gfx->print("Connect USB-C to computer now");
     // Initialize USB Mass Storage
 
@@ -3591,28 +3779,28 @@ void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, 
 
         if (!*is_visible) {
             *is_visible = true;
-            lv_obj_set_style_text_opa(label, 255, LV_PART_MAIN);
-            lv_obj_set_style_bg_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(label, LV_OPA_COVER, LV_PART_MAIN);
-
-            lv_anim_t anim;
-            lv_anim_init(&anim);
-            lv_anim_set_var(&anim, label);
-            lv_anim_set_values(&anim, 0, 255);
-            lv_anim_set_duration(&anim, LABEL_BLINK_INTERVAL_MS);
-            lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
-            lv_anim_set_playback_duration(&anim, LABEL_BLINK_INTERVAL_MS);
-            lv_anim_set_exec_cb(&anim, [](void* obj, int32_t val) {
-                lv_obj_t* lbl = (lv_obj_t*)obj;
-            if (val < 128) {
-                lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-            }
-            else {
-                lv_obj_set_style_text_color(lbl, lv_color_hex(0x960000), LV_PART_MAIN);
-            }
-                });
-            lv_anim_start(&anim);
         }
+        
+#if ENABLE_CRITICAL_LABEL_BLINK
+        // Blinking mode: alternate colors (no partial opacity - that's expensive)
+        if (g_critical_blink_phase) {
+            // Phase 1: white text on black background
+            lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
+        } else {
+            // Phase 2: red text on black background
+            lv_obj_set_style_text_color(label, lv_color_hex(0xFF0000), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
+        }
+        lv_obj_set_style_text_opa(label, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(label, LV_OPA_COVER, LV_PART_MAIN);
+#else
+        // Static mode: solid white text on black background (no animation - saves CPU)
+        lv_obj_set_style_text_opa(label, 255, LV_PART_MAIN);
+        lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(label, LV_OPA_COVER, LV_PART_MAIN);
+#endif
     }
     else {
         if (*was_critical && *exit_time == 0) {
@@ -3621,7 +3809,6 @@ void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, 
 
         if (*is_visible && *exit_time > 0 && (now - *exit_time) >= CRITICAL_LINGER_MS) {
             *is_visible = false;
-            lv_anim_delete(label, NULL);
             lv_obj_set_style_text_opa(label, 0, LV_PART_MAIN);
             lv_obj_set_style_bg_opa(label, 0, LV_PART_MAIN);
             *exit_time = 0;
@@ -3655,6 +3842,10 @@ static uint32_t fuel_trust_exit_time = 0;
 void updateUI() {
     char buf[32];
     const char* pressUnit = getPressureUnitStr(g_pressure_unit);
+
+#if ENABLE_LIGHTWEIGHT_BARS
+    bool update_bars_this_frame = shouldUpdateLightweightBars();
+#endif
 
     // Static variables to track last displayed values - only update labels when changed
     static int last_oil_press_display = -9999;
@@ -3743,6 +3934,9 @@ void updateUI() {
                 LV_PART_INDICATOR);
         }
 #endif
+#if ENABLE_LIGHTWEIGHT_BARS
+        if (update_bars_this_frame) updateLightweightBar(0, pressure_psi);
+#endif
 
         // Only update label if value changed OR unit changed
         if (ui_OIL_PRESS_Value && (display_val != last_oil_press_display || pressure_unit_changed)) {
@@ -3807,6 +4001,9 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
+#endif
+#if ENABLE_LIGHTWEIGHT_BARS
+        if (update_bars_this_frame) updateLightweightBar(1, g_vehicle_data.oil_temp_pan_f);
 #endif
 
         if (ui_OIL_TEMP_Value_P) {
@@ -3937,6 +4134,9 @@ void updateUI() {
                 LV_PART_INDICATOR);
         }
 #endif
+#if ENABLE_LIGHTWEIGHT_BARS
+        if (update_bars_this_frame) updateLightweightBar(2, g_vehicle_data.water_temp_hot_f);
+#endif
 
 #if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
@@ -4011,6 +4211,9 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
+#endif
+#if ENABLE_LIGHTWEIGHT_BARS
+        if (update_bars_this_frame) updateLightweightBar(3, g_vehicle_data.trans_temp_hot_f);
 #endif
 
 #if ENABLE_VALUE_CRITICAL
@@ -4087,6 +4290,9 @@ void updateUI() {
                 LV_PART_INDICATOR);
         }
 #endif
+#if ENABLE_LIGHTWEIGHT_BARS
+        if (update_bars_this_frame) updateLightweightBar(4, g_vehicle_data.steer_temp_hot_f);
+#endif
 
 #if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
@@ -4162,6 +4368,9 @@ void updateUI() {
                 LV_PART_INDICATOR);
         }
 #endif
+#if ENABLE_LIGHTWEIGHT_BARS
+        if (update_bars_this_frame) updateLightweightBar(5, g_vehicle_data.diff_temp_hot_f);
+#endif
 
 #if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
@@ -4190,6 +4399,9 @@ void updateUI() {
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
+#endif
+#if ENABLE_LIGHTWEIGHT_BARS
+        if (update_bars_this_frame) updateLightweightBar(6, display_fuel);
 #endif
 
         if (ui_FUEL_TRUST_Value) {
@@ -4716,6 +4928,10 @@ void setup() {
     resetTapPanelOpacity();  // Ensure panels start transparent
     resetUIElements();
     resetCharts();
+    
+#if ENABLE_LIGHTWEIGHT_BARS
+    initLightweightBars();
+#endif
 
     Serial.println("\nForcing initial render...");
     uint32_t t0 = millis();

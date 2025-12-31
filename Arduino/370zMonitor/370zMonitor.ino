@@ -631,7 +631,7 @@ Arduino_RGB_Display* gfx = new Arduino_RGB_Display(800, 480, rgbpanel, 0, true);
 //-----------------------------------------------------------------
 
 // LVGL
-#define LVGL_BUFFER_SIZE (800 * 69)  // 69 lines - will go to PSRAM | 480 ÷ 7 ≈ 69 lines per strip
+#define LVGL_BUFFER_SIZE (800 * 30)  // 30 lines in internal DMA RAM (~48KB per buffer) - prevents PSRAM contention/tearing
 static lv_display_t* disp;
 static lv_indev_t* indev;
 static uint8_t* disp_draw_buf1;
@@ -1789,13 +1789,33 @@ float getCpuLoadPercent() {
 //=================================================================
 
 void sdWriteTask(void* parameter) {
-    Serial.println("[CORE0] SD write task started");
+    // Use _RealSerial directly to avoid TeeSerial queue (chicken-egg problem)
+    _RealSerial.println("[CORE0/SD] SD write task RUNNING");
+    _RealSerial.printf("[CORE0/SD] file_open=%d log_open=%d\n", g_sd_state.file_open, g_sd_state.log_file_open);
+    _RealSerial.flush();
     
     SDLogEntry entry;
     SerialLogEntry logEntry;
     char line[300];  // Increased for datetime column
     
+    // Debug counter for periodic status
+    uint32_t loop_counter = 0;
+    uint32_t last_debug_ms = millis();
+    uint32_t writes_since_debug = 0;
+    
     while (true) {
+        loop_counter++;
+        
+        // Periodic debug output (every 10 seconds)
+        uint32_t now_dbg = millis();
+        if (now_dbg - last_debug_ms >= 10000) {
+            _RealSerial.printf("[CORE0/SD] alive: loops=%lu writes=%lu csv=%d log=%d\n", 
+                               loop_counter, writes_since_debug, g_sd_state.file_open, g_sd_state.log_file_open);
+            _RealSerial.flush();
+            last_debug_ms = now_dbg;
+            writes_since_debug = 0;
+        }
+        
         // Process serial log entries first (higher priority for responsiveness)
         while (g_serial_log_queue && 
                xQueueReceive(g_serial_log_queue, &logEntry, 0) == pdTRUE) {
@@ -1887,11 +1907,13 @@ void sdWriteTask(void* parameter) {
                 }
             }
             
-            if (!success) {
+            if (success) {
+                writes_since_debug++;
+            } else {
                 g_sd_state.error_count++;
                 if (g_sd_state.error_count >= 10) {
                     g_sd_state.logging_enabled = false;
-                    Serial.println("[SD/CORE0] Too many errors, logging disabled");
+                    _RealSerial.println("[SD/CORE0] Too many errors, logging disabled");
                 }
             }
             
@@ -4884,23 +4906,27 @@ void setup() {
 
     size_t buf_bytes = LVGL_BUFFER_SIZE * sizeof(lv_color_t);
 
-    disp_draw_buf1 = (uint8_t*)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // CRITICAL: Allocate LVGL buffers in internal DMA-capable RAM, NOT PSRAM!
+    // PSRAM allocation causes screen tearing/shift because both cores fight for
+    // PSRAM bandwidth while the RGB panel is scanning (bounce buffer contention).
+    disp_draw_buf1 = (uint8_t*)heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     if (!disp_draw_buf1) {
-        disp_draw_buf1 = (uint8_t*)heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    }
-    if (!disp_draw_buf1) {
-        Serial.println("      FATAL: Buffer 1 alloc failed!");
+        Serial.println("      FATAL: Buffer 1 alloc failed (need internal DMA RAM)!");
+        Serial.printf("      Requested: %u bytes, Free internal: %u\n", buf_bytes, heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         while (1) delay(100);
     }
 
-    disp_draw_buf2 = (uint8_t*)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    disp_draw_buf2 = (uint8_t*)heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     if (!disp_draw_buf2) {
-        disp_draw_buf2 = (uint8_t*)heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    }
-    if (!disp_draw_buf2) {
-        Serial.println("      FATAL: Buffer 2 alloc failed!");
+        Serial.println("      FATAL: Buffer 2 alloc failed (need internal DMA RAM)!");
+        Serial.printf("      Requested: %u bytes, Free internal: %u\n", buf_bytes, heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         while (1) delay(100);
     }
+    
+    Serial.printf("      LVGL buffers: 2x %u bytes in internal DMA RAM\n", buf_bytes);
+    Serial.printf("      Internal heap remaining: %u bytes (largest block: %u)\n", 
+                  heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
     disp = lv_display_create(800, 480);
     lv_display_set_flush_cb(disp, my_disp_flush);
@@ -5081,10 +5107,23 @@ void setup() {
 #if ENABLE_SD_LOGGING
     // SD write task on Core 0 - handles all SD card I/O
     if (g_sd_queue && g_sd_state.initialized) {
+        // Check available heap before task creation
+        size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        Serial.printf("[CORE0] Free internal heap: %u bytes, largest block: %u bytes\n", free_heap, largest_block);
+        
+        // Use 4KB stack (reduced from 8KB to leave room for other allocations)
+        // SD task locals use ~700 bytes, File ops need ~1-2KB, leaves safety margin
+        const uint32_t SD_TASK_STACK = 4096;
+        
+        if (largest_block < SD_TASK_STACK + 1024) {
+            Serial.printf("[CORE0] WARNING: Low heap! Need %u bytes for SD task\n", SD_TASK_STACK);
+        }
+        
         BaseType_t sdTaskResult = xTaskCreatePinnedToCore(
             sdWriteTask,         // Task function
             "SDWriteTask",       // Task name
-            8192,                // Stack size (bytes) - larger for file I/O
+            SD_TASK_STACK,       // Stack size (bytes)
             NULL,                // Parameters
             1,                   // Priority (lower than touch)
             &g_sd_task_handle,   // Task handle
@@ -5093,8 +5132,10 @@ void setup() {
         if (sdTaskResult == pdPASS) {
             Serial.println("[CORE0] SD write task created on Core 0");
         } else {
-            Serial.println("[CORE0] ERROR: SD task creation failed!");
+            Serial.printf("[CORE0] ERROR: SD task creation failed! (heap=%u)\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         }
+    } else {
+        Serial.printf("[CORE0] SD task NOT created: queue=%p, initialized=%d\n", g_sd_queue, g_sd_state.initialized);
     }
 #endif
 

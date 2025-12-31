@@ -37,6 +37,9 @@
 #include <Arduino_GFX_Library.h>
 #include <Wire.h>
 #include <lvgl.h>
+
+// Forward declaration for LVGL's optimized RGB565 byte-swap function
+extern "C" void lv_draw_sw_rgb565_swap(void * buf, uint32_t buf_size_px);
 #include <esp_heap_caps.h>
 #include <esp32-hal-psram.h>
 #include <TAMC_GT911.h>             // Touch controller
@@ -983,11 +986,27 @@ void resetUIElements() {
 void initLightweightBars() {
     Serial.println("[LIGHT_BARS] Initializing lightweight bars...");
     
+    // Force LVGL to calculate layout for all objects before reading geometry
+    // This fixes the FUEL_TRUST bar having 0x0 size because layout wasn't complete
+    lv_obj_update_layout(ui_Screen1);
+    
     // Reference to original SquareLine bars to clone position/size
     lv_obj_t* original_bars[] = {
         ui_OIL_PRESS_Bar, ui_OIL_TEMP_Bar, ui_W_TEMP_Bar,
         ui_TRAN_TEMP_Bar, ui_STEER_TEMP_Bar, ui_DIFF_TEMP_Bar, ui_FUEL_TRUST_Bar
     };
+    
+    // Debug: Check which bars are NULL
+    const char* bar_names[] = {
+        "OIL_PRESS", "OIL_TEMP", "W_TEMP",
+        "TRAN_TEMP", "STEER_TEMP", "DIFF_TEMP", "FUEL_TRUST"
+    };
+    
+    for (int i = 0; i < 7; i++) {
+        if (!original_bars[i]) {
+            Serial.printf("[LIGHT_BARS] WARNING: %s_Bar is NULL!\n", bar_names[i]);
+        }
+    }
     
     // Value ranges for each bar
     struct BarConfig {
@@ -1010,16 +1029,31 @@ void initLightweightBars() {
         if (!ref) {
             g_light_bars[i].obj = NULL;
             Serial.printf("[LIGHT_BARS] %d - no reference bar\n", i);
+            _RealSerial.flush();  // Force output
             continue;
         }
         
         lv_obj_t* parent = lv_obj_get_parent(ref);
+        if (!parent) {
+            g_light_bars[i].obj = NULL;
+            Serial.printf("[LIGHT_BARS] %d - parent is NULL\n", i);
+            _RealSerial.flush();  // Force output
+            continue;
+        }
         
         // Read real geometry from the SquareLine bar
         lv_coord_t x = lv_obj_get_x(ref);
         lv_coord_t y = lv_obj_get_y(ref);
         lv_coord_t h = lv_obj_get_height(ref);
         lv_coord_t w = lv_obj_get_width(ref);
+        
+        // Safety check - skip if geometry is invalid
+        if (w <= 0 || h <= 0) {
+            g_light_bars[i].obj = NULL;
+            Serial.printf("[LIGHT_BARS] %d - invalid geometry w=%d h=%d\n", i, w, h);
+            _RealSerial.flush();  // Force output
+            continue;
+        }
         
         // Hide the original bar's indicator so only our overlay shows
         lv_obj_set_style_bg_opa(ref, LV_OPA_TRANSP, LV_PART_INDICATOR);
@@ -1501,6 +1535,7 @@ static struct {
 
 // Time sync task handle
 static TaskHandle_t g_time_sync_task_handle = NULL;
+static SemaphoreHandle_t g_time_mutex = NULL;  // Protects g_time_state from race conditions
 
 // Forward declarations
 bool sdInit();
@@ -1800,6 +1835,16 @@ void sdWriteTask(void* parameter) {
             }
             
             // Format data line (datetime first, then existing columns)
+            // Copy time string with mutex to prevent race condition
+            char datetime_copy[24];
+            if (g_time_mutex && xSemaphoreTake(g_time_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+                strncpy(datetime_copy, g_time_state.time_string, sizeof(datetime_copy) - 1);
+                datetime_copy[sizeof(datetime_copy) - 1] = '\0';
+                xSemaphoreGive(g_time_mutex);
+            } else {
+                strcpy(datetime_copy, "N/A");
+            }
+            
             int len = snprintf(line, sizeof(line),
                 "%s,%lu,%.2f,%.1f,%s,"
                 "%d,%d,"
@@ -1810,7 +1855,7 @@ void sdWriteTask(void* parameter) {
                 "%d,%d,%d,"
                 "%d,%d,"
                 "%d,%d\n",
-                g_time_state.time_string,  // datetime first
+                datetime_copy,  // datetime first (thread-safe copy)
                 entry.timestamp_ms, entry.elapsed_s, entry.cpu_pct, 
                 entry.demo_mode ? "DEMO" : "LIVE",
                 entry.data.oil_pressure_psi, entry.data.oil_pressure_valid ? 1 : 0,
@@ -2337,43 +2382,48 @@ void timeSyncTask(void* parameter) {
 
 // Update current time from best available source
 void updateTime() {
-    bool success = false;
-    struct tm timeinfo;
-    
-    // Priority 1: DS3231 RTC
-    if (g_sd_state.rtc_available) {
-        if (readRTC(&timeinfo)) {
-            g_time_state.current_time = timeinfo;
-            g_time_state.rtc_active = true;
-            success = true;
+    // Take mutex to prevent race conditions with SD logging
+    if (g_time_mutex && xSemaphoreTake(g_time_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        bool success = false;
+        struct tm timeinfo;
+        
+        // Priority 1: DS3231 RTC
+        if (g_sd_state.rtc_available) {
+            if (readRTC(&timeinfo)) {
+                g_time_state.current_time = timeinfo;
+                g_time_state.rtc_active = true;
+                success = true;
+            } else {
+                g_time_state.rtc_active = false;
+            }
+        }
+        
+        // Priority 2: WiFi/NTP time (cached in ESP32 internal RTC)
+        if (!success && g_time_state.wifi_time_active) {
+            if (getLocalTime(&timeinfo)) {
+                g_time_state.current_time = timeinfo;
+                success = true;
+            }
+        }
+        
+        g_time_state.time_available = success;
+        g_time_state.last_update_ms = millis();
+        
+        // Format time string based on state
+        if (success) {
+            strftime(g_time_state.time_string, sizeof(g_time_state.time_string),
+                     "%m/%d/%Y %H:%M:%S", &g_time_state.current_time);
+        } else if (g_time_state.sync_status == TIME_SYNC_CONNECTING) {
+            strcpy(g_time_state.time_string, "WIFI...");
+        } else if (g_time_state.sync_status == TIME_SYNC_SYNCING) {
+            strcpy(g_time_state.time_string, "NTP...");
+        } else if (g_time_state.sync_status == TIME_SYNC_FAILED) {
+            // Keep the failure message already set
         } else {
-            g_time_state.rtc_active = false;
+            strcpy(g_time_state.time_string, "N/A");    // NO TIME
         }
-    }
-    
-    // Priority 2: WiFi/NTP time (cached in ESP32 internal RTC)
-    if (!success && g_time_state.wifi_time_active) {
-        if (getLocalTime(&timeinfo)) {
-            g_time_state.current_time = timeinfo;
-            success = true;
-        }
-    }
-    
-    g_time_state.time_available = success;
-    g_time_state.last_update_ms = millis();
-    
-    // Format time string based on state
-    if (success) {
-        strftime(g_time_state.time_string, sizeof(g_time_state.time_string),
-                 "%m/%d/%Y %H:%M:%S", &g_time_state.current_time);
-    } else if (g_time_state.sync_status == TIME_SYNC_CONNECTING) {
-        strcpy(g_time_state.time_string, "WIFI...");
-    } else if (g_time_state.sync_status == TIME_SYNC_SYNCING) {
-        strcpy(g_time_state.time_string, "NTP...");
-    } else if (g_time_state.sync_status == TIME_SYNC_FAILED) {
-        // Keep the failure message already set
-    } else {
-        strcpy(g_time_state.time_string, "N/A");    // NO TIME
+        
+        xSemaphoreGive(g_time_mutex);
     }
 }
 
@@ -2385,6 +2435,12 @@ void updateTime() {
 // 3. Fallback logic: RTC → WiFi → N/A
 void initTimeKeeping() {
     Serial.println("[TIME] Initializing timekeeping...");
+    
+    // Create mutex for thread-safe access to g_time_state
+    if (!g_time_mutex) {
+        g_time_mutex = xSemaphoreCreateMutex();
+    }
+    
     g_time_state.sync_status = TIME_SYNC_IDLE;
     g_time_state.time_available = false;
     g_time_state.rtc_active = false;
@@ -3185,19 +3241,31 @@ static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
     snprintf(buf, sizeof(buf), "SD:   %s", sd_status);
     lv_label_set_text(util_labels[UTIL_IDX_SD], buf);
 
-    // TIME - red if N/A
-    bool time_critical = !g_time_state.time_available && strcmp(g_time_state.time_string, "N/A") == 0;
-    if (g_time_state.time_available) {
-        strftime(buf, sizeof(buf), "TIME: %H:%M:%S", &g_time_state.current_time);
+    // TIME - red if N/A (with mutex protection for thread safety)
+    bool time_critical = false;
+    bool time_avail = false;
+    struct tm time_copy;
+    char time_str_copy[24] = "N/A";
+    
+    if (g_time_mutex && xSemaphoreTake(g_time_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        time_avail = g_time_state.time_available;
+        time_copy = g_time_state.current_time;
+        strncpy(time_str_copy, g_time_state.time_string, sizeof(time_str_copy) - 1);
+        xSemaphoreGive(g_time_mutex);
+    }
+    time_critical = !time_avail && strcmp(time_str_copy, "N/A") == 0;
+    
+    if (time_avail) {
+        strftime(buf, sizeof(buf), "TIME: %H:%M:%S", &time_copy);
     } else {
-        snprintf(buf, sizeof(buf), "TIME: %s", g_time_state.time_string);
+        snprintf(buf, sizeof(buf), "TIME: %s", time_str_copy);
     }
     lv_label_set_text(util_labels[UTIL_IDX_TIME], buf);
     lv_obj_set_style_text_color(util_labels[UTIL_IDX_TIME], time_critical ? clr_red : clr_yellow, 0);
 
     // DATE - always yellow (only shown when time available)
-    if (g_time_state.time_available) {
-        strftime(buf, sizeof(buf), "      %m/%d/%y", &g_time_state.current_time);
+    if (time_avail) {
+        strftime(buf, sizeof(buf), "      %m/%d/%y", &time_copy);
         lv_label_set_text(util_labels[UTIL_IDX_DATE], buf);
     } else {
         lv_label_set_text(util_labels[UTIL_IDX_DATE], "");
@@ -3452,16 +3520,8 @@ void my_disp_flush(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
     uint32_t h = (area->y2 - area->y1 + 1);
     uint32_t len = w * h;
 
-    uint32_t* buf32 = (uint32_t*)px_map;
-    uint32_t len32 = len >> 1;
-    for (uint32_t i = 0; i < len32; i++) {
-        uint32_t v = buf32[i];
-        buf32[i] = ((v & 0x00FF00FF) << 8) | ((v & 0xFF00FF00) >> 8);
-    }
-    if (len & 1) {
-        uint16_t* buf16 = (uint16_t*)px_map;
-        buf16[len - 1] = (buf16[len - 1] >> 8) | (buf16[len - 1] << 8);
-    }
+    // Use LVGL's optimized byte-swap (8-pixel loop unrolling)
+    lv_draw_sw_rgb565_swap(px_map, len);
 
     gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t*)px_map, w, h);
 

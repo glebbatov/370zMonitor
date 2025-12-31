@@ -162,11 +162,11 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_TOUCH                    1
 #define ENABLE_UI_UPDATES               1       // Enable all UI updates (master switch)
 
-#define ENABLE_BARS                     1       // DISABLED - expensive SquareLine bars cause CPU spikes
+#define ENABLE_BARS                     0       // DISABLED - expensive SquareLine bars cause CPU spikes
 //OR
-#define ENABLE_LIGHTWEIGHT_BARS         0       // Simple rectangle overlays (much cheaper than lv_bar)
+#define ENABLE_LIGHTWEIGHT_BARS         1       // Simple rectangle overlays (much cheaper than lv_bar)
 
-#define ENABLE_CRITICAL_LABEL_BLINK     1       // 0 = static white/black, 1 = blinking animation
+#define ENABLE_CRITICAL_LABEL_BLINK     0       // 0 = static white/black, 1 = blinking animation
 #define ENABLE_VALUE_CRITICAL           1       // Enable "Value Critical" labels
 
 #define ENABLE_CHARTS                   1       // Enable charts

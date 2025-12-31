@@ -3210,25 +3210,45 @@ static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
     snprintf(buf, sizeof(buf), "FPS:  %3d", fps);
     lv_label_set_text(util_labels[UTIL_IDX_FPS], buf);
 
-    // CPU0 - red if >95%
+    // CPU0 - red if >95% (with state tracking to avoid redundant invalidations)
+    static bool cpu0_was_critical = false;
+    bool cpu0_critical = (cpu0_percent > 95);
     snprintf(buf, sizeof(buf), "CPU0: %3d%%", cpu0_percent);
     lv_label_set_text(util_labels[UTIL_IDX_CPU0], buf);
-    lv_obj_set_style_text_color(util_labels[UTIL_IDX_CPU0], (cpu0_percent > 95) ? clr_red : clr_yellow, 0);
+    if (cpu0_critical != cpu0_was_critical) {
+        lv_obj_set_style_text_color(util_labels[UTIL_IDX_CPU0], cpu0_critical ? clr_red : clr_yellow, 0);
+        cpu0_was_critical = cpu0_critical;
+    }
 
     // CPU1 - red if >95%
+    static bool cpu1_was_critical = false;
+    bool cpu1_critical = (cpu1_percent > 95);
     snprintf(buf, sizeof(buf), "CPU1: %3d%%", cpu1_percent);
     lv_label_set_text(util_labels[UTIL_IDX_CPU1], buf);
-    lv_obj_set_style_text_color(util_labels[UTIL_IDX_CPU1], (cpu1_percent > 95) ? clr_red : clr_yellow, 0);
+    if (cpu1_critical != cpu1_was_critical) {
+        lv_obj_set_style_text_color(util_labels[UTIL_IDX_CPU1], cpu1_critical ? clr_red : clr_yellow, 0);
+        cpu1_was_critical = cpu1_critical;
+    }
 
     // SRAM - red if >95%
+    static bool sram_was_critical = false;
+    bool sram_critical = (sram_percent > 95);
     snprintf(buf, sizeof(buf), "SRAM: %3d%%", sram_percent);
     lv_label_set_text(util_labels[UTIL_IDX_SRAM], buf);
-    lv_obj_set_style_text_color(util_labels[UTIL_IDX_SRAM], (sram_percent > 95) ? clr_red : clr_yellow, 0);
+    if (sram_critical != sram_was_critical) {
+        lv_obj_set_style_text_color(util_labels[UTIL_IDX_SRAM], sram_critical ? clr_red : clr_yellow, 0);
+        sram_was_critical = sram_critical;
+    }
 
     // PSRAM - red if >95%
+    static bool psram_was_critical = false;
+    bool psram_critical = (psram_percent > 95);
     snprintf(buf, sizeof(buf), "PSRAM:%3d%%", psram_percent);
     lv_label_set_text(util_labels[UTIL_IDX_PSRAM], buf);
-    lv_obj_set_style_text_color(util_labels[UTIL_IDX_PSRAM], (psram_percent > 95) ? clr_red : clr_yellow, 0);
+    if (psram_critical != psram_was_critical) {
+        lv_obj_set_style_text_color(util_labels[UTIL_IDX_PSRAM], psram_critical ? clr_red : clr_yellow, 0);
+        psram_was_critical = psram_critical;
+    }
 
     // BRI - always yellow
     snprintf(buf, sizeof(buf), "BRI:  %3d%%", bri_percent);
@@ -3261,7 +3281,13 @@ static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
         snprintf(buf, sizeof(buf), "TIME: %s", time_str_copy);
     }
     lv_label_set_text(util_labels[UTIL_IDX_TIME], buf);
-    lv_obj_set_style_text_color(util_labels[UTIL_IDX_TIME], time_critical ? clr_red : clr_yellow, 0);
+    
+    // Only update color on state change
+    static bool time_was_critical = false;
+    if (time_critical != time_was_critical) {
+        lv_obj_set_style_text_color(util_labels[UTIL_IDX_TIME], time_critical ? clr_red : clr_yellow, 0);
+        time_was_critical = time_critical;
+    }
 
     // DATE - always yellow (only shown when time available)
     if (time_avail) {
@@ -3837,29 +3863,41 @@ void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, 
     if (is_critical) {
         *exit_time = 0;
 
+        // Only set styles on TRANSITION to critical (not every frame!)
+        bool just_became_critical = !*was_critical;
+        
         if (!*is_visible) {
             *is_visible = true;
         }
         
 #if ENABLE_CRITICAL_LABEL_BLINK
         // Blinking mode: alternate colors (no partial opacity - that's expensive)
-        if (g_critical_blink_phase) {
-            // Phase 1: white text on black background
+        // This MUST run every frame for animation, but only when blink phase changes
+        static bool last_blink_phase = false;
+        if (just_became_critical || g_critical_blink_phase != last_blink_phase) {
+            if (g_critical_blink_phase) {
+                // Phase 1: white text on black background
+                lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+            } else {
+                // Phase 2: red text on black background
+                lv_obj_set_style_text_color(label, lv_color_hex(0xFF0000), LV_PART_MAIN);
+            }
+            last_blink_phase = g_critical_blink_phase;
+        }
+        // Only set bg/opa on transition
+        if (just_became_critical) {
+            lv_obj_set_style_bg_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
+            lv_obj_set_style_text_opa(label, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(label, LV_OPA_COVER, LV_PART_MAIN);
+        }
+#else
+        // Static mode: ONLY set styles on transition to critical (huge CPU savings!)
+        if (just_became_critical) {
+            lv_obj_set_style_text_opa(label, 255, LV_PART_MAIN);
             lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
             lv_obj_set_style_bg_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
-        } else {
-            // Phase 2: red text on black background
-            lv_obj_set_style_text_color(label, lv_color_hex(0xFF0000), LV_PART_MAIN);
-            lv_obj_set_style_bg_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(label, LV_OPA_COVER, LV_PART_MAIN);
         }
-        lv_obj_set_style_text_opa(label, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(label, LV_OPA_COVER, LV_PART_MAIN);
-#else
-        // Static mode: solid white text on black background (no animation - saves CPU)
-        lv_obj_set_style_text_opa(label, 255, LV_PART_MAIN);
-        lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(label, LV_OPA_COVER, LV_PART_MAIN);
 #endif
     }
     else {
@@ -3988,10 +4026,15 @@ void updateUI() {
         if (ui_OIL_PRESS_Bar) {
             // Bar always uses PSI internally for range
             lv_bar_set_value(ui_OIL_PRESS_Bar, pressure_psi, LV_ANIM_OFF);
+            // Only update bar color on critical state change
             bool critical = isOilPressureCritical();
-            lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar,
-                critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
-                LV_PART_INDICATOR);
+            static bool oil_press_bar_was_critical = false;
+            if (critical != oil_press_bar_was_critical) {
+                lv_obj_set_style_bg_color(ui_OIL_PRESS_Bar,
+                    critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
+                    LV_PART_INDICATOR);
+                oil_press_bar_was_critical = critical;
+            }
         }
 #endif
 #if ENABLE_LIGHTWEIGHT_BARS

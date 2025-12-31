@@ -3854,7 +3854,8 @@ void my_touch_read(lv_indev_t* indev, lv_indev_data_t* data) {
 //=================================================================
 
 // Generic function to manage critical label visibility and blinking
-void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, bool* is_visible, uint32_t* exit_time) {
+// last_blink_phase is per-label tracking (fixes bug where static var was shared across all 7 labels)
+void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, bool* is_visible, uint32_t* exit_time, bool* last_blink_phase) {
     if (!label) return;
 
     const uint32_t CRITICAL_LINGER_MS = 2000;
@@ -3872,9 +3873,8 @@ void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, 
         
 #if ENABLE_CRITICAL_LABEL_BLINK
         // Blinking mode: alternate colors (no partial opacity - that's expensive)
-        // This MUST run every frame for animation, but only when blink phase changes
-        static bool last_blink_phase = false;
-        if (just_became_critical || g_critical_blink_phase != last_blink_phase) {
+        // Only update when blink phase changes (per-label tracking via last_blink_phase parameter)
+        if (just_became_critical || g_critical_blink_phase != *last_blink_phase) {
             if (g_critical_blink_phase) {
                 // Phase 1: white text on black background
                 lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
@@ -3882,7 +3882,7 @@ void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, 
                 // Phase 2: red text on black background
                 lv_obj_set_style_text_color(label, lv_color_hex(0xFF0000), LV_PART_MAIN);
             }
-            last_blink_phase = g_critical_blink_phase;
+            *last_blink_phase = g_critical_blink_phase;
         }
         // Only set bg/opa on transition
         if (just_became_critical) {
@@ -3892,6 +3892,8 @@ void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, 
         }
 #else
         // Static mode: ONLY set styles on transition to critical (huge CPU savings!)
+        // last_blink_phase parameter unused in static mode but kept for API consistency
+        (void)last_blink_phase;
         if (just_became_critical) {
             lv_obj_set_style_text_opa(label, 255, LV_PART_MAIN);
             lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
@@ -3924,18 +3926,31 @@ void updateCriticalLabel(lv_obj_t* label, bool is_critical, bool* was_critical, 
 // Static state for critical label tracking
 static bool oil_press_was_critical = false, oil_press_visible = false;
 static uint32_t oil_press_exit_time = 0;
+static bool oil_press_last_blink = false;  // Per-label blink phase tracking
+
 static bool oil_temp_was_critical = false, oil_temp_visible = false;
 static uint32_t oil_temp_exit_time = 0;
+static bool oil_temp_last_blink = false;
+
 static bool water_temp_was_critical = false, water_temp_visible = false;
 static uint32_t water_temp_exit_time = 0;
+static bool water_temp_last_blink = false;
+
 static bool trans_temp_was_critical = false, trans_temp_visible = false;
 static uint32_t trans_temp_exit_time = 0;
+static bool trans_temp_last_blink = false;
+
 static bool steer_temp_was_critical = false, steer_temp_visible = false;
 static uint32_t steer_temp_exit_time = 0;
+static bool steer_temp_last_blink = false;
+
 static bool diff_temp_was_critical = false, diff_temp_visible = false;
 static uint32_t diff_temp_exit_time = 0;
+static bool diff_temp_last_blink = false;
+
 static bool fuel_trust_was_critical = false, fuel_trust_visible = false;
 static uint32_t fuel_trust_exit_time = 0;
+static bool fuel_trust_last_blink = false;
 
 void updateUI() {
     char buf[32];
@@ -4078,7 +4093,7 @@ void updateUI() {
 
 #if ENABLE_VALUE_CRITICAL
         updateCriticalLabel(ui_OIL_PRESS_VALUE_CRITICAL_Label, isOilPressureCritical(),
-            &oil_press_was_critical, &oil_press_visible, &oil_press_exit_time);
+            &oil_press_was_critical, &oil_press_visible, &oil_press_exit_time, &oil_press_last_blink);
 #endif
     }
     // If not valid, don't update - UI stays at reset state ("---" and 0)
@@ -4166,7 +4181,7 @@ void updateUI() {
 #if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
         updateCriticalLabel(ui_OIL_TEMP_VALUE_CRITICAL_Label, critical,
-            &oil_temp_was_critical, &oil_temp_visible, &oil_temp_exit_time);
+            &oil_temp_was_critical, &oil_temp_visible, &oil_temp_exit_time, &oil_temp_last_blink);
 #endif
     }
 
@@ -4244,7 +4259,7 @@ void updateUI() {
 #if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_W_TEMP_VALUE_CRITICAL_Label, critical,
-            &water_temp_was_critical, &water_temp_visible, &water_temp_exit_time);
+            &water_temp_was_critical, &water_temp_visible, &water_temp_exit_time, &water_temp_last_blink);
 #endif
     }
 
@@ -4322,7 +4337,7 @@ void updateUI() {
 #if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_TRAN_TEMP_VALUE_CRITICAL_Label, critical,
-            &trans_temp_was_critical, &trans_temp_visible, &trans_temp_exit_time);
+            &trans_temp_was_critical, &trans_temp_visible, &trans_temp_exit_time, &trans_temp_last_blink);
 #endif
     }
 
@@ -4400,7 +4415,7 @@ void updateUI() {
 #if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_STEER_TEMP_VALUE_CRITICAL_Label, critical,
-            &steer_temp_was_critical, &steer_temp_visible, &steer_temp_exit_time);
+            &steer_temp_was_critical, &steer_temp_visible, &steer_temp_exit_time, &steer_temp_last_blink);
 #endif
     }
 
@@ -4478,7 +4493,7 @@ void updateUI() {
 #if ENABLE_VALUE_CRITICAL
         bool critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_DIFF_TEMP_VALUE_CRITICAL_Label, critical,
-            &diff_temp_was_critical, &diff_temp_visible, &diff_temp_exit_time);
+            &diff_temp_was_critical, &diff_temp_visible, &diff_temp_exit_time, &diff_temp_last_blink);
 #endif
     }
 
@@ -4541,7 +4556,7 @@ void updateUI() {
 #if ENABLE_VALUE_CRITICAL
         bool critical = (fuel < FUEL_TRUST_ValueCritical);
         updateCriticalLabel(ui_FUEL_TRUST_VALUE_CRITICAL_Label, critical,
-            &fuel_trust_was_critical, &fuel_trust_visible, &fuel_trust_exit_time);
+            &fuel_trust_was_critical, &fuel_trust_visible, &fuel_trust_exit_time, &fuel_trust_last_blink);
 #endif
     }
 }

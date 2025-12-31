@@ -603,7 +603,8 @@ bool shouldUpdateLightweightBars();
 
 extern lv_obj_t* ui_Screen1;
 
-// Display
+// Display - Waveshare ESP32-S3 7" 800x480 RGB
+// Using Waveshare recommended porch timings for stable sync
 Arduino_ESP32RGBPanel* rgbpanel = new Arduino_ESP32RGBPanel(
     5,   // DE
     3,   // VSYNC
@@ -613,13 +614,13 @@ Arduino_ESP32RGBPanel* rgbpanel = new Arduino_ESP32RGBPanel(
     39, 0, 45, 48, 47, 21,      // G2-G7
     14, 38, 18, 17, 10,         // B3-B7
     0,   // hsync_polarity
-    8,   // hsync_front_porch (reduced from 40)
-    4,   // hsync_pulse_width (reduced from 48)
-    8,   // hsync_back_porch (reduced from 40)
+    40,  // hsync_front_porch (Waveshare recommended)
+    48,  // hsync_pulse_width (Waveshare recommended)
+    40,  // hsync_back_porch (Waveshare recommended)
     0,   // vsync_polarity
-    8,   // vsync_front_porch (reduced from 13)
-    4,   // vsync_pulse_width (reduced from 3)
-    8,   // vsync_back_porch (reduced from 32)
+    13,  // vsync_front_porch (Waveshare recommended)
+    3,   // vsync_pulse_width (Waveshare recommended)
+    32,  // vsync_back_porch (Waveshare recommended)
     1,   // pclk_active_neg
     14000000,  // pixel clock
     true,      // auto_flush

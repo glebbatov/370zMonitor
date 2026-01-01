@@ -733,6 +733,7 @@ static bool idle_hook_core1() { g_idle_count_core1++; return false; }
 // Long press tracking for demo mode toggle
 static uint32_t g_utility_press_start = 0;
 static bool g_utility_long_press_triggered = false;
+static bool g_utility_long_press_consumed = false;  // Prevents tap after long-press release
 #define DEMO_MODE_TOGGLE_HOLD_MS 5000  // 5 seconds to toggle demo mode
 
 // Chart series
@@ -3116,6 +3117,13 @@ static void utility_box_single_tap_cb(lv_timer_t* t) {
 static void utility_box_tap_cb(lv_event_t* e) {
     LV_UNUSED(e);
 
+    // If a long-press was just consumed, ignore this tap and clear the flag
+    if (g_utility_long_press_consumed) {
+        g_utility_long_press_consumed = false;
+        Serial.println("[UI] Tap ignored (long-press was consumed)");
+        return;
+    }
+
     // If we're in a long-press situation, ignore tap
     if (g_utility_long_press_triggered) {
         return;
@@ -3160,6 +3168,12 @@ static void utility_box_press_cb(lv_event_t* e) {
 // Release event - reset tracking + visual feedback
 static void utility_box_release_cb(lv_event_t* e) {
     LV_UNUSED(e);
+    
+    // If long-press was triggered, mark it as consumed so the upcoming CLICKED event is ignored
+    if (g_utility_long_press_triggered) {
+        g_utility_long_press_consumed = true;
+    }
+    
     g_utility_press_start = 0;
     g_utility_long_press_triggered = false;
 

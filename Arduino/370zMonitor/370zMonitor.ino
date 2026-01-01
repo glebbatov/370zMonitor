@@ -1,9 +1,15 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v4.3 - Dual-Core Architecture
+ * 370zMonitor v4.4 - Dual-Core Architecture
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v4.4 Changes:
+ * - Added 5-second splash screen with "370zMONITOR" branding
+ * - Splash shows 2018 NISSAN 370Z subtitle with Passion Red accents
+ * - Animated loading bar during startup
+ * - Smooth fade transition to main gauge screen
  *
  * v4.3 Changes:
  * - Fixed USB MSC screen to show SD card type/size

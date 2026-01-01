@@ -1876,12 +1876,12 @@ bool sdInit() {
 
     // Initialize SD card with software CS control
     // The actual CS is controlled via IO expander (EXIO_SD_CS)
-    // We need to pass SOME pin to SD.begin() - use GPIO15 as dummy
-    // (GPIO6 might be used by flash on some ESP32-S3 variants)
-    pinMode(15, OUTPUT);
-    digitalWrite(15, HIGH);  // Keep dummy CS high (deselected)
+    // We need to pass SOME pin to SD.begin() - use GPIO46 as dummy
+    // CRITICAL: Do NOT use GPIO15 - that's RS485 RX and will kill Modbus!
+    pinMode(46, OUTPUT);
+    digitalWrite(46, HIGH);  // Keep dummy CS high (deselected)
 
-    if (!SD.begin(15, SPI, SD_SPI_FREQ)) {
+    if (!SD.begin(46, SPI, SD_SPI_FREQ)) {
         Serial.println("[SD] Card mount failed!");
         exio_set(EXIO_SD_CS, true);  // Deselect on failure
         g_sd_state.initialized = false;
@@ -3104,12 +3104,12 @@ void runUSBMSCMode() {
     exio_set(EXIO_SD_CS, false);  // CS LOW = selected
     delay(10);
 
-    // Use GPIO15 as dummy CS for SD library (not physically connected)
-    pinMode(15, OUTPUT);
-    digitalWrite(15, HIGH);  // Keep dummy high
+    // Use GPIO46 as dummy CS for SD library (NOT GPIO15 - that's RS485 RX!)
+    pinMode(46, OUTPUT);
+    digitalWrite(46, HIGH);  // Keep dummy high
 
     // Initialize SD card using Arduino library (for card info)
-    if (!SD.begin(15, SPI, SD_SPI_FREQ)) {
+    if (!SD.begin(46, SPI, SD_SPI_FREQ)) {
         // SD init failed - show error
         gfx->fillRect(100, 262, 600, 40, GRAY_BG);  // Clear status area
         gfx->setCursor(250, 272);

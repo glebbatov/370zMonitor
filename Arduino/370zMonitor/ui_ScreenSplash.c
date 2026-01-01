@@ -5,6 +5,7 @@
 #include "ui_ScreenSplash.h"
 #include "ui.h"
 #include "ui_Screen1.h"
+#include "Images/splash_450x300_cropped.c"
 
 // Screen objects
 lv_obj_t * ui_ScreenSplash = NULL;
@@ -12,6 +13,7 @@ lv_obj_t * ui_Splash_Title = NULL;
 lv_obj_t * ui_Splash_Subtitle = NULL;
 lv_obj_t * ui_Splash_Year = NULL;
 lv_obj_t * ui_Splash_LoadingBar = NULL;
+lv_obj_t * ui_Splash_CarImage = NULL;
 
 // Passion Red color (Nissan A54 Vibrant Red / Passion Red)
 #define PASSION_RED_COLOR       lv_color_hex(0xA31621)
@@ -48,6 +50,13 @@ void ui_ScreenSplash_screen_init(void) {
     // Dark background
     lv_obj_set_style_bg_color(ui_ScreenSplash, DARK_BACKGROUND, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_ScreenSplash, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
+    
+    // ========== Background car silhouette image ==========
+    ui_Splash_CarImage = lv_image_create(ui_ScreenSplash);
+    lv_image_set_src(ui_Splash_CarImage, &splash_450x300_cropped);
+    lv_obj_align(ui_Splash_CarImage, LV_ALIGN_CENTER, 0, 20);  // Slightly below center
+    lv_obj_set_style_image_opa(ui_Splash_CarImage, 100, 0);    // ~40% opacity
+    lv_image_set_scale(ui_Splash_CarImage, 400);               // Scale to ~1.56x (800px wide)
     
     // ========== Top accent line (Passion Red) ==========
     lv_obj_t * top_line = lv_obj_create(ui_ScreenSplash);
@@ -140,4 +149,5 @@ void ui_ScreenSplash_screen_destroy(void) {
     ui_Splash_Subtitle = NULL;
     ui_Splash_Year = NULL;
     ui_Splash_LoadingBar = NULL;
+    ui_Splash_CarImage = NULL;
 }

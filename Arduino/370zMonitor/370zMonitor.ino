@@ -181,6 +181,7 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_CHARTS                   1       // Enable charts
 // ENABLE_SD_LOGGING defined at top of file (before TeeSerial)
 #define ENABLE_USB_MSC                  1       // Enable USB Mass Storage mode (hold BOOT at startup)
+#define ENABLE_MODBUS_SENSORS           1       // Enable Modbus RS485 sensor reading (8-Ch Analog Module)
 #define UPDATE_INTERVAL_MS              25      // default 250ms
 
 // USB MSC Configuration
@@ -378,6 +379,284 @@ void resetTapPanelOpacity();
 void resetDemoState();
 void updateTapBoxVisibility();
 void resetUIElements();
+
+//-----------------------------------------------------------------
+
+//=================================================================
+// MODBUS RS485 SENSOR INTEGRATION
+// Reads from Waveshare 8-Ch Analog Module via RS485 Modbus RTU
+// ESP32-S3 7" Touch LCD has onboard RS485 transceiver on Serial1
+//=================================================================
+
+#if ENABLE_MODBUS_SENSORS
+
+// RS485 Serial Port Configuration
+// Waveshare ESP32-S3-Touch-LCD-7 uses SP3485 with auto-direction (no DE pin needed)
+#define RS485_SERIAL        Serial1
+#define RS485_BAUD          9600
+#define RS485_RX_PIN        15      // GPIO15 = RS485_RXD (confirmed from schematic)
+#define RS485_TX_PIN        16      // GPIO16 = RS485_TXD (confirmed from schematic)
+#define RS485_CONFIG        SERIAL_8N1
+
+// Modbus Configuration
+#define MODBUS_SLAVE_ADDR   1       // 8-Ch module default address
+#define MODBUS_TIMEOUT_MS   100     // Response timeout
+#define MODBUS_RETRY_COUNT  2       // Retries on failure
+#define MODBUS_READ_INTERVAL_MS 100 // How often to poll sensors (ms)
+
+// Sensor Channel Mapping on 8-Ch Module
+#define MODBUS_CH_OIL_PRESSURE  0   // Channel 1 (index 0)
+#define MODBUS_CH_OIL_TEMP      1   // Channel 2 (index 1) - future
+#define MODBUS_CH_WATER_TEMP    2   // Channel 3 (index 2) - future
+
+// Number of channels to read
+#define MODBUS_NUM_CHANNELS     1   // Just oil pressure for now
+
+// Pressure Sensor Calibration (PX3AN2BH150PSAAX with voltage divider)
+// Your voltage divider: 10kΩ / 22kΩ = ratio of 0.6875
+#define PRESSURE_DIVIDER_RATIO  1.4545f  // Inverse of 0.6875
+#define PRESSURE_OFFSET_MV      500.0f   // 0.5V = 500mV at 0 PSI
+#define PRESSURE_SCALE          0.0375f  // 150 PSI / 4000 mV range
+
+// Modbus State
+static bool g_modbus_initialized = false;
+static uint32_t g_modbus_last_read_ms = 0;
+static uint32_t g_modbus_success_count = 0;
+static uint32_t g_modbus_error_count = 0;
+static uint16_t g_modbus_channel_values[8] = {0};
+
+// Modbus CRC16 calculation
+static uint16_t modbusCRC16(const uint8_t* data, uint16_t length) {
+    uint16_t crc = 0xFFFF;
+    for (uint16_t i = 0; i < length; i++) {
+        crc ^= (uint16_t)data[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x0001) {
+                crc >>= 1;
+                crc ^= 0xA001;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    return crc;
+}
+
+// Send Modbus RTU request and receive response
+// Uses timeout-based waiting instead of fixed delay (more robust under CPU load)
+static int modbusTransaction(uint8_t* request, uint8_t requestLen, 
+                             uint8_t* response, uint8_t maxResponseLen) {
+    // Drain any stale bytes in buffer
+    while (RS485_SERIAL.available()) RS485_SERIAL.read();
+    
+    // Send request
+    RS485_SERIAL.write(request, requestLen);
+    RS485_SERIAL.flush();  // Wait for TX complete
+    
+    // Timeout-based receive (wait for bytes, don't just peek once)
+    uint32_t t0 = millis();
+    uint32_t lastByteMs = t0;
+    int got = 0;
+    const uint32_t timeoutMs = 200;  // Overall timeout
+    const uint32_t interByteTimeout = 10;  // Gap after last byte = end of frame
+    
+    while ((millis() - t0) < timeoutMs && got < maxResponseLen) {
+        int avail = RS485_SERIAL.available();
+        if (avail > 0) {
+            // Read available bytes
+            int take = min(avail, (int)(maxResponseLen - got));
+            got += RS485_SERIAL.readBytes(response + got, take);
+            lastByteMs = millis();
+        } else {
+            // Once we started receiving, a short gap means end-of-frame
+            if (got > 0 && (millis() - lastByteMs) > interByteTimeout) {
+                break;  // Frame complete
+            }
+            delay(1);  // Small yield while waiting
+        }
+    }
+    
+    return got;
+}
+
+// Read input registers from Modbus slave
+static bool modbusReadInputRegisters(uint8_t slaveAddr, uint16_t startReg, 
+                                     uint16_t numRegs, uint16_t* values) {
+    uint8_t request[8];
+    request[0] = slaveAddr;
+    request[1] = 0x04;  // Function code: Read Input Registers
+    request[2] = (startReg >> 8) & 0xFF;
+    request[3] = startReg & 0xFF;
+    request[4] = (numRegs >> 8) & 0xFF;
+    request[5] = numRegs & 0xFF;
+    
+    uint16_t crc = modbusCRC16(request, 6);
+    request[6] = crc & 0xFF;
+    request[7] = (crc >> 8) & 0xFF;
+    
+    uint8_t expectedLen = 3 + (numRegs * 2) + 2;
+    uint8_t response[64];
+    
+    int received = modbusTransaction(request, 8, response, expectedLen + 5);
+    
+    // Debug: log raw response on failures (periodically)
+    static uint32_t lastDebugLog = 0;
+    if (received < expectedLen && (millis() - lastDebugLog > 5000)) {
+        lastDebugLog = millis();
+        Serial.printf("[MODBUS DEBUG] Got %d bytes (expected %d): ", received, expectedLen);
+        for (int i = 0; i < received && i < 20; i++) {
+            Serial.printf("%02X ", response[i]);
+        }
+        Serial.println();
+    }
+    
+    if (received < expectedLen) {
+        return false;
+    }
+    if (response[0] != slaveAddr || response[1] != 0x04) {
+        return false;
+    }
+    
+    uint8_t byteCount = response[2];
+    if (byteCount != numRegs * 2) {
+        return false;
+    }
+    
+    uint16_t receivedCRC = response[3 + byteCount] | (response[4 + byteCount] << 8);
+    uint16_t calculatedCRC = modbusCRC16(response, 3 + byteCount);
+    if (receivedCRC != calculatedCRC) {
+        return false;
+    }
+    
+    for (int i = 0; i < numRegs; i++) {
+        values[i] = (response[3 + i*2] << 8) | response[4 + i*2];
+    }
+    return true;
+}
+
+// Convert Modbus mV reading to PSI (with voltage divider)
+static float convertToPSI(uint16_t modbus_mV) {
+    float raw_mV = (float)modbus_mV * PRESSURE_DIVIDER_RATIO;
+    float psi = (raw_mV - PRESSURE_OFFSET_MV) * PRESSURE_SCALE;
+    if (psi < 0.0f) psi = 0.0f;
+    if (psi > 150.0f) psi = 150.0f;
+    return psi;
+}
+
+// Initialize Modbus RS485
+// Waveshare ESP32-S3-Touch-LCD-7 uses SP3485 with auto-direction
+void initModbusSensors() {
+    Serial.println("[MODBUS] Initializing RS485...");
+    Serial.printf("[MODBUS] Config: RX=%d, TX=%d, Baud=%d\n", 
+                  RS485_RX_PIN, RS485_TX_PIN, RS485_BAUD);
+    
+    RS485_SERIAL.begin(RS485_BAUD, RS485_CONFIG, RS485_RX_PIN, RS485_TX_PIN);
+    delay(100);
+    
+    // Clear any garbage
+    while (RS485_SERIAL.available()) RS485_SERIAL.read();
+    
+    // Test: Send Modbus request and check for response
+    uint8_t testReq[8] = {0x01, 0x04, 0x00, 0x00, 0x00, 0x01, 0x31, 0xCA};
+    uint8_t testResp[32];
+    
+    Serial.print("[MODBUS] TX: ");
+    for (int i = 0; i < 8; i++) Serial.printf("%02X ", testReq[i]);
+    Serial.println();
+    
+    RS485_SERIAL.write(testReq, 8);
+    RS485_SERIAL.flush();  // Wait for TX complete
+    
+    // Wait for response (100ms works reliably)
+    delay(100);
+    
+    int avail = RS485_SERIAL.available();
+    Serial.printf("[MODBUS] RX buffer: %d bytes\n", avail);
+    
+    int rxCount = 0;
+    while (RS485_SERIAL.available() && rxCount < 32) {
+        testResp[rxCount++] = RS485_SERIAL.read();
+    }
+    
+    if (rxCount > 0) {
+        Serial.printf("[MODBUS] RX: ");
+        for (int i = 0; i < rxCount; i++) {
+            Serial.printf("%02X ", testResp[i]);
+        }
+        Serial.println();
+        
+        // Check for valid Modbus response (01 04 02 XX XX CRC CRC)
+        if (rxCount >= 7 && testResp[0] == 0x01 && testResp[1] == 0x04 && testResp[2] == 0x02) {
+            uint16_t value = (testResp[3] << 8) | testResp[4];
+            Serial.printf("[MODBUS] SUCCESS! CH1 = %d mV\n", value);
+            g_modbus_initialized = true;
+        } else {
+            Serial.println("[MODBUS] Got data but unexpected format");
+            g_modbus_initialized = false;
+        }
+    } else {
+        Serial.println("[MODBUS] FAILED - no response");
+        Serial.println("[MODBUS] Check: A<->A, B<->B wiring, module power");
+        g_modbus_initialized = false;
+    }
+}
+
+// Read all sensors via Modbus
+void readModbusSensors() {
+    if (!g_modbus_initialized) {
+        static uint32_t lastRetry = 0;
+        if (millis() - lastRetry > 5000) {
+            lastRetry = millis();
+            initModbusSensors();
+        }
+        return;
+    }
+    
+    uint32_t now = millis();
+    if ((now - g_modbus_last_read_ms) < MODBUS_READ_INTERVAL_MS) {
+        return;
+    }
+    g_modbus_last_read_ms = now;
+    
+    bool success = false;
+    for (int retry = 0; retry < MODBUS_RETRY_COUNT && !success; retry++) {
+        success = modbusReadInputRegisters(MODBUS_SLAVE_ADDR, 0, MODBUS_NUM_CHANNELS, 
+                                           g_modbus_channel_values);
+        if (!success && retry < MODBUS_RETRY_COUNT - 1) delay(10);
+    }
+    
+    if (success) {
+        g_modbus_success_count++;
+        
+        // Channel 1: Oil Pressure
+        uint16_t oil_press_mV = g_modbus_channel_values[MODBUS_CH_OIL_PRESSURE];
+        float oil_press_psi = convertToPSI(oil_press_mV);
+        
+        g_vehicle_data.oil_pressure_psi = (int)(oil_press_psi + 0.5f);
+        g_vehicle_data.oil_pressure_valid = true;
+        g_vehicle_data.has_received_data = true;
+        
+        // Log every ~2 seconds
+        static uint32_t logCounter = 0;
+        if (++logCounter >= 40) {
+            logCounter = 0;
+            Serial.printf("[MODBUS] CH1: %d mV -> %.1f PSI\n", oil_press_mV, oil_press_psi);
+        }
+    } else {
+        g_modbus_error_count++;
+        if (g_modbus_error_count > 5) {
+            g_vehicle_data.oil_pressure_valid = false;
+        }
+        
+        static uint32_t lastErrorLog = 0;
+        if (now - lastErrorLog > 2000) {
+            lastErrorLog = now;
+            Serial.printf("[MODBUS] Read failed - errors: %lu\n", g_modbus_error_count);
+        }
+    }
+}
+
+#endif // ENABLE_MODBUS_SENSORS
 
 //-----------------------------------------------------------------
 
@@ -1384,24 +1663,19 @@ void initSensors() {
 }
 
 void updateSensorData() {
-    // TODO: Read from actual sensors and populate g_vehicle_data
-    //
-    // Example implementation:
-    // float raw_oil_press = analogRead(OIL_PRESS_PIN);
-    // float sensor_value = mapToSensorUnits(raw_oil_press);
-    // // Convert from sensor units to internal (PSI)
-    // g_vehicle_data.oil_pressure_psi = (int)pressToInternal(sensor_value, g_sensor_pressure_unit);
-    // g_vehicle_data.oil_pressure_valid = true;
-    // g_vehicle_data.has_received_data = true;
-    //
-    // float raw_oil_temp = analogRead(OIL_TEMP_PIN);
-    // float temp_sensor = thermistorToValue(raw_oil_temp);  // Returns in sensor unit
-    // // Convert from sensor units to internal (Fahrenheit)
-    // g_vehicle_data.oil_temp_pan_f = (int)tempToInternal(temp_sensor, g_sensor_temp_unit);
-    // g_vehicle_data.oil_temp_valid = true;
-
-    // For now, mark all sensor data as invalid (no readings)
-    // This will cause the UI to show "---" 
+#if ENABLE_MODBUS_SENSORS
+    // Read from Modbus 8-Ch Analog Module
+    readModbusSensors();
+    
+    // Mark other sensors as invalid for now (until you add them to Modbus channels)
+    g_vehicle_data.oil_temp_valid = false;
+    g_vehicle_data.water_temp_valid = false;
+    g_vehicle_data.trans_temp_valid = false;
+    g_vehicle_data.steer_temp_valid = false;
+    g_vehicle_data.diff_temp_valid = false;
+    g_vehicle_data.fuel_trust_valid = false;
+#else
+    // No sensors configured - show "---" on all gauges
     g_vehicle_data.oil_pressure_valid = false;
     g_vehicle_data.oil_temp_valid = false;
     g_vehicle_data.water_temp_valid = false;
@@ -1409,6 +1683,7 @@ void updateSensorData() {
     g_vehicle_data.steer_temp_valid = false;
     g_vehicle_data.diff_temp_valid = false;
     g_vehicle_data.fuel_trust_valid = false;
+#endif
 }
 
 #pragma endregion Sensor Data Provider
@@ -4884,6 +5159,11 @@ void setup() {
 
     // Load unit preferences from flash
     loadUnitPreferences();
+
+    // Initialize Modbus RS485 sensors
+#if ENABLE_MODBUS_SENSORS
+    initModbusSensors();
+#endif
 
     // I2C init
     Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ_HZ);

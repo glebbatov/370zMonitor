@@ -645,8 +645,8 @@ TAMC_GT911 touch = TAMC_GT911(I2C_SDA, I2C_SCL, TOUCH_INT_PIN, -1, 800, 480);
 
 //=================================================================
 // DUAL-CORE ARCHITECTURE
-// Core 0: Touch polling task + SD write task
-// Core 1: Main loop (LVGL rendering, data processing)
+// Core 0: SD write task + Time sync
+// Core 1: Main loop (LVGL rendering, data processing) + Touch polling
 //=================================================================
 
 // Touch state shared between Core 0 (producer) and Core 1 (consumer)
@@ -3608,7 +3608,7 @@ void my_disp_flush(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
 // I2C bus recovery - clocks out stuck transactions WITHOUT calling Wire.end()
 // Wire.end() causes heap corruption on ESP32-S3 when other tasks use I2C
 static void i2cBusRecovery() {
-    Serial.println("[TOUCH/CORE0] I2C bus recovery...");
+    Serial.println("[TOUCH/CORE1] I2C bus recovery...");
     
     // Use a simple approach: just delay and let any stuck transaction timeout
     // The ESP32 I2C driver has built-in timeout handling
@@ -3621,7 +3621,7 @@ static void i2cBusRecovery() {
         vTaskDelay(pdMS_TO_TICKS(5));
     }
     
-    Serial.println("[TOUCH/CORE0] I2C bus recovery complete");
+    Serial.println("[TOUCH/CORE1] I2C bus recovery complete");
 }
 
 // Verify GT911 is responding AND functional by reading product ID
@@ -3629,7 +3629,7 @@ static bool verifyGT911() {
     // First check basic I2C ACK
     Wire.beginTransmission(GT911_I2C_ADDR);
     if (Wire.endTransmission() != 0) {
-        Serial.println("[TOUCH/CORE0] GT911 no ACK");
+        Serial.println("[TOUCH/CORE1] GT911 no ACK");
         return false;
     }
     
@@ -3638,13 +3638,13 @@ static bool verifyGT911() {
     Wire.write(0x81);  // High byte of register address
     Wire.write(0x40);  // Low byte - Product ID register
     if (Wire.endTransmission(false) != 0) {
-        Serial.println("[TOUCH/CORE0] GT911 register write failed");
+        Serial.println("[TOUCH/CORE1] GT911 register write failed");
         return false;
     }
     
     uint8_t bytesRead = Wire.requestFrom(GT911_I2C_ADDR, (uint8_t)4);
     if (bytesRead < 4) {
-        Serial.printf("[TOUCH/CORE0] GT911 read failed (got %d bytes)\n", bytesRead);
+        Serial.printf("[TOUCH/CORE1] GT911 read failed (got %d bytes)\n", bytesRead);
         return false;
     }
     
@@ -3656,35 +3656,37 @@ static bool verifyGT911() {
     
     // GT911 should return "911\0" or similar
     if (productId[0] == '9' && productId[1] == '1' && productId[2] == '1') {
-        Serial.printf("[TOUCH/CORE0] GT911 verified (ID: %s)\n", productId);
+        Serial.printf("[TOUCH/CORE1] GT911 verified (ID: %s)\n", productId);
         return true;
     }
     
-    Serial.printf("[TOUCH/CORE0] GT911 bad product ID: 0x%02X%02X%02X%02X\n", 
+    Serial.printf("[TOUCH/CORE1] GT911 bad product ID: 0x%02X%02X%02X%02X\n", 
                   productId[0], productId[1], productId[2], productId[3]);
     return false;
 }
 
-// Core 0 Touch Task - polls GT911 and updates shared state
+// Core 1 Touch Task - polls GT911 and updates shared state
+// Runs on Core 1 to avoid I2C bus contention with RTC/SD on Core 0
 void touchTask(void* parameter) {
-    Serial.println("[CORE0] Touch task started");
+    Serial.println("[CORE1] Touch task started");
     
     // Wait for GT911 to fully stabilize after startup reset
-    // This prevents false "stuck" detection during initialization
-    vTaskDelay(pdMS_TO_TICKS(500));
+    // This delay prevents false "stuck" detection during initialization
+    // and allows Core 0 startup I2C traffic (RTC, WiFi) to complete
+    vTaskDelay(pdMS_TO_TICKS(1500));
     
     // Verify GT911 is ready before starting polling
     int startup_retries = 0;
     while (!verifyGT911() && startup_retries < 5) {
-        Serial.printf("[TOUCH/CORE0] Startup: GT911 not ready, attempt %d/5\n", startup_retries + 1);
+        Serial.printf("[TOUCH/CORE1] Startup: GT911 not ready, attempt %d/5\n", startup_retries + 1);
         vTaskDelay(pdMS_TO_TICKS(200));
         startup_retries++;
     }
     
     if (startup_retries >= 5) {
-        Serial.println("[TOUCH/CORE0] WARNING: GT911 not responding at startup");
+        Serial.println("[TOUCH/CORE1] WARNING: GT911 not responding at startup");
     } else {
-        Serial.println("[TOUCH/CORE0] GT911 ready, starting polling");
+        Serial.println("[TOUCH/CORE1] GT911 ready, starting polling");
     }
     
     static bool was_touched = false;
@@ -3717,7 +3719,7 @@ void touchTask(void* parameter) {
                 // Hardware reset if stuck
                 if (local_consecutive_invalid >= MAX_CONSECUTIVE_INVALID &&
                     (now - local_last_reset) > TOUCH_RESET_COOLDOWN_MS) {
-                    Serial.println("[TOUCH/CORE0] Controller stuck - attempting recovery");
+                    Serial.println("[TOUCH/CORE1] Controller stuck - attempting recovery");
                     
                     // CRITICAL: Clear touch state BEFORE reset to prevent spurious release events
                     was_touched = false;
@@ -3726,7 +3728,7 @@ void touchTask(void* parameter) {
                     bool recovery_success = false;
                     
                     for (int attempt = 1; attempt <= TOUCH_RESET_MAX_RETRIES && !recovery_success; attempt++) {
-                        Serial.printf("[TOUCH/CORE0] Reset attempt %d/%d\n", attempt, TOUCH_RESET_MAX_RETRIES);
+                        Serial.printf("[TOUCH/CORE1] Reset attempt %d/%d\n", attempt, TOUCH_RESET_MAX_RETRIES);
                         
                         // Try I2C bus recovery first (in case SDA is stuck)
                         if (attempt > 1) {
@@ -3754,13 +3756,13 @@ void touchTask(void* parameter) {
                             touch.read();
                             recovery_success = true;
                         } else {
-                            Serial.println("[TOUCH/CORE0] GT911 verification failed, retrying...");
+                            Serial.println("[TOUCH/CORE1] GT911 verification failed, retrying...");
                             vTaskDelay(pdMS_TO_TICKS(100));  // Wait before retry
                         }
                     }
                     
                     if (!recovery_success) {
-                        Serial.println("[TOUCH/CORE0] WARNING: Recovery FAILED after all attempts");
+                        Serial.println("[TOUCH/CORE1] WARNING: Recovery FAILED after all attempts");
                         // Try one final I2C bus recovery
                         i2cBusRecovery();
                         touch.begin();
@@ -3803,7 +3805,7 @@ void touchTask(void* parameter) {
                 
                 // Log on initial touch only
                 if (!was_touched) {
-                    Serial.printf("[TOUCH/CORE0] raw(%d,%d) -> screen(%d,%d)\n", 
+                    Serial.printf("[TOUCH/CORE1] raw(%d,%d) -> screen(%d,%d)\n", 
                                   raw_x, raw_y, screen_x, screen_y);
                 }
                 was_touched = true;
@@ -3825,7 +3827,7 @@ void touchTask(void* parameter) {
                     // Debounce complete - actually released
                     new_state.valid = true;
                     new_state.pressed = false;
-                    Serial.println("[TOUCH/CORE0] Released");
+                    Serial.println("[TOUCH/CORE1] Released");
                     was_touched = false;
                     release_debounce_count = 0;
                 }
@@ -5089,20 +5091,21 @@ void setup() {
     //=================================================================
     Serial.println("\n[CORE0] Creating Core 0 tasks...");
     
-    // Touch task on Core 0 - polls GT911 every 10ms
+    // Touch task on Core 1 - polls GT911 every 10ms
+    // Moved to Core 1 to avoid I2C bus contention with RTC/SD operations on Core 0
     BaseType_t touchTaskResult = xTaskCreatePinnedToCore(
         touchTask,           // Task function
         "TouchTask",         // Task name
         4096,                // Stack size (bytes)
         NULL,                // Parameters
         2,                   // Priority (higher than idle)
-        &g_touch_task_handle, // Task handle (reuse SD handle variable location)
-        0                    // Core 0
+        &g_touch_task_handle, // Task handle
+        1                    // Core 1 (same as LVGL for direct integration)
     );
     if (touchTaskResult == pdPASS) {
-        Serial.println("[CORE0] Touch task created on Core 0");
+        Serial.println("[CORE1] Touch task created on Core 1");
     } else {
-        Serial.println("[CORE0] ERROR: Touch task creation failed!");
+        Serial.println("[CORE1] ERROR: Touch task creation failed!");
     }
     
 #if ENABLE_SD_LOGGING
@@ -5146,8 +5149,8 @@ void setup() {
     Serial.printf("  Pressure Unit: %s\n", getPressureUnitStr(g_pressure_unit));
     Serial.println("  Temp units: Per-gauge (tap to cycle)");
     Serial.println("  Hold utility box 5s to toggle mode");
-    Serial.println("  Core 0: Touch + SD I/O");
-    Serial.println("  Core 1: LVGL + Data Processing");
+    Serial.println("  Core 0: SD I/O + Time Sync");
+    Serial.println("  Core 1: LVGL + Touch + Data Processing");
     Serial.println("========================================\n");
 }
 

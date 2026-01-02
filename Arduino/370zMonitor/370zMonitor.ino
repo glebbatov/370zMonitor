@@ -199,7 +199,7 @@ __attribute__((constructor)) void configurePSRAM() {
 
 // ===== UNIT TYPES =====
 enum TempUnit { TEMP_FAHRENHEIT = 0, TEMP_CELSIUS = 1 };
-enum PressureUnit { PRESS_PSI = 0, PRESS_BAR = 1, PRESS_KPA = 2 };
+enum PressureUnit { PRESS_PSI = 0, PRESS_BAR = 1, PRESS_KPA = 2, PRESS_ATM = 3 };
 
 // Forward declarations to prevent Arduino preprocessor from generating incorrect prototypes
 float tempToInternal(float value, TempUnit source_unit);
@@ -254,6 +254,7 @@ float tempToDisplay(float value_f, TempUnit display_unit) {
 // Pressure conversions
 float psiToBar(float psi) { return psi * 0.0689476f; }
 float psiToKpa(float psi) { return psi * 6.89476f; }
+float psiToAtm(float psi) { return (psi + 14.6959f) / 14.6959f; }  // Gauge PSI to absolute ATM
 float barToPsi(float bar) { return bar / 0.0689476f; }
 float kpaToPsi(float kpa) { return kpa / 6.89476f; }
 
@@ -271,6 +272,7 @@ float pressToDisplay(float value_psi, PressureUnit display_unit) {
     switch (display_unit) {
     case PRESS_BAR: return psiToBar(value_psi);
     case PRESS_KPA: return psiToKpa(value_psi);
+    case PRESS_ATM: return psiToAtm(value_psi);
     default: return value_psi; // Already PSI
     }
 }
@@ -284,6 +286,7 @@ const char* getPressureUnitStr(PressureUnit unit) {
     switch (unit) {
     case PRESS_BAR: return "BAR";
     case PRESS_KPA: return "kPa";
+    case PRESS_ATM: return "ATM";
     default: return "PSI";
     }
 }
@@ -3877,7 +3880,7 @@ static void update_utility_label(int fps, int cpu0_percent, int cpu1_percent) {
 // Pressure tap - cycles PSI/Bar/kPa
 static void oil_press_tap_cb(lv_event_t* e) {
     LV_UNUSED(e);
-    g_pressure_unit = (PressureUnit)((g_pressure_unit + 1) % 3);
+    g_pressure_unit = (PressureUnit)((g_pressure_unit + 1) % 4);
     saveUnitPreferences();
     smooth_oil_pressure = -1.0f;
     Serial.printf("[UNITS] Pressure -> %s\n", getPressureUnitStr(g_pressure_unit));
@@ -4631,6 +4634,9 @@ void updateUI() {
                 snprintf(buf, sizeof(buf), "%d %s", display_val, pressUnit);
             }
             else if (g_pressure_unit == PRESS_BAR) {
+                snprintf(buf, sizeof(buf), "%.1f %s", smooth_oil_pressure, pressUnit);
+            }
+            else if (g_pressure_unit == PRESS_ATM) {
                 snprintf(buf, sizeof(buf), "%.1f %s", smooth_oil_pressure, pressUnit);
             }
             else {

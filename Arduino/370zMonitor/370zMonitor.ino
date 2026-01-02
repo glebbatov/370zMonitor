@@ -391,9 +391,99 @@ void resetUIElements();
 //-----------------------------------------------------------------
 
 //=================================================================
+//=================================================================
 // MODBUS RS485 SENSOR INTEGRATION
-// Reads from Waveshare 8-Ch Analog Module via RS485 Modbus RTU
-// ESP32-S3 7" Touch LCD has onboard RS485 transceiver on Serial1
+//=================================================================
+//
+// Reads analog sensor data from Waveshare Industrial 8-Ch Analog 
+// Acquisition Module via RS485 Modbus RTU protocol.
+//
+// HARDWARE SETUP:
+// ---------------
+// The Waveshare ESP32-S3-Touch-LCD-7 has an onboard SP3485 RS485 
+// transceiver with auto-direction control (no DE/RE pin needed).
+//
+//   ESP32-S3                SP3485                 Modbus Device
+//   ┌─────────┐           ┌─────────┐             ┌─────────┐
+//   │  GPIO16 │── TX ────>│ DI      │             │         │
+//   │  (TX)   │           │      A ─│─────────────│─ A      │
+//   │         │           │         │  RS485 Bus  │         │
+//   │  GPIO15 │<── RX ────│ RO      │             │         │
+//   │  (RX)   │           │      B ─│─────────────│─ B      │
+//   └─────────┘           └─────────┘             └─────────┘
+//
+// MODBUS RTU PROTOCOL:
+// --------------------
+// Modbus RTU is a binary protocol where each message has this structure:
+//
+//   ┌──────────┬───────────┬────────────┬───────────┐
+//   │ Address  │ Function  │   Data     │  CRC-16   │
+//   │ (1 byte) │ (1 byte)  │ (N bytes)  │ (2 bytes) │
+//   └──────────┴───────────┴────────────┴───────────┘
+//
+// This code uses Function Code 0x04 = "Read Input Registers" (for analog inputs).
+//
+// REQUEST FORMAT (Read 1 register from address 0x0000):
+//   Byte:  [0]   [1]   [2]   [3]   [4]   [5]   [6]   [7]
+//   Value: 0x01  0x04  0x00  0x00  0x00  0x01  0x31  0xCA
+//          │     │     │     │     │     │     └───────── CRC-16 (little-endian)
+//          │     │     │     │     └─────┴── Quantity: 1 register
+//          │     │     └─────┴── Starting address: 0x0000
+//          │     └── Function: 0x04 (Read Input Registers)
+//          └── Slave address: 1
+//
+// RESPONSE FORMAT (Slave returns register value):
+//   Byte:  [0]   [1]   [2]   [3]   [4]   [5]   [6]
+//   Value: 0x01  0x04  0x02  0x01  0x33  0xF8  0xB5
+//          │     │     │     │     │     └───────── CRC-16
+//          │     │     │     └─────┴── Data: 0x0133 = 307 mV
+//          │     │     └── Byte count: 2 bytes of data
+//          │     └── Function: 0x04 (echo)
+//          └── Slave address: 1 (echo)
+//
+// TIMING DIAGRAM:
+// ---------------
+//          ESP32                              8-Ch Module
+//            │                                     │
+//            │  ┌───────────────────────────────┐  │
+//            │──│ TX: 01 04 00 00 00 01 31 CA   │──│  Request
+//            │  └───────────────────────────────┘  │
+//            │                                     │
+//            │         ~50-100ms delay             │
+//            │                                     │
+//            │  ┌───────────────────────────────┐  │
+//            │──│ RX: 01 04 02 01 33 F8 B5      │──│  Response
+//            │  └───────────────────────────────┘  │
+//            │                                     │
+//            │   Parse: 0x0133 = 307 mV            │
+//            │   Convert: 307 mV → 0.0 PSI         │
+//
+// PRESSURE SENSOR CONVERSION:
+// ---------------------------
+// Sensor: PX3AN2BH150PSAAX outputs 0.5V-4.5V for 0-150 PSI
+// Voltage divider: 10kΩ / 22kΩ reduces voltage by factor of 0.6875
+//
+//   Modbus reads ~307mV at 0 PSI (500mV * 0.6875 ≈ 344mV theoretical)
+//   Formula: PSI = (raw_mV * 1.4545 - 500) * 0.0375
+//
+// ERROR HANDLING:
+// ---------------
+//   | Condition            | Detection                    | Action                        |
+//   |----------------------|------------------------------|-------------------------------|
+//   | No response          | received == 0                | Increment error count         |
+//   | Partial response     | received < expected          | Log debug, increment error    |
+//   | CRC mismatch         | receivedCRC != calculatedCRC | Return false                  |
+//   | Sensor disconnected  | mV < 100                     | Mark oil_pressure_valid=false |
+//   | 3+ consecutive errors| error_count >= 3             | Mark invalid, show "---"      |
+//
+// RS485 CABLE LIMITS (at 9600 baud):
+// -----------------------------------
+//   - Maximum distance: ~1200m (4000 ft)
+//   - Your 8-foot cable is well within safe limits
+//   - Termination resistor (120Ω): optional for short runs, recommended >50ft
+//   - Shielded cable recommended in automotive environment
+//   - Ground shield at ONE end only to avoid ground loops
+//
 //=================================================================
 
 #if ENABLE_MODBUS_SENSORS
@@ -440,35 +530,70 @@ static uint32_t g_modbus_success_count = 0;
 static uint32_t g_modbus_error_count = 0;
 static uint16_t g_modbus_channel_values[8] = {0};
 
-// Modbus CRC16 calculation
+// Sensor and communication state tracking for logging
+static bool g_modbus_comm_ok = false;           // Is modbus communication working?
+static bool g_sensor_ch1_connected = false;     // Is CH1 sensor connected? (mV >= threshold)
+
+//-----------------------------------------------------------------------------
+// modbusCRC16() - Calculate CRC-16 checksum for Modbus RTU
+//-----------------------------------------------------------------------------
+// Modbus uses a specific CRC-16 polynomial (0xA001, which is 0x8005 bit-reversed).
+// The CRC is transmitted LSB first (little-endian).
+//
+// Algorithm:
+//   1. Initialize CRC to 0xFFFF
+//   2. For each byte: XOR into low byte of CRC
+//   3. For each of 8 bits:
+//      - If LSB is 1: shift right, XOR with 0xA001
+//      - If LSB is 0: just shift right
+//   4. Return final CRC (low byte first when transmitting)
+//
 static uint16_t modbusCRC16(const uint8_t* data, uint16_t length) {
-    uint16_t crc = 0xFFFF;
+    uint16_t crc = 0xFFFF;                    // Start with all 1s
     for (uint16_t i = 0; i < length; i++) {
-        crc ^= (uint16_t)data[i];
-        for (uint8_t j = 0; j < 8; j++) {
-            if (crc & 0x0001) {
-                crc >>= 1;
-                crc ^= 0xA001;
-            } else {
-                crc >>= 1;
+        crc ^= (uint16_t)data[i];             // XOR byte into CRC
+        for (uint8_t j = 0; j < 8; j++) {     // Process each bit
+            if (crc & 0x0001) {               // If LSB is 1
+                crc >>= 1;                    // Shift right
+                crc ^= 0xA001;                // XOR with polynomial
+            }
+            else {
+                crc >>= 1;                    // Just shift right
             }
         }
     }
-    return crc;
+    return crc;  // Returns little-endian (low byte first)
 }
 
-// Send Modbus RTU request and receive response
-// Uses timeout-based waiting instead of fixed delay (more robust under CPU load)
-static int modbusTransaction(uint8_t* request, uint8_t requestLen, 
-                             uint8_t* response, uint8_t maxResponseLen) {
-    // Drain any stale bytes in buffer
+//-----------------------------------------------------------------------------
+// modbusTransaction() - Send request and receive response over RS485
+//-----------------------------------------------------------------------------
+// RS485 is half-duplex, so we must:
+//   1. Clear any stale RX data
+//   2. Send the request
+//   3. Wait for TX to complete (flush) before listening
+//   4. Receive response with timeout
+//
+// Frame detection: Modbus RTU uses silence (3.5 char times) to mark frame
+// boundaries. At 9600 baud, that's ~4ms. We use 10ms inter-byte timeout
+// to detect end of frame.
+//
+// Parameters:
+//   request       - Buffer containing request bytes to send
+//   requestLen    - Number of bytes in request
+//   response      - Buffer to store received response
+//   maxResponseLen- Maximum bytes to receive
+//
+// Returns: Number of bytes received (0 if timeout/no response)
+//
+static int modbusTransaction(uint8_t* request, uint8_t requestLen, uint8_t* response, uint8_t maxResponseLen) {
+    // 1. Clear any stale data in receive buffer
     while (RS485_SERIAL.available()) RS485_SERIAL.read();
-    
-    // Send request
+    // 2. Send the request
     RS485_SERIAL.write(request, requestLen);
-    RS485_SERIAL.flush();  // Wait for TX complete
-    
     // Timeout-based receive (wait for bytes, don't just peek once)
+    RS485_SERIAL.flush();  // Wait for TX complete (important for half-duplex!)
+    // 3. Wait for response with timeout
     uint32_t t0 = millis();
     uint32_t lastByteMs = t0;
     int got = 0;
@@ -482,19 +607,48 @@ static int modbusTransaction(uint8_t* request, uint8_t requestLen,
             int take = min(avail, (int)(maxResponseLen - got));
             got += RS485_SERIAL.readBytes(response + got, take);
             lastByteMs = millis();
-        } else {
-            // Once we started receiving, a short gap means end-of-frame
+        }
+        else {
+            // After receiving starts, a gap means frame is complete
             if (got > 0 && (millis() - lastByteMs) > interByteTimeout) {
                 break;  // Frame complete
             }
             delay(1);  // Small yield while waiting
         }
     }
-    
-    return got;
+
+    return got;  // Number of bytes received
 }
 
-// Read input registers from Modbus slave
+//-----------------------------------------------------------------------------
+// modbusReadInputRegisters() - Read input registers from Modbus slave
+//-----------------------------------------------------------------------------
+// Builds and sends a Function 0x04 request, validates response.
+//
+// Request frame (8 bytes):
+//   [0] Slave address
+//   [1] Function code (0x04)
+//   [2] Start register high byte
+//   [3] Start register low byte  
+//   [4] Quantity high byte
+//   [5] Quantity low byte
+//   [6] CRC low byte
+//   [7] CRC high byte
+//
+// Expected response frame:
+//   [0] Slave address (echo)
+//   [1] Function code (echo)
+//   [2] Byte count (2 * numRegs)
+//   [3..N] Register data (high byte first per register)
+//   [N+1, N+2] CRC
+//
+// Validation steps:
+//   1. Check received length >= expected
+//   2. Verify slave address matches
+//   3. Verify function code matches
+//   4. Verify byte count matches
+//   5. Verify CRC matches calculated
+//
 static bool modbusReadInputRegisters(uint8_t slaveAddr, uint16_t startReg, 
                                      uint16_t numRegs, uint16_t* values) {
     uint8_t request[8];
@@ -549,7 +703,23 @@ static bool modbusReadInputRegisters(uint8_t slaveAddr, uint16_t startReg,
     return true;
 }
 
-// Convert Modbus mV reading to PSI (with voltage divider)
+//-----------------------------------------------------------------------------
+// convertToPSI() - Convert Modbus mV reading to PSI
+//-----------------------------------------------------------------------------
+// Sensor: PX3AN2BH150PSAAX (0-150 PSI, 0.5V-4.5V output)
+//
+// Wiring includes a voltage divider (10kΩ / 22kΩ) to scale 5V sensor
+// output to safe 3.3V range for Modbus module input.
+//
+//   Actual sensor output: 500mV (0 PSI) to 4500mV (150 PSI)
+//   After divider (0.6875): 344mV (0 PSI) to 3094mV (150 PSI)
+//   Modbus reads: ~307mV at 0 PSI (close to theoretical 344mV)
+//
+// Conversion formula:
+//   1. Multiply by divider ratio inverse (1.4545) to get original mV
+//   2. Subtract 500mV offset (sensor outputs 500mV at 0 PSI)
+//   3. Multiply by scale (150 PSI / 4000 mV = 0.0375)
+//
 static float convertToPSI(uint16_t modbus_mV) {
     float raw_mV = (float)modbus_mV * PRESSURE_DIVIDER_RATIO;
     float psi = (raw_mV - PRESSURE_OFFSET_MV) * PRESSURE_SCALE;
@@ -558,8 +728,18 @@ static float convertToPSI(uint16_t modbus_mV) {
     return psi;
 }
 
-// Initialize Modbus RS485
-// Waveshare ESP32-S3-Touch-LCD-7 uses SP3485 with auto-direction
+//-----------------------------------------------------------------------------
+// initModbusSensors() - Initialize RS485 and test communication
+//-----------------------------------------------------------------------------
+// Called once at startup. Configures Serial1 for RS485 communication
+// and sends a test request to verify the Modbus module is responding.
+//
+// The test request reads 1 register (CH1) and checks for valid response.
+// This confirms wiring is correct before entering normal polling loop.
+//
+// Hardware note: Waveshare ESP32-S3-Touch-LCD-7 uses SP3485 transceiver
+// with automatic direction control - no manual DE/RE pin toggling needed.
+//
 void initModbusSensors() {
     Serial.println("[MODBUS] Initializing RS485...");
     Serial.printf("[MODBUS] Config: RX=%d, TX=%d, Baud=%d\n", 
@@ -605,18 +785,40 @@ void initModbusSensors() {
             uint16_t value = (testResp[3] << 8) | testResp[4];
             Serial.printf("[MODBUS] SUCCESS! CH1 = %d mV\n", value);
             g_modbus_initialized = true;
+            g_modbus_comm_ok = true;
+            
+            // Set initial sensor state
+            g_sensor_ch1_connected = (value >= SENSOR_MIN_VALID_MV);
+            if (!g_sensor_ch1_connected) {
+                Serial.printf("[MODBUS] CH1: Sensor not connected at startup (%d mV)\n", value);
+            }
         } else {
             Serial.println("[MODBUS] Got data but unexpected format");
             g_modbus_initialized = false;
+            g_modbus_comm_ok = false;
         }
     } else {
         Serial.println("[MODBUS] FAILED - no response");
         Serial.println("[MODBUS] Check: A<->A, B<->B wiring, module power");
         g_modbus_initialized = false;
+        g_modbus_comm_ok = false;
     }
 }
 
-// Read all sensors via Modbus
+//-----------------------------------------------------------------------------
+// readModbusSensors() - Poll sensors and update vehicle data
+//-----------------------------------------------------------------------------
+// Called from main loop. Reads sensor values at regular intervals
+// (MODBUS_READ_INTERVAL_MS = 100ms = 10 Hz polling rate).
+//
+// State machine handles:
+//   - Communication failures (retry, then mark invalid after threshold)
+//   - Sensor disconnection (detected by mV < 100 threshold)
+//   - Reconnection (logs state changes for debugging)
+//
+// Updates g_vehicle_data struct which is read by UI update code.
+// Invalid readings cause UI to display "---" instead of stale values.
+//
 void readModbusSensors() {
     if (!g_modbus_initialized) {
         static uint32_t lastRetry = 0;
@@ -641,23 +843,29 @@ void readModbusSensors() {
     }
     
     if (success) {
+        // Modbus communication restored?
+        if (!g_modbus_comm_ok) {
+            Serial.println("[MODBUS] Communication restored");
+            g_modbus_comm_ok = true;
+        }
+        
         // Channel 1: Oil Pressure
         uint16_t oil_press_mV = g_modbus_channel_values[MODBUS_CH_OIL_PRESSURE];
+        bool sensor_connected = (oil_press_mV >= SENSOR_MIN_VALID_MV);
         
-        // Check if sensor is connected (0 mV = sensor disconnected)
-        if (oil_press_mV < SENSOR_MIN_VALID_MV) {
-            // Sensor disconnected - treat as error
-            static bool was_disconnected = false;
-            if (!was_disconnected) {
-                Serial.printf("[MODBUS] CH1: %d mV - SENSOR DISCONNECTED (below %d mV threshold)\n", 
+        // Log sensor state changes
+        if (sensor_connected != g_sensor_ch1_connected) {
+            if (sensor_connected) {
+                Serial.printf("[MODBUS] CH1: Sensor CONNECTED (%d mV)\n", oil_press_mV);
+            } else {
+                Serial.printf("[MODBUS] CH1: Sensor DISCONNECTED (%d mV < %d mV threshold)\n", 
                              oil_press_mV, SENSOR_MIN_VALID_MV);
-                was_disconnected = true;
             }
-            g_vehicle_data.oil_pressure_valid = false;
-            g_modbus_error_count++;  // Track as error for status
-        } else {
+            g_sensor_ch1_connected = sensor_connected;
+        }
+        
+        if (sensor_connected) {
             // Sensor connected and reading valid
-            static bool was_disconnected = true;  // Start true to force first log
             g_modbus_success_count++;
             g_modbus_error_count = 0;  // Reset error count on success
             
@@ -667,14 +875,16 @@ void readModbusSensors() {
             g_vehicle_data.oil_pressure_valid = true;
             g_vehicle_data.has_received_data = true;
             
-            // Log every ~2 seconds, or immediately on reconnect
+            // Log every ~2 seconds
             static uint32_t logCounter = 0;
-            if (was_disconnected || ++logCounter >= 40) {
+            if (++logCounter >= 40) {
                 logCounter = 0;
-                Serial.printf("[MODBUS] CH1: %d mV -> %.1f PSI%s\n", oil_press_mV, oil_press_psi,
-                             was_disconnected ? " (RECONNECTED)" : "");
-                was_disconnected = false;
+                Serial.printf("[MODBUS] CH1: %d mV -> %.1f PSI\n", oil_press_mV, oil_press_psi);
             }
+        } else {
+            // Sensor disconnected
+            g_vehicle_data.oil_pressure_valid = false;
+            g_modbus_error_count++;  // Track as error for status
         }
     } else {
         // Modbus communication failed
@@ -682,8 +892,10 @@ void readModbusSensors() {
         
         // Mark invalid after threshold errors (fast response)
         if (g_modbus_error_count >= MODBUS_ERROR_THRESHOLD) {
-            if (g_vehicle_data.oil_pressure_valid) {
-                Serial.printf("[MODBUS] Communication lost - marking sensors invalid\n");
+            // Log communication loss once
+            if (g_modbus_comm_ok) {
+                Serial.println("[MODBUS] Communication LOST - marking sensors invalid");
+                g_modbus_comm_ok = false;
             }
             g_vehicle_data.oil_pressure_valid = false;
         }

@@ -1914,10 +1914,8 @@ bool sdInit() {
     exio_set(EXIO_SD_CS, false);  // CS low = selected
     delay(10);
 
-    // Initialize SD card with software CS control
-    // The actual CS is controlled via IO expander (EXIO_SD_CS)
-    // We need to pass SOME pin to SD.begin() - use GPIO6 as dummy
-    // CRITICAL: Do NOT use GPIO15 (RS485 RX) or GPIO46 (display HSYNC)!
+    // SD.begin() requires a CS pin, but real CS is via IO expander (EXIO_SD_CS)
+    // GPIO6 is unused - safe as dummy. Avoid: GPIO15 (RS485), GPIO46 (HSYNC)
     pinMode(6, OUTPUT);
     digitalWrite(6, HIGH);  // Keep dummy CS high (deselected)
 
@@ -3139,13 +3137,11 @@ void runUSBMSCMode() {
     SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN);
     SPI.setFrequency(SD_SPI_FREQ);
 
-    // CRITICAL: Select SD card via IO expander BEFORE SD.begin()
-    // The IO expander controls the real CS pin, not GPIO15
+    // Select SD via IO expander (real CS), then call SD.begin() with dummy pin
     exio_set(EXIO_SD_CS, false);  // CS LOW = selected
     delay(10);
 
-    // Use GPIO6 as dummy CS for SD library
-    // CRITICAL: Do NOT use GPIO15 (RS485 RX) or GPIO46 (display HSYNC)!
+    // GPIO6 is unused - safe as dummy. Avoid: GPIO15 (RS485), GPIO46 (HSYNC)
     pinMode(6, OUTPUT);
     digitalWrite(6, HIGH);  // Keep dummy high
 

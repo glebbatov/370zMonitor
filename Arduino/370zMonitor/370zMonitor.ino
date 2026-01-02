@@ -1,9 +1,17 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v4.4 - Dual-Core Architecture
+ * 370zMonitor v4.5 - Dual-Core Architecture
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v4.5 Changes:
+ * - Added sensor/modbus failure detection and UI feedback
+ * - UI shows "---" when sensor disconnected or modbus fails
+ * - Critical value label hidden when sensor invalid
+ * - Sensor disconnect detection (0 mV = sensor not connected)
+ * - Faster modbus error response (3 errors vs 5)
+ * - Improved logging for sensor status changes
  *
  * v4.4 Changes:
  * - Added 5-second splash screen with "370zMONITOR" branding
@@ -418,6 +426,13 @@ void resetUIElements();
 #define PRESSURE_OFFSET_MV      500.0f   // 0.5V = 500mV at 0 PSI
 #define PRESSURE_SCALE          0.0375f  // 150 PSI / 4000 mV range
 
+// Sensor Health Detection
+// When sensor is disconnected, modbus reads 0 mV
+// Valid sensor at 0 PSI outputs ~307-308 mV after voltage divider (500mV / 1.4545 = 344mV theoretical)
+// Use threshold below which we consider sensor disconnected
+#define SENSOR_MIN_VALID_MV     100     // Below this = sensor disconnected
+#define MODBUS_ERROR_THRESHOLD  3       // Mark invalid after this many consecutive errors
+
 // Modbus State
 static bool g_modbus_initialized = false;
 static uint32_t g_modbus_last_read_ms = 0;
@@ -626,25 +641,50 @@ void readModbusSensors() {
     }
     
     if (success) {
-        g_modbus_success_count++;
-        
         // Channel 1: Oil Pressure
         uint16_t oil_press_mV = g_modbus_channel_values[MODBUS_CH_OIL_PRESSURE];
-        float oil_press_psi = convertToPSI(oil_press_mV);
         
-        g_vehicle_data.oil_pressure_psi = (int)(oil_press_psi + 0.5f);
-        g_vehicle_data.oil_pressure_valid = true;
-        g_vehicle_data.has_received_data = true;
-        
-        // Log every ~2 seconds
-        static uint32_t logCounter = 0;
-        if (++logCounter >= 40) {
-            logCounter = 0;
-            Serial.printf("[MODBUS] CH1: %d mV -> %.1f PSI\n", oil_press_mV, oil_press_psi);
+        // Check if sensor is connected (0 mV = sensor disconnected)
+        if (oil_press_mV < SENSOR_MIN_VALID_MV) {
+            // Sensor disconnected - treat as error
+            static bool was_disconnected = false;
+            if (!was_disconnected) {
+                Serial.printf("[MODBUS] CH1: %d mV - SENSOR DISCONNECTED (below %d mV threshold)\n", 
+                             oil_press_mV, SENSOR_MIN_VALID_MV);
+                was_disconnected = true;
+            }
+            g_vehicle_data.oil_pressure_valid = false;
+            g_modbus_error_count++;  // Track as error for status
+        } else {
+            // Sensor connected and reading valid
+            static bool was_disconnected = true;  // Start true to force first log
+            g_modbus_success_count++;
+            g_modbus_error_count = 0;  // Reset error count on success
+            
+            float oil_press_psi = convertToPSI(oil_press_mV);
+            
+            g_vehicle_data.oil_pressure_psi = (int)(oil_press_psi + 0.5f);
+            g_vehicle_data.oil_pressure_valid = true;
+            g_vehicle_data.has_received_data = true;
+            
+            // Log every ~2 seconds, or immediately on reconnect
+            static uint32_t logCounter = 0;
+            if (was_disconnected || ++logCounter >= 40) {
+                logCounter = 0;
+                Serial.printf("[MODBUS] CH1: %d mV -> %.1f PSI%s\n", oil_press_mV, oil_press_psi,
+                             was_disconnected ? " (RECONNECTED)" : "");
+                was_disconnected = false;
+            }
         }
     } else {
+        // Modbus communication failed
         g_modbus_error_count++;
-        if (g_modbus_error_count > 5) {
+        
+        // Mark invalid after threshold errors (fast response)
+        if (g_modbus_error_count >= MODBUS_ERROR_THRESHOLD) {
+            if (g_vehicle_data.oil_pressure_valid) {
+                Serial.printf("[MODBUS] Communication lost - marking sensors invalid\n");
+            }
             g_vehicle_data.oil_pressure_valid = false;
         }
         
@@ -4416,7 +4456,44 @@ void updateUI() {
             &oil_press_was_critical, &oil_press_visible, &oil_press_exit_time, &oil_press_last_blink);
 #endif
     }
-    // If not valid, don't update - UI stays at reset state ("---" and 0)
+    
+    // Handle transition to invalid state (sensor/modbus failure)
+    static bool oil_press_was_data_valid = true;  // Track previous validity
+    if (!g_vehicle_data.oil_pressure_valid && oil_press_was_data_valid) {
+        // Just became invalid - update UI once to show "---"
+        if (ui_OIL_PRESS_Value) {
+            snprintf(buf, sizeof(buf), "--- %s", pressUnit);
+            lv_label_set_text(ui_OIL_PRESS_Value, buf);
+            lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0xFFFFFF), 0);
+        }
+        
+        // Reset panel background
+        if (ui_OIL_PRESS_Value_Tap_Panel) {
+            lv_obj_set_style_bg_opa(ui_OIL_PRESS_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        }
+        g_oil_press_panel_was_critical = false;
+        
+        // Hide critical label immediately
+#if ENABLE_VALUE_CRITICAL
+        if (ui_OIL_PRESS_VALUE_CRITICAL_Label) {
+            lv_obj_set_style_text_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(ui_OIL_PRESS_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+        }
+        oil_press_was_critical = false;
+        oil_press_visible = false;
+        oil_press_exit_time = 0;
+#endif
+        
+#if ENABLE_LIGHTWEIGHT_BARS
+        // Reset bar to 0
+        updateLightweightBar(0, 0);
+#endif
+        
+        // Reset smoothing and last display value so it updates properly on reconnect
+        last_oil_press_display = -9999;
+        smooth_oil_pressure = -1.0f;
+    }
+    oil_press_was_data_valid = g_vehicle_data.oil_pressure_valid;
 
     // ----- Oil Temperature -----
     if (g_vehicle_data.oil_temp_valid) {
@@ -5147,7 +5224,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v4.3 - Dual-Core");
+    Serial.println("   370zMonitor v4.5 - Dual-Core");
     Serial.println("========================================");
 
     if (psramFound()) {

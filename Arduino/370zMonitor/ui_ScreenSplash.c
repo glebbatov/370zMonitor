@@ -91,7 +91,7 @@ void ui_ScreenSplash_screen_init(void) {
     lv_obj_set_style_text_font(ui_Splash_Year, &ui_font_OrbitronRegular12, LV_PART_MAIN);
     lv_obj_set_style_text_color(ui_Splash_Year, ACCENT_GRAY, LV_PART_MAIN);
     lv_obj_set_style_text_letter_space(ui_Splash_Year, 3, LV_PART_MAIN);
-    lv_obj_align(ui_Splash_Year, LV_ALIGN_CENTER, 0, 25);
+    lv_obj_align(ui_Splash_Year, LV_ALIGN_CENTER, 0, 0);
     
     // ========== Loading bar (animated) ==========
     ui_Splash_LoadingBar = lv_bar_create(ui_ScreenSplash);

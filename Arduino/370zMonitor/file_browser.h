@@ -45,6 +45,7 @@ extern uint32_t g_current_boot_count;  // Current boot count for file generation
 struct FileEntry {
     char name[FB_MAX_FILENAME_LEN];
     uint32_t size;
+    time_t modTime;  // Last modified time
     bool isDirectory;
 };
 
@@ -100,6 +101,7 @@ static void fb_openTextFile(const char* path);
 static void fb_goBack();
 static void fb_updateFileList();
 static const char* fb_formatSize(uint32_t size);
+static const char* fb_formatDate(time_t t);
 
 static void fb_fileListClickCb(lv_event_t* e);
 static void fb_backBtnCb(lv_event_t* e);
@@ -326,36 +328,28 @@ static void fb_loadRecentSessions() {
     Serial.printf("[FB] Loading recent sessions from boot count %lu\n", bootCount);
     
     // FIRST: Add cached folders (or scan once if not cached)
+    // Only scan first 50 entries - folders are typically at the beginning
     if (!g_fb.foldersCached) {
-        Serial.println("[FB] Scanning for folders (one-time)...");
-        
-        // Update loading screen to show scanning progress
-        if (g_fb.fileListContainer) {
-            lv_obj_clean(g_fb.fileListContainer);
-            lv_obj_t* scanLabel = lv_label_create(g_fb.fileListContainer);
-            lv_label_set_text(scanLabel, "Scanning folders...\n(first time only)");
-            lv_obj_set_style_text_color(scanLabel, lv_color_hex(0xFFFF00), 0);
-            lv_obj_set_style_text_font(scanLabel, &lv_font_montserrat_20, 0);
-            lv_obj_center(scanLabel);
-            lv_refr_now(NULL);
-        }
+        Serial.println("[FB] Quick folder scan (first 50 entries)...");
         
         g_fb.cachedFolders.clear();
-        g_fb.cachedFolders.reserve(20);  // Pre-allocate for up to 20 folders
+        g_fb.cachedFolders.reserve(10);
         
         File root = SD.open("/");
         if (root && root.isDirectory()) {
             File entry;
             int scanned = 0;
-            while ((entry = root.openNextFile())) {
+            const int MAX_SCAN = 50;  // Only scan first 50 entries
+            
+            while ((entry = root.openNextFile()) && scanned < MAX_SCAN) {
                 if (entry.isDirectory()) {
                     const char* name = entry.name();
-                    // Skip system folders
                     if (strcmp(name, "System Volume Information") != 0) {
                         FileEntry fe;
                         strncpy(fe.name, name, FB_MAX_FILENAME_LEN - 1);
                         fe.name[FB_MAX_FILENAME_LEN - 1] = '\0';
                         fe.size = 0;
+                        fe.modTime = 0;
                         fe.isDirectory = true;
                         g_fb.cachedFolders.push_back(fe);
                         Serial.printf("[FB] Found folder: %s\n", name);
@@ -363,18 +357,11 @@ static void fb_loadRecentSessions() {
                 }
                 entry.close();
                 scanned++;
-                
-                // Yield and update progress every 50 files
-                if (scanned % 50 == 0) {
-                    vTaskDelay(1);
-                    Serial.printf("[FB] Scanned %d files...\n", scanned);
-                }
             }
             root.close();
-            Serial.printf("[FB] Folder scan complete: %d files scanned\n", scanned);
+            Serial.printf("[FB] Scanned %d entries, found %d folders\n", scanned, (int)g_fb.cachedFolders.size());
         }
         g_fb.foldersCached = true;
-        Serial.printf("[FB] Cached %d folders\n", (int)g_fb.cachedFolders.size());
     } else {
         Serial.printf("[FB] Using cached folders (%d)\n", (int)g_fb.cachedFolders.size());
     }
@@ -395,6 +382,7 @@ static void fb_loadRecentSessions() {
             FileEntry fe;
             strncpy(fe.name, specialFiles[i], FB_MAX_FILENAME_LEN - 1);
             fe.size = f.size();
+            fe.modTime = f.getLastWrite();
             fe.isDirectory = false;
             g_fb.files.push_back(fe);
             f.close();
@@ -425,6 +413,7 @@ static void fb_loadRecentSessions() {
             FileEntry fe;
             strncpy(fe.name, csvPath + 1, FB_MAX_FILENAME_LEN - 1);
             fe.size = csvFile.size();
+            fe.modTime = csvFile.getLastWrite();
             fe.isDirectory = false;
             g_fb.files.push_back(fe);
             csvFile.close();
@@ -448,6 +437,7 @@ static void fb_loadRecentSessions() {
             FileEntry fe;
             strncpy(fe.name, logPath + 1, FB_MAX_FILENAME_LEN - 1);
             fe.size = logFile.size();
+            fe.modTime = logFile.getLastWrite();
             fe.isDirectory = false;
             g_fb.files.push_back(fe);
             logFile.close();
@@ -496,20 +486,30 @@ static void fb_navigateTo(const char* path) {
         // Use optimized boot_count method
         fb_loadRecentSessions();
     } else {
-        // Subdirectory - use traditional scan (for System Volume Information etc)
+        // Subdirectory - show loading indicator
+        if (g_fb.fileListContainer) {
+            lv_obj_clean(g_fb.fileListContainer);
+            lv_obj_t* loadLabel = lv_label_create(g_fb.fileListContainer);
+            lv_label_set_text(loadLabel, "Loading...");
+            lv_obj_set_style_text_color(loadLabel, lv_color_hex(0xFFFF00), 0);
+            lv_obj_set_style_text_font(loadLabel, &lv_font_montserrat_20, 0);
+            lv_obj_center(loadLabel);
+            lv_refr_now(NULL);
+        }
+        
+        // Subdirectory - use traditional scan
         g_fb.files.clear();
         File dir = SD.open(path);
         if (dir && dir.isDirectory()) {
             File entry;
-            int count = 0;
-            while ((entry = dir.openNextFile()) && count < FB_MAX_FILES_TO_DISPLAY) {
+            while ((entry = dir.openNextFile()) && (int)g_fb.files.size() < FB_MAX_FILES_TO_DISPLAY) {
                 FileEntry fe;
                 strncpy(fe.name, entry.name(), FB_MAX_FILENAME_LEN - 1);
                 fe.size = entry.size();
+                fe.modTime = entry.getLastWrite();
                 fe.isDirectory = entry.isDirectory();
                 g_fb.files.push_back(fe);
                 entry.close();
-                count++;
             }
             dir.close();
         }
@@ -576,11 +576,20 @@ static void fb_updateFileList() {
     for (size_t i = 0; i < g_fb.files.size(); i++) {
         FileEntry& fe = g_fb.files[i];
         
-        char displayText[128];
+        char displayText[160];
         if (fe.isDirectory) {
+            // Directories: no indent, yellow
             snprintf(displayText, sizeof(displayText), "[DIR] %s/", fe.name);
         } else {
-            snprintf(displayText, sizeof(displayText), "%s  [%s]", fe.name, fb_formatSize(fe.size));
+            // Files: 1-space indent, show size and date
+            const char* dateStr = fb_formatDate(fe.modTime);
+            if (dateStr[0] != '\0') {
+                snprintf(displayText, sizeof(displayText), " %s  [%s] [%s]", 
+                         fe.name, fb_formatSize(fe.size), dateStr);
+            } else {
+                snprintf(displayText, sizeof(displayText), " %s  [%s]", 
+                         fe.name, fb_formatSize(fe.size));
+            }
         }
         
         lv_color_t color;
@@ -661,6 +670,25 @@ static const char* fb_formatSize(uint32_t size) {
         snprintf(buf, sizeof(buf), "%.1fK", size / 1024.0f);
     } else {
         snprintf(buf, sizeof(buf), "%.1fM", size / (1024.0f * 1024.0f));
+    }
+    return buf;
+}
+
+static const char* fb_formatDate(time_t t) {
+    static char buf[20];
+    if (t == 0) {
+        return "";
+    }
+    struct tm* tm_info = localtime(&t);
+    if (tm_info) {
+        snprintf(buf, sizeof(buf), "%02d/%02d/%04d %02d:%02d",
+                 tm_info->tm_mon + 1,
+                 tm_info->tm_mday,
+                 tm_info->tm_year + 1900,
+                 tm_info->tm_hour,
+                 tm_info->tm_min);
+    } else {
+        return "";
     }
     return buf;
 }

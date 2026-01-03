@@ -35,8 +35,8 @@ extern uint32_t g_current_boot_count;  // Current boot count for file generation
 #define FB_LIST_ITEM_HEIGHT         40      // Taller for easier touch
 
 // CSV table viewer limits
-#define FB_CSV_MAX_ROWS             1000     // Max rows to display
-#define FB_CSV_MAX_COLS             20      // Max columns to display
+#define FB_CSV_MAX_ROWS             1000    // Max rows to display
+#define FB_CSV_MAX_COLS             30      // Max columns to display
 #define FB_CSV_MAX_CELL_LEN         48      // Max chars per cell (truncate longer)
 #define FB_CSV_COL_WIDTH            100     // Default column width in pixels
 

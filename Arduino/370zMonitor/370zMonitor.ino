@@ -2210,6 +2210,11 @@ bool sdInit() {
     g_sd_state.logging_enabled = true;
 
     g_sd_state.boot_count = sdReadBootCount();
+    
+    // ONE-TIME RESET: Remove these 2 lines after first boot to resume normal numbering
+    //g_sd_state.boot_count = 0;  // Reset to start fresh
+    // END ONE-TIME RESET
+    
     g_sd_state.boot_count++;
     sdWriteBootCount(g_sd_state.boot_count);
     Serial.printf("[SD] Boot count: %lu\n", g_sd_state.boot_count);
@@ -2267,15 +2272,16 @@ bool sdStartSession() {
     g_sd_state.bytes_written = 0;
     g_sd_state.last_flush_ms = millis();
 
-    const char* header = "datetime,timestamp_ms,elapsed_s,cpu_percent,mode,"
-        "oil_press_psi,oil_press_valid,"
-        "oil_temp_pan_f,oil_temp_cooled_f,oil_temp_valid,"
-        "water_temp_hot_f,water_temp_cooled_f,water_temp_valid,"
-        "trans_temp_hot_f,trans_temp_cooled_f,trans_temp_valid,"
-        "steer_temp_hot_f,steer_temp_cooled_f,steer_temp_valid,"
-        "diff_temp_hot_f,diff_temp_cooled_f,diff_temp_valid,"
+    const char* header = "datetime,rpm,oil_press_psi,"
+        "oil_temp_pan_f,oil_temp_cooled_f,"
+        "water_temp_hot_f,water_temp_cooled_f,"
+        "trans_temp_hot_f,trans_temp_cooled_f,"
+        "steer_temp_hot_f,steer_temp_cooled_f,"
+        "diff_temp_hot_f,diff_temp_cooled_f,"
         "fuel_trust_percent,fuel_trust_valid,"
-        "rpm,rpm_valid\n";
+        "rpm_valid,oil_press_valid,oil_temp_valid,"
+        "water_temp_valid,trans_temp_valid,steer_temp_valid,diff_temp_valid,"
+        "timestamp_ms,elapsed_s,cpu_percent,mode\n";
 
     size_t written = g_sd_state.data_file.print(header);
     if (written == 0) {
@@ -2453,31 +2459,30 @@ void sdWriteTask(void* parameter) {
             }
             
             int len = snprintf(line, sizeof(line),
-                "%s,%lu,%.2f,%.1f,%s,"
+                "%s,%d,%d,"
+                "%d,%d,"
+                "%d,%d,"
+                "%d,%d,"
+                "%d,%d,"
+                "%d,%d,"
                 "%d,%d,"
                 "%d,%d,%d,"
-                "%d,%d,%d,"
-                "%d,%d,%d,"
-                "%d,%d,%d,"
-                "%d,%d,%d,"
-                "%d,%d,"
-                "%d,%d\n",
-                datetime_copy,  // datetime first (thread-safe copy)
-                entry.timestamp_ms, entry.elapsed_s, entry.cpu_pct, 
-                entry.demo_mode ? "DEMO" : "LIVE",
-                entry.data.oil_pressure_psi, entry.data.oil_pressure_valid ? 1 : 0,
-                entry.data.oil_temp_pan_f, entry.data.oil_temp_cooled_f, 
-                entry.data.oil_temp_valid ? 1 : 0,
-                entry.data.water_temp_hot_f, entry.data.water_temp_cooled_f, 
-                entry.data.water_temp_valid ? 1 : 0,
-                entry.data.trans_temp_hot_f, entry.data.trans_temp_cooled_f, 
-                entry.data.trans_temp_valid ? 1 : 0,
-                entry.data.steer_temp_hot_f, entry.data.steer_temp_cooled_f, 
-                entry.data.steer_temp_valid ? 1 : 0,
-                entry.data.diff_temp_hot_f, entry.data.diff_temp_cooled_f, 
-                entry.data.diff_temp_valid ? 1 : 0,
-                entry.data.fuel_trust_percent, entry.data.fuel_trust_valid ? 1 : 0,
-                entry.data.rpm, entry.data.rpm_valid ? 1 : 0
+                "%d,%d,%d,%d,"
+                "%lu,%.2f,%.1f,%s\n",
+                datetime_copy,  // datetime
+                entry.data.rpm, entry.data.oil_pressure_psi,  // rpm, oil_press_psi
+                entry.data.oil_temp_pan_f, entry.data.oil_temp_cooled_f,  // oil temps
+                entry.data.water_temp_hot_f, entry.data.water_temp_cooled_f,  // water temps
+                entry.data.trans_temp_hot_f, entry.data.trans_temp_cooled_f,  // trans temps
+                entry.data.steer_temp_hot_f, entry.data.steer_temp_cooled_f,  // steer temps
+                entry.data.diff_temp_hot_f, entry.data.diff_temp_cooled_f,  // diff temps
+                entry.data.fuel_trust_percent, entry.data.fuel_trust_valid ? 1 : 0,  // fuel trust
+                entry.data.rpm_valid ? 1 : 0, entry.data.oil_pressure_valid ? 1 : 0,
+                entry.data.oil_temp_valid ? 1 : 0,  // validity flags part 1
+                entry.data.water_temp_valid ? 1 : 0, entry.data.trans_temp_valid ? 1 : 0,
+                entry.data.steer_temp_valid ? 1 : 0, entry.data.diff_temp_valid ? 1 : 0,  // validity flags part 2
+                entry.timestamp_ms, entry.elapsed_s, entry.cpu_pct,
+                entry.demo_mode ? "DEMO" : "LIVE"  // metadata at end
             );
             
             // Write with retry

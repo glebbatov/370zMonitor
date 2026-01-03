@@ -1,9 +1,24 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v4.5 - Dual-Core Architecture
+ * 370zMonitor v4.7 - Dual-Core Architecture
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v4.7 Changes:
+ * - File browser OPTIMIZED: Uses boot_count to generate filenames (instant load)
+ * - Session filenames expanded: 5-digit → 8-digit (SESS_00000542 format)
+ * - Supports up to 99,999,999 sessions before overflow
+ * - Back button alignment fixed (LV_ALIGN_LEFT_MID)
+ * - Text viewer uses white text for readability
+ *
+ * v4.6 Changes:
+ * - Added SD card file browser mode (view logs in the field without PC)
+ * - Entry: Double-tap screen -> tap FILES button in utility box
+ * - Supports CSV files (grid view with auto-width columns)
+ * - Supports text files (.txt, .ini, .log, .cfg)
+ * - Navigate folders, view files, exit by backing from root
+ * - Loading indicator for large files
  *
  * v4.5 Changes:
  * - Added sensor/modbus failure detection and UI feedback
@@ -70,11 +85,24 @@ extern "C" void lv_draw_sw_rgb565_swap(void * buf, uint32_t buf_size_px);
 #include <WiFi.h>                   // WiFi for NTP time sync
 #include <time.h>                   // Time functions
 #include <stdarg.h>                 // For va_list in SerialLogf
+#include <vector>                   // For file browser
 
 //-----------------------------------------------------------------
 
 // ===== FEATURE FLAGS (must be before TeeSerial) =====
 #define ENABLE_SD_LOGGING       1   // Enable SD card data logging
+#define ENABLE_FILE_BROWSER     1   // Enable SD card file browser (tap FILES in utility box)
+
+// Global flag for file browser to pause SD writes (defined before file_browser.h include)
+volatile bool g_fb_pause_sd_writes = false;
+
+// Export boot count for file browser to generate recent session filenames
+uint32_t g_current_boot_count = 0;
+
+// File browser include (must be after SD.h and lvgl.h)
+#if ENABLE_FILE_BROWSER
+#include "file_browser.h"
+#endif
 
 //=================================================================
 // TESERIAL - TRANSPARENT SERIAL WRAPPER (must be early in file!)
@@ -1041,6 +1069,13 @@ static int hexGreen = 0x00FF00;
 
 #include "ui.h"
 
+// File Browser Module - SD card file viewer
+// Entry: Hold BOOT button 5s during operation
+// Exit: Navigate back from root, or hold BOOT 5s again
+#if ENABLE_FILE_BROWSER
+#include "file_browser.h"
+#endif
+
 //OIL PRESS
 extern lv_obj_t* ui_OIL_PRESS_Bar;
 extern lv_obj_t* ui_OIL_PRESS_CHART;
@@ -1237,6 +1272,9 @@ static lv_timer_t* g_util_single_tap_timer = NULL;
 // Individual labels for utility box (allows per-line coloring)
 #if ENABLE_SD_LOGGING
 static lv_obj_t* util_labels[9] = {NULL};  // FPS, CPU0, CPU1, SRAM, PSRAM, BRI, SD, TIME, DATE
+#if ENABLE_FILE_BROWSER
+static lv_obj_t* files_btn = NULL;         // FILES button at top of utility box
+#endif
 #define UTIL_IDX_FPS   0
 #define UTIL_IDX_CPU0  1
 #define UTIL_IDX_CPU1  2
@@ -1249,6 +1287,9 @@ static lv_obj_t* util_labels[9] = {NULL};  // FPS, CPU0, CPU1, SRAM, PSRAM, BRI,
 #define UTIL_LABEL_COUNT 9
 #else
 static lv_obj_t* util_labels[6] = {NULL};  // FPS, CPU0, CPU1, SRAM, PSRAM, BRI
+#if ENABLE_FILE_BROWSER
+static lv_obj_t* files_btn = NULL;         // FILES button at top of utility box
+#endif
 #define UTIL_IDX_FPS   0
 #define UTIL_IDX_CPU0  1
 #define UTIL_IDX_CPU1  2
@@ -2019,7 +2060,7 @@ static char g_wifi_password[64] = ""; // Loaded from SD config
 #define NTP_SYNC_TIMEOUT_MS 3000         // 3 second timeout per NTP server
 
 // SD Card State
-static struct {
+struct SDState {
     bool initialized;
     bool card_present;
     bool file_open;
@@ -2042,7 +2083,8 @@ static struct {
     bool log_file_open;
     uint32_t log_bytes_written;
     uint32_t last_log_flush_ms;
-} g_sd_state = { 0 };
+};
+static SDState g_sd_state = { 0 };
 
 //=================================================================
 // SERIAL LOG QUEUE - Buffers serial output for SD card writing
@@ -2185,10 +2227,13 @@ void sdGenerateFilename() {
     // Format: SESS_NNNNN.csv (boot count based)
     // If RTC available in future: YYYY-MM-DD_HH-MM-SS.csv
     snprintf(g_sd_state.current_filename, sizeof(g_sd_state.current_filename),
-        "/SESS_%05lu.csv", g_sd_state.boot_count);
+        "/SESS_%08lu.csv", g_sd_state.boot_count);
+    
+    // Export boot count for file browser
+    g_current_boot_count = g_sd_state.boot_count;
     // Also generate matching log filename
     snprintf(g_sd_state.log_filename, sizeof(g_sd_state.log_filename),
-        "/SESS_%05lu.log", g_sd_state.boot_count);
+        "/SESS_%08lu.log", g_sd_state.boot_count);
     Serial.printf("[SD] Session files: %s, %s\n", g_sd_state.current_filename, g_sd_state.log_filename);
 }
 
@@ -2341,6 +2386,12 @@ void sdWriteTask(void* parameter) {
     
     while (true) {
         loop_counter++;
+        
+        // Check if file browser wants us to pause
+        if (g_fb_pause_sd_writes) {
+            vTaskDelay(pdMS_TO_TICKS(100));  // Sleep while paused
+            continue;
+        }
         
         // Periodic debug output (every 10 seconds)
         uint32_t now_dbg = millis();
@@ -3715,6 +3766,33 @@ static void utility_box_release_cb(lv_event_t* e) {
         lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x444444), 0);  // Original dark gray
     }
 }
+
+//=================================================================
+// FILES BUTTON CALLBACK - Opens SD card file browser
+//=================================================================
+#if ENABLE_FILE_BROWSER
+static void files_btn_press_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    // Visual feedback: change to bright orange on press
+    if (files_btn) {
+        lv_obj_set_style_bg_color(files_btn, lv_color_hex(0xFF6600), 0);
+    }
+}
+
+static void files_btn_release_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    // Visual feedback: restore original orange
+    if (files_btn) {
+        lv_obj_set_style_bg_color(files_btn, lv_color_hex(0xFF4500), 0);
+    }
+}
+
+static void files_btn_click_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    Serial.println("[UI] FILES button tapped - entering file browser");
+    fb_enter();
+}
+#endif
 
 // Called periodically to check for long press
 static void checkUtilityLongPress() {
@@ -5439,7 +5517,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v4.5 - Dual-Core");
+    Serial.println("   370zMonitor v4.7 - Dual-Core");
     Serial.println("========================================");
 
     if (psramFound()) {
@@ -5574,6 +5652,12 @@ void setup() {
     
     // Initialize timekeeping (RTC or WiFi NTP)
     initTimeKeeping();
+    
+    // Initialize file browser (tap FILES button in utility box to enter)
+#if ENABLE_FILE_BROWSER
+    fb_init();
+    Serial.println("[FB] File browser ready (tap FILES in utility box)");
+#endif
 #endif
 
     // Bar animation speeds
@@ -5587,9 +5671,17 @@ void setup() {
     if (ui_Screen1) {
         utility_box = lv_obj_create(ui_Screen1);
 #if ENABLE_SD_LOGGING
+#if ENABLE_FILE_BROWSER
+        lv_obj_set_size(utility_box, 250, 240);
+#else
         lv_obj_set_size(utility_box, 250, 192);  // Height for 9 lines: FPS, CPU0, CPU1, SRAM, PSRAM, BRI, SD, TIME, DATE
+#endif
+#else
+#if ENABLE_FILE_BROWSER
+        lv_obj_set_size(utility_box, 250, 240);
 #else
         lv_obj_set_size(utility_box, 250, 138);  // Height for 6 lines: FPS, CPU0, CPU1, SRAM, PSRAM, BRI
+#endif
 #endif
         lv_obj_align(utility_box, LV_ALIGN_TOP_LEFT, 5, 5);
         lv_obj_set_style_bg_color(utility_box, lv_color_hex(0x444444), 0);
@@ -5611,6 +5703,32 @@ void setup() {
         esp_register_freertos_idle_hook_for_cpu(idle_hook_core0, 0);
         esp_register_freertos_idle_hook_for_cpu(idle_hook_core1, 1);
 
+#if ENABLE_FILE_BROWSER
+        // FILES button at the top of utility box
+        files_btn = lv_obj_create(utility_box);
+        lv_obj_set_size(files_btn, 150, 44);
+        lv_obj_align(files_btn, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_set_style_bg_color(files_btn, lv_color_hex(0xFF4500), 0);  // Orange
+        lv_obj_set_style_bg_opa(files_btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(files_btn, 3, 0);
+        lv_obj_set_style_border_width(files_btn, 0, 0);
+        lv_obj_set_style_pad_all(files_btn, 2, 0);
+        lv_obj_add_flag(files_btn, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(files_btn, LV_OBJ_FLAG_SCROLLABLE);
+        
+        // FILES label inside button
+        lv_obj_t* files_lbl = lv_label_create(files_btn);
+        lv_label_set_text(files_lbl, "FILES");
+        lv_obj_set_style_text_color(files_lbl, lv_color_hex(0x000000), 0);  // Black text
+        lv_obj_set_style_text_font(files_lbl, &lv_font_unscii_16, 0);  // Smaller font
+        lv_obj_center(files_lbl);
+        
+        // Event callbacks for press/release visual feedback and click
+        lv_obj_add_event_cb(files_btn, files_btn_press_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(files_btn, files_btn_release_cb, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(files_btn, files_btn_click_cb, LV_EVENT_CLICKED, NULL);
+#endif
+
         // FPS/CPU/BRI/SD labels - individual labels for per-line coloring
         const char* init_texts[] = {
             "FPS:  ---",
@@ -5627,12 +5745,17 @@ void setup() {
         };
         
         int line_height = 16;  // Font height for lv_font_unscii_16
+#if ENABLE_FILE_BROWSER
+        int label_y_offset = 48;  // Offset for FILES button row
+#else
+        int label_y_offset = 0;
+#endif
         for (int i = 0; i < UTIL_LABEL_COUNT; i++) {
             util_labels[i] = lv_label_create(utility_box);
             lv_label_set_text(util_labels[i], init_texts[i]);
             lv_obj_set_style_text_color(util_labels[i], lv_color_hex(0xffff00), 0);
             lv_obj_set_style_text_font(util_labels[i], &lv_font_unscii_16, 0);
-            lv_obj_align(util_labels[i], LV_ALIGN_TOP_LEFT, 0, i * line_height);
+            lv_obj_align(util_labels[i], LV_ALIGN_TOP_LEFT, 0, label_y_offset + i * line_height);
         }
 
         // Mode indicator (DEMO/LIVE)
@@ -5769,6 +5892,18 @@ void loop() {
 
     // Check for long press on utility box (for demo mode toggle)
     checkUtilityLongPress();
+
+    // File browser update (monitors BOOT button for 5s hold)
+#if ENABLE_FILE_BROWSER
+    fb_update();
+    
+    // If file browser is active, skip normal UI updates
+    if (fb_isActive()) {
+        lv_timer_handler();
+        delay(5);  // Yield CPU while in file browser
+        return;
+    }
+#endif
 
     // Status every 1 second
     if (now - last_status >= 1000) {

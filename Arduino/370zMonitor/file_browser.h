@@ -34,6 +34,12 @@ extern uint32_t g_current_boot_count;  // Current boot count for file generation
 #define FB_TEXT_MAX_SIZE            (100 * 1024)
 #define FB_LIST_ITEM_HEIGHT         40      // Taller for easier touch
 
+// CSV table viewer limits
+#define FB_CSV_MAX_ROWS             1000     // Max rows to display
+#define FB_CSV_MAX_COLS             20      // Max columns to display
+#define FB_CSV_MAX_CELL_LEN         48      // Max chars per cell (truncate longer)
+#define FB_CSV_COL_WIDTH            100     // Default column width in pixels
+
 // Session filename format - supports BOTH legacy 5-digit and new 8-digit
 #define FB_SESSION_FORMAT_8     "SESS_%08lu"   // New format
 #define FB_SESSION_FORMAT_5     "SESS_%05lu"   // Legacy format
@@ -56,7 +62,8 @@ struct FileEntry {
 enum FileBrowserState {
     FB_STATE_INACTIVE,
     FB_STATE_BROWSING,
-    FB_STATE_TEXT_VIEW
+    FB_STATE_TEXT_VIEW,
+    FB_STATE_CSV_VIEW
 };
 
 struct FileBrowserContext {
@@ -70,6 +77,7 @@ struct FileBrowserContext {
     // LVGL objects
     lv_obj_t* screenBrowser;
     lv_obj_t* screenTextView;
+    lv_obj_t* screenCsvView;
     
     lv_obj_t* pathLabel;
     lv_obj_t* fileListContainer;
@@ -77,6 +85,13 @@ struct FileBrowserContext {
     
     lv_obj_t* textArea;
     lv_obj_t* textPathLabel;
+    
+    lv_obj_t* csvTable;          // Scrollable data (excludes row 0 and col 0)
+    lv_obj_t* csvHeaderTable;      // Frozen header row (excludes col 0)
+    lv_obj_t* csvColumnTable;      // Frozen first column (excludes row 0)
+    lv_obj_t* csvCornerCell;       // Frozen top-left cell
+    lv_obj_t* csvPathLabel;
+    lv_obj_t* csvInfoLabel;
     
     lv_obj_t* previousScreen;
 };
@@ -98,14 +113,18 @@ static void fb_destroyScreens();
 static void fb_loadRecentSessions();
 static void fb_navigateTo(const char* path);
 static void fb_openTextFile(const char* path);
+static void fb_openCsvFile(const char* path);
 static void fb_goBack();
 static void fb_updateFileList();
 static const char* fb_formatSize(uint32_t size);
 static const char* fb_formatDate(time_t t);
+static bool fb_isCsvFile(const char* filename);
 
 static void fb_fileListClickCb(lv_event_t* e);
 static void fb_backBtnCb(lv_event_t* e);
 static void fb_textBackBtnCb(lv_event_t* e);
+static void fb_csvBackBtnCb(lv_event_t* e);
+static void fb_csvScrollCb(lv_event_t* e);  // Sync header scroll with data scroll
 
 //=================================================================
 // INITIALIZATION
@@ -151,7 +170,7 @@ void fb_enter() {
     lv_obj_t* loadingLabel = lv_label_create(g_fb.fileListContainer);
     lv_label_set_text(loadingLabel, "Loading files...");
     lv_obj_set_style_text_color(loadingLabel, lv_color_hex(0xFFFF00), 0);  // Yellow
-    lv_obj_set_style_text_font(loadingLabel, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(loadingLabel, &lv_font_unscii_16, 0);
     lv_obj_center(loadingLabel);
     
     // Force render so user sees loading screen
@@ -308,17 +327,199 @@ static void fb_createScreens() {
     lv_obj_set_width(ta_label, LV_SIZE_CONTENT);  // Label width = content width (no wrap)
     lv_obj_set_scrollbar_mode(g_fb.textArea, LV_SCROLLBAR_MODE_ON);  // Always show scrollbars
     
+    //-------------------------------------------------------------
+    // CSV TABLE VIEWER SCREEN
+    //-------------------------------------------------------------
+    g_fb.screenCsvView = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(g_fb.screenCsvView, bgColor, 0);
+    lv_obj_clear_flag(g_fb.screenCsvView, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // CSV header bar
+    lv_obj_t* csvHeaderBar = lv_obj_create(g_fb.screenCsvView);
+    lv_obj_set_size(csvHeaderBar, 800, 50);
+    lv_obj_align(csvHeaderBar, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(csvHeaderBar, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_border_width(csvHeaderBar, 0, 0);
+    lv_obj_set_style_radius(csvHeaderBar, 0, 0);
+    lv_obj_set_style_pad_all(csvHeaderBar, 0, 0);
+    lv_obj_clear_flag(csvHeaderBar, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // CSV back button
+    lv_obj_t* csvBackBtn = lv_btn_create(csvHeaderBar);
+    lv_obj_set_size(csvBackBtn, 110, 40);
+    lv_obj_align(csvBackBtn, LV_ALIGN_LEFT_MID, 5, 0);
+    lv_obj_set_style_bg_color(csvBackBtn, accentColor, 0);
+    lv_obj_set_style_radius(csvBackBtn, 0, 0);
+    lv_obj_add_event_cb(csvBackBtn, fb_csvBackBtnCb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t* csvBackLabel = lv_label_create(csvBackBtn);
+    lv_label_set_text(csvBackLabel, "< BACK");
+    lv_obj_set_style_text_font(csvBackLabel, &lv_font_unscii_16, 0);
+    lv_obj_center(csvBackLabel);
+    
+    // CSV path label
+    g_fb.csvPathLabel = lv_label_create(csvHeaderBar);
+    lv_obj_set_style_text_font(g_fb.csvPathLabel, &lv_font_unscii_16, 0);
+    lv_obj_set_style_text_color(g_fb.csvPathLabel, textColor, 0);
+    lv_obj_align(g_fb.csvPathLabel, LV_ALIGN_LEFT_MID, 125, 0);
+    lv_obj_set_width(g_fb.csvPathLabel, 500);
+    
+    // CSV info label (row/col count) - right side of header
+    g_fb.csvInfoLabel = lv_label_create(csvHeaderBar);
+    lv_obj_set_style_text_font(g_fb.csvInfoLabel, &lv_font_unscii_8, 0);
+    lv_obj_set_style_text_color(g_fb.csvInfoLabel, lv_color_hex(0x888888), 0);
+    lv_obj_align(g_fb.csvInfoLabel, LV_ALIGN_RIGHT_MID, -10, 0);
+    
+    // CSV Table - frozen corner cell (top-left, completely frozen)
+    g_fb.csvCornerCell = lv_table_create(g_fb.screenCsvView);
+    lv_obj_set_size(g_fb.csvCornerCell, FB_CSV_COL_WIDTH + 2, 24);  // +2 for border
+    lv_obj_align(g_fb.csvCornerCell, LV_ALIGN_TOP_LEFT, 2, 52);
+    lv_obj_set_style_bg_color(g_fb.csvCornerCell, lv_color_hex(0x2a2a2a), 0);
+    lv_obj_set_style_border_width(g_fb.csvCornerCell, 1, 0);
+    lv_obj_set_style_border_color(g_fb.csvCornerCell, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_radius(g_fb.csvCornerCell, 0, 0);
+    lv_obj_set_style_pad_all(g_fb.csvCornerCell, 0, 0);
+    lv_obj_clear_flag(g_fb.csvCornerCell, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Corner cell styling - yellow text
+    lv_obj_set_style_text_font(g_fb.csvCornerCell, &lv_font_unscii_8, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(g_fb.csvCornerCell, lv_color_hex(0xffff00), LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(g_fb.csvCornerCell, lv_color_hex(0x2a2a2a), LV_PART_ITEMS);
+    lv_obj_set_style_border_width(g_fb.csvCornerCell, 1, LV_PART_ITEMS);
+    lv_obj_set_style_border_color(g_fb.csvCornerCell, lv_color_hex(0x444444), LV_PART_ITEMS);
+    lv_obj_set_style_pad_top(g_fb.csvCornerCell, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_bottom(g_fb.csvCornerCell, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_left(g_fb.csvCornerCell, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_right(g_fb.csvCornerCell, 4, LV_PART_ITEMS);
+    lv_obj_set_style_min_height(g_fb.csvCornerCell, 24, LV_PART_ITEMS);  // Fixed height for 2 lines
+    lv_obj_set_style_max_height(g_fb.csvCornerCell, 24, LV_PART_ITEMS);
+    
+    // CSV Table - frozen header row (scrolls horizontally only)
+    g_fb.csvHeaderTable = lv_table_create(g_fb.screenCsvView);
+    lv_obj_set_size(g_fb.csvHeaderTable, 694, 24);  // Width minus frozen column
+    lv_obj_align(g_fb.csvHeaderTable, LV_ALIGN_TOP_LEFT, FB_CSV_COL_WIDTH + 4, 52);
+    lv_obj_set_style_bg_color(g_fb.csvHeaderTable, lv_color_hex(0x2a2a2a), 0);
+    lv_obj_set_style_border_width(g_fb.csvHeaderTable, 1, 0);
+    lv_obj_set_style_border_color(g_fb.csvHeaderTable, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_radius(g_fb.csvHeaderTable, 0, 0);
+    lv_obj_set_style_pad_all(g_fb.csvHeaderTable, 0, 0);
+    lv_obj_clear_flag(g_fb.csvHeaderTable, LV_OBJ_FLAG_SCROLLABLE);  // No scroll - frozen!
+    
+    // Header table cell styling - yellow text on dark background
+    lv_obj_set_style_text_font(g_fb.csvHeaderTable, &lv_font_unscii_8, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(g_fb.csvHeaderTable, lv_color_hex(0xffff00), LV_PART_ITEMS);  // Yellow headers
+    lv_obj_set_style_bg_color(g_fb.csvHeaderTable, lv_color_hex(0x2a2a2a), LV_PART_ITEMS);
+    lv_obj_set_style_border_width(g_fb.csvHeaderTable, 1, LV_PART_ITEMS);
+    lv_obj_set_style_border_color(g_fb.csvHeaderTable, lv_color_hex(0x444444), LV_PART_ITEMS);
+    lv_obj_set_style_pad_top(g_fb.csvHeaderTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_bottom(g_fb.csvHeaderTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_left(g_fb.csvHeaderTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_right(g_fb.csvHeaderTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_min_height(g_fb.csvHeaderTable, 24, LV_PART_ITEMS);  // Fixed height
+    lv_obj_set_style_max_height(g_fb.csvHeaderTable, 24, LV_PART_ITEMS);
+    
+    // CSV Table - frozen first column (scrolls vertically only)
+    g_fb.csvColumnTable = lv_table_create(g_fb.screenCsvView);
+    lv_obj_set_size(g_fb.csvColumnTable, FB_CSV_COL_WIDTH + 2, 402);  // +2 for border
+    lv_obj_align(g_fb.csvColumnTable, LV_ALIGN_TOP_LEFT, 2, 76);
+    lv_obj_set_style_bg_color(g_fb.csvColumnTable, lv_color_hex(0x2a2a2a), 0);
+    lv_obj_set_style_border_width(g_fb.csvColumnTable, 1, 0);
+    lv_obj_set_style_border_color(g_fb.csvColumnTable, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_radius(g_fb.csvColumnTable, 0, 0);
+    lv_obj_set_style_pad_all(g_fb.csvColumnTable, 0, 0);
+    lv_obj_set_scrollbar_mode(g_fb.csvColumnTable, LV_SCROLLBAR_MODE_OFF);  // Hide scrollbar, synced with data
+    
+    // Column table cell styling - yellow text (same as header)
+    lv_obj_set_style_text_font(g_fb.csvColumnTable, &lv_font_unscii_8, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(g_fb.csvColumnTable, lv_color_hex(0xffff00), LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(g_fb.csvColumnTable, lv_color_hex(0x2a2a2a), LV_PART_ITEMS);
+    lv_obj_set_style_border_width(g_fb.csvColumnTable, 1, LV_PART_ITEMS);
+    lv_obj_set_style_border_color(g_fb.csvColumnTable, lv_color_hex(0x444444), LV_PART_ITEMS);
+    lv_obj_set_style_pad_top(g_fb.csvColumnTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_bottom(g_fb.csvColumnTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_left(g_fb.csvColumnTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_right(g_fb.csvColumnTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_min_height(g_fb.csvColumnTable, 24, LV_PART_ITEMS);  // Fixed height
+    lv_obj_set_style_max_height(g_fb.csvColumnTable, 24, LV_PART_ITEMS);
+    
+    // Disable cell selection highlight for column table
+    lv_obj_set_style_bg_color(g_fb.csvColumnTable, lv_color_hex(0x2a2a2a), LV_PART_ITEMS | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(g_fb.csvColumnTable, lv_color_hex(0x2a2a2a), LV_PART_ITEMS | LV_STATE_FOCUSED);
+    
+    // CSV Table - scrollable data rows (excludes row 0 and col 0)
+    g_fb.csvTable = lv_table_create(g_fb.screenCsvView);
+    lv_obj_set_size(g_fb.csvTable, 694, 402);  // Width minus frozen column
+    lv_obj_align(g_fb.csvTable, LV_ALIGN_TOP_LEFT, FB_CSV_COL_WIDTH + 4, 76);  // Below header, right of column
+    lv_obj_set_style_bg_color(g_fb.csvTable, lv_color_hex(0x0a0a0a), 0);
+    lv_obj_set_style_border_width(g_fb.csvTable, 1, 0);
+    lv_obj_set_style_border_color(g_fb.csvTable, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_radius(g_fb.csvTable, 0, 0);
+    lv_obj_set_style_pad_all(g_fb.csvTable, 0, 0);
+    
+    // Table cell styling - normal cells
+    lv_obj_set_style_text_font(g_fb.csvTable, &lv_font_unscii_8, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(g_fb.csvTable, lv_color_hex(0xffffff), LV_PART_ITEMS);  // White data
+    lv_obj_set_style_bg_color(g_fb.csvTable, lv_color_hex(0x1a1a1a), LV_PART_ITEMS);
+    lv_obj_set_style_border_width(g_fb.csvTable, 1, LV_PART_ITEMS);
+    lv_obj_set_style_border_color(g_fb.csvTable, lv_color_hex(0x333333), LV_PART_ITEMS);
+    lv_obj_set_style_pad_top(g_fb.csvTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_bottom(g_fb.csvTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_left(g_fb.csvTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_right(g_fb.csvTable, 4, LV_PART_ITEMS);
+    lv_obj_set_style_min_height(g_fb.csvTable, 24, LV_PART_ITEMS);  // Fixed height
+    lv_obj_set_style_max_height(g_fb.csvTable, 24, LV_PART_ITEMS);
+    
+    // Disable cell selection highlight (pressed state looks same as normal)
+    lv_obj_set_style_bg_color(g_fb.csvTable, lv_color_hex(0x1a1a1a), LV_PART_ITEMS | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(g_fb.csvTable, lv_color_hex(0x1a1a1a), LV_PART_ITEMS | LV_STATE_FOCUSED);
+    
+    // Scrollbars always visible
+    lv_obj_set_scrollbar_mode(g_fb.csvTable, LV_SCROLLBAR_MODE_ON);
+    
+    // Sync horizontal scroll between header and data tables
+    lv_obj_add_event_cb(g_fb.csvTable, fb_csvScrollCb, LV_EVENT_SCROLL, NULL);
+    
     Serial.println("[FB] Screens created");
 }
 
 static void fb_destroyScreens() {
+    // Clear table data before destroying (prevents memory issues)
+    if (g_fb.csvCornerCell) {
+        lv_table_set_row_count(g_fb.csvCornerCell, 0);
+        lv_table_set_column_count(g_fb.csvCornerCell, 0);
+    }
+    if (g_fb.csvHeaderTable) {
+        lv_table_set_row_count(g_fb.csvHeaderTable, 0);
+        lv_table_set_column_count(g_fb.csvHeaderTable, 0);
+    }
+    if (g_fb.csvColumnTable) {
+        lv_table_set_row_count(g_fb.csvColumnTable, 0);
+        lv_table_set_column_count(g_fb.csvColumnTable, 0);
+    }
+    if (g_fb.csvTable) {
+        lv_table_set_row_count(g_fb.csvTable, 0);
+        lv_table_set_column_count(g_fb.csvTable, 0);
+    }
+    
+    // Clear textarea before destroying
+    if (g_fb.textArea) {
+        lv_textarea_set_text(g_fb.textArea, "");
+    }
+    
     if (g_fb.screenBrowser) { lv_obj_del(g_fb.screenBrowser); g_fb.screenBrowser = NULL; }
     if (g_fb.screenTextView) { lv_obj_del(g_fb.screenTextView); g_fb.screenTextView = NULL; }
+    if (g_fb.screenCsvView) { lv_obj_del(g_fb.screenCsvView); g_fb.screenCsvView = NULL; }
     g_fb.pathLabel = NULL;
     g_fb.fileListContainer = NULL;
     g_fb.statusLabel = NULL;
     g_fb.textArea = NULL;
     g_fb.textPathLabel = NULL;
+    g_fb.csvTable = NULL;
+    g_fb.csvHeaderTable = NULL;
+    g_fb.csvColumnTable = NULL;
+    g_fb.csvCornerCell = NULL;
+    g_fb.csvPathLabel = NULL;
+    g_fb.csvInfoLabel = NULL;
 }
 
 //=================================================================
@@ -484,7 +685,7 @@ static void fb_navigateTo(const char* path) {
             lv_obj_t* loadLabel = lv_label_create(g_fb.fileListContainer);
             lv_label_set_text(loadLabel, "Loading...");
             lv_obj_set_style_text_color(loadLabel, lv_color_hex(0xFFFF00), 0);
-            lv_obj_set_style_text_font(loadLabel, &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_font(loadLabel, &lv_font_unscii_16, 0);
             lv_obj_center(loadLabel);
             lv_refr_now(NULL);
         }
@@ -497,7 +698,7 @@ static void fb_navigateTo(const char* path) {
             lv_obj_t* loadLabel = lv_label_create(g_fb.fileListContainer);
             lv_label_set_text(loadLabel, "Loading...");
             lv_obj_set_style_text_color(loadLabel, lv_color_hex(0xFFFF00), 0);
-            lv_obj_set_style_text_font(loadLabel, &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_font(loadLabel, &lv_font_unscii_16, 0);
             lv_obj_center(loadLabel);
             lv_refr_now(NULL);
         }
@@ -621,6 +822,11 @@ static void fb_updateFileList() {
 static void fb_openTextFile(const char* path) {
     Serial.printf("[FB] Opening: %s\n", path);
     
+    // Clear any previous text first
+    if (g_fb.textArea) {
+        lv_textarea_set_text(g_fb.textArea, "");
+    }
+    
     File file = SD.open(path, FILE_READ);
     if (!file) {
         Serial.printf("[FB] Failed to open: %s\n", path);
@@ -661,6 +867,232 @@ static void fb_openTextFile(const char* path) {
     g_fb.state = FB_STATE_TEXT_VIEW;
     
     Serial.printf("[FB] File loaded: %u bytes\n", bytesRead);
+}
+
+//=================================================================
+// CSV FILE VIEWER
+//=================================================================
+
+static bool fb_isCsvFile(const char* filename) {
+    const char* ext = strrchr(filename, '.');
+    if (!ext) return false;
+    return (strcasecmp(ext, ".csv") == 0);
+}
+
+static void fb_openCsvFile(const char* path) {
+    Serial.printf("[FB] Opening CSV: %s\n", path);
+    
+    // Clear any previous table data first
+    if (g_fb.csvCornerCell) {
+        lv_table_set_row_count(g_fb.csvCornerCell, 0);
+        lv_table_set_column_count(g_fb.csvCornerCell, 0);
+    }
+    if (g_fb.csvHeaderTable) {
+        lv_table_set_row_count(g_fb.csvHeaderTable, 0);
+        lv_table_set_column_count(g_fb.csvHeaderTable, 0);
+    }
+    if (g_fb.csvColumnTable) {
+        lv_table_set_row_count(g_fb.csvColumnTable, 0);
+        lv_table_set_column_count(g_fb.csvColumnTable, 0);
+    }
+    if (g_fb.csvTable) {
+        lv_table_set_row_count(g_fb.csvTable, 0);
+        lv_table_set_column_count(g_fb.csvTable, 0);
+    }
+    
+    File file = SD.open(path, FILE_READ);
+    if (!file) {
+        Serial.printf("[FB] Failed to open CSV: %s\n", path);
+        return;
+    }
+    
+    // Read file into buffer (limit size)
+    size_t fileSize = file.size();
+    time_t fileTime = file.getLastWrite();  // Get file modification time
+    size_t readSize = min(fileSize, (size_t)(FB_CSV_MAX_ROWS * 200));  // Rough estimate
+    
+    char* buffer = (char*)heap_caps_malloc(readSize + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buffer) buffer = (char*)malloc(readSize + 1);
+    
+    if (!buffer) {
+        Serial.println("[FB] CSV memory allocation failed");
+        file.close();
+        return;
+    }
+    
+    size_t bytesRead = file.read((uint8_t*)buffer, readSize);
+    buffer[bytesRead] = '\0';
+    file.close();
+    
+    // Parse CSV - first pass to count columns from header
+    int numCols = 1;
+    char* headerEnd = strchr(buffer, '\n');
+    if (headerEnd) {
+        for (char* p = buffer; p < headerEnd; p++) {
+            if (*p == ',') numCols++;
+        }
+    }
+    numCols = min(numCols, FB_CSV_MAX_COLS);
+    
+    // Count rows
+    int numRows = 0;
+    for (char* p = buffer; *p && numRows < FB_CSV_MAX_ROWS; p++) {
+        if (*p == '\n') numRows++;
+    }
+    if (buffer[bytesRead-1] != '\n' && numRows < FB_CSV_MAX_ROWS) numRows++;  // Last line without newline
+    
+    Serial.printf("[FB] CSV: %d rows x %d cols\n", numRows, numCols);
+    
+    // Calculate data dimensions (excluding frozen row/col)
+    int dataRows = (numRows > 1) ? (numRows - 1) : 0;
+    int dataCols = (numCols > 1) ? (numCols - 1) : 0;
+    
+    // Configure corner cell (1x1, frozen top-left)
+    lv_table_set_row_count(g_fb.csvCornerCell, 1);
+    lv_table_set_column_count(g_fb.csvCornerCell, 1);
+    lv_table_set_column_width(g_fb.csvCornerCell, 0, FB_CSV_COL_WIDTH);
+    
+    // Configure header table (1 row, cols 1+ for frozen header)
+    lv_table_set_row_count(g_fb.csvHeaderTable, 1);
+    lv_table_set_column_count(g_fb.csvHeaderTable, dataCols);
+    
+    // Configure column table (rows 1+, 1 col for frozen first column)
+    lv_table_set_row_count(g_fb.csvColumnTable, dataRows);
+    lv_table_set_column_count(g_fb.csvColumnTable, 1);
+    lv_table_set_column_width(g_fb.csvColumnTable, 0, FB_CSV_COL_WIDTH);
+    
+    // Configure data table (rows 1+, cols 1+)
+    lv_table_set_row_count(g_fb.csvTable, dataRows);
+    lv_table_set_column_count(g_fb.csvTable, dataCols);
+    
+    // Set column widths for header and data tables (must match!)
+    for (int c = 0; c < dataCols; c++) {
+        lv_table_set_column_width(g_fb.csvHeaderTable, c, FB_CSV_COL_WIDTH);
+        lv_table_set_column_width(g_fb.csvTable, c, FB_CSV_COL_WIDTH);
+    }
+    
+    // Parse and populate cells
+    char cell[FB_CSV_MAX_CELL_LEN + 1];
+    char* lineStart = buffer;
+    int row = 0;
+    
+    while (*lineStart && row < numRows) {
+        char* lineEnd = strchr(lineStart, '\n');
+        if (!lineEnd) lineEnd = lineStart + strlen(lineStart);
+        
+        // Parse columns in this line
+        char* colStart = lineStart;
+        int col = 0;
+        bool inQuote = false;
+        
+        while (colStart < lineEnd && col < numCols) {
+            char* cellEnd = colStart;
+            inQuote = false;
+            
+            // Find end of cell (comma or end of line)
+            while (cellEnd < lineEnd) {
+                if (*cellEnd == '"') {
+                    inQuote = !inQuote;
+                } else if (*cellEnd == ',' && !inQuote) {
+                    break;
+                }
+                cellEnd++;
+            }
+            
+            // Extract cell content
+            int cellLen = cellEnd - colStart;
+            if (cellLen > FB_CSV_MAX_CELL_LEN) cellLen = FB_CSV_MAX_CELL_LEN;
+            
+            // Copy and clean up (remove quotes)
+            int destIdx = 0;
+            for (int i = 0; i < cellLen && destIdx < FB_CSV_MAX_CELL_LEN; i++) {
+                char c = colStart[i];
+                if (c != '"' && c != '\r') {
+                    cell[destIdx++] = c;
+                }
+            }
+            cell[destIdx] = '\0';
+            
+            // Distribute cells to appropriate table based on position:
+            // [0,0] → corner, [0,1+] → header, [1+,0] → column, [1+,1+] → data
+            if (row == 0 && col == 0) {
+                lv_table_set_cell_value(g_fb.csvCornerCell, 0, 0, cell);
+            } else if (row == 0 && col > 0) {
+                lv_table_set_cell_value(g_fb.csvHeaderTable, 0, col - 1, cell);
+            } else if (row > 0 && col == 0) {
+                lv_table_set_cell_value(g_fb.csvColumnTable, row - 1, 0, cell);
+            } else if (row > 0 && col > 0) {
+                lv_table_set_cell_value(g_fb.csvTable, row - 1, col - 1, cell);
+            }
+            
+            // Move to next column
+            colStart = cellEnd + 1;  // Skip comma
+            col++;
+        }
+        
+        // Fill remaining columns with empty
+        while (col < numCols) {
+            if (row == 0 && col == 0) {
+                lv_table_set_cell_value(g_fb.csvCornerCell, 0, 0, "");
+            } else if (row == 0 && col > 0) {
+                lv_table_set_cell_value(g_fb.csvHeaderTable, 0, col - 1, "");
+            } else if (row > 0 && col == 0) {
+                lv_table_set_cell_value(g_fb.csvColumnTable, row - 1, 0, "");
+            } else if (row > 0 && col > 0) {
+                lv_table_set_cell_value(g_fb.csvTable, row - 1, col - 1, "");
+            }
+            col++;
+        }
+        
+        // Move to next row
+        lineStart = (*lineEnd) ? lineEnd + 1 : lineEnd;
+        row++;
+        
+        // Yield every 50 rows to prevent watchdog
+        if (row % 50 == 0) {
+            vTaskDelay(1);
+        }
+    }
+    
+    free(buffer);
+    
+    // Update UI labels
+    lv_label_set_text(g_fb.csvPathLabel, path);
+    
+    // Format file size
+    char sizeStr[16];
+    if (fileSize >= 1024 * 1024) {
+        snprintf(sizeStr, sizeof(sizeStr), "%.1f MB", fileSize / (1024.0 * 1024.0));
+    } else if (fileSize >= 1024) {
+        snprintf(sizeStr, sizeof(sizeStr), "%.1f KB", fileSize / 1024.0);
+    } else {
+        snprintf(sizeStr, sizeof(sizeStr), "%u B", (unsigned)fileSize);
+    }
+    
+    // Format file date
+    char dateStr[20];
+    struct tm* tmInfo = localtime(&fileTime);
+    if (tmInfo) {
+        snprintf(dateStr, sizeof(dateStr), "%02d/%02d/%04d %02d:%02d",
+                 tmInfo->tm_mon + 1, tmInfo->tm_mday, tmInfo->tm_year + 1900,
+                 tmInfo->tm_hour, tmInfo->tm_min);
+    } else {
+        snprintf(dateStr, sizeof(dateStr), "Unknown");
+    }
+    
+    // Combine all info
+    char infoStr[80];
+    snprintf(infoStr, sizeof(infoStr), "%d rows x %d cols\n%s | %s", numRows, numCols, sizeStr, dateStr);
+    lv_label_set_text(g_fb.csvInfoLabel, infoStr);
+    
+    // Scroll to top-left
+    lv_obj_scroll_to(g_fb.csvTable, 0, 0, LV_ANIM_OFF);
+    
+    // Switch to CSV view screen
+    lv_scr_load(g_fb.screenCsvView);
+    g_fb.state = FB_STATE_CSV_VIEW;
+    
+    Serial.printf("[FB] CSV loaded: %d rows x %d cols\n", row, numCols);
 }
 
 //=================================================================
@@ -717,6 +1149,8 @@ static void fb_fileListClickCb(lv_event_t* e) {
     
     if (fe.isDirectory) {
         fb_navigateTo(fullPath);
+    } else if (fb_isCsvFile(fe.name)) {
+        fb_openCsvFile(fullPath);
     } else {
         fb_openTextFile(fullPath);
     }
@@ -729,6 +1163,57 @@ static void fb_backBtnCb(lv_event_t* e) {
 
 static void fb_textBackBtnCb(lv_event_t* e) {
     LV_UNUSED(e);
+    
+    // Clear textarea to free memory
+    if (g_fb.textArea) {
+        lv_textarea_set_text(g_fb.textArea, "");
+    }
+    
+    lv_scr_load(g_fb.screenBrowser);
+    g_fb.state = FB_STATE_BROWSING;
+}
+
+// Sync header and column table scroll with data table
+static void fb_csvScrollCb(lv_event_t* e) {
+    LV_UNUSED(e);
+    if (!g_fb.csvTable) return;
+    
+    // Get current scroll position of data table
+    lv_coord_t scroll_x = lv_obj_get_scroll_x(g_fb.csvTable);
+    lv_coord_t scroll_y = lv_obj_get_scroll_y(g_fb.csvTable);
+    
+    // Sync horizontal scroll to header table
+    if (g_fb.csvHeaderTable) {
+        lv_obj_scroll_to_x(g_fb.csvHeaderTable, scroll_x, LV_ANIM_OFF);
+    }
+    
+    // Sync vertical scroll to column table
+    if (g_fb.csvColumnTable) {
+        lv_obj_scroll_to_y(g_fb.csvColumnTable, scroll_y, LV_ANIM_OFF);
+    }
+}
+
+static void fb_csvBackBtnCb(lv_event_t* e) {
+    LV_UNUSED(e);
+    
+    // Clear table data to free memory before switching screens
+    if (g_fb.csvCornerCell) {
+        lv_table_set_row_count(g_fb.csvCornerCell, 0);
+        lv_table_set_column_count(g_fb.csvCornerCell, 0);
+    }
+    if (g_fb.csvHeaderTable) {
+        lv_table_set_row_count(g_fb.csvHeaderTable, 0);
+        lv_table_set_column_count(g_fb.csvHeaderTable, 0);
+    }
+    if (g_fb.csvColumnTable) {
+        lv_table_set_row_count(g_fb.csvColumnTable, 0);
+        lv_table_set_column_count(g_fb.csvColumnTable, 0);
+    }
+    if (g_fb.csvTable) {
+        lv_table_set_row_count(g_fb.csvTable, 0);
+        lv_table_set_column_count(g_fb.csvTable, 0);
+    }
+    
     lv_scr_load(g_fb.screenBrowser);
     g_fb.state = FB_STATE_BROWSING;
 }

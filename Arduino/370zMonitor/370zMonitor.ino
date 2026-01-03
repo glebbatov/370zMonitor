@@ -3773,17 +3773,17 @@ static void utility_box_release_cb(lv_event_t* e) {
 #if ENABLE_FILE_BROWSER
 static void files_btn_press_cb(lv_event_t* e) {
     LV_UNUSED(e);
-    // Visual feedback: change to bright orange on press
+    // Visual feedback: change to darker gray on press
     if (files_btn) {
-        lv_obj_set_style_bg_color(files_btn, lv_color_hex(0xFF6600), 0);
+        lv_obj_set_style_bg_color(files_btn, lv_color_hex(0x8B9A9A), 0);
     }
 }
 
 static void files_btn_release_cb(lv_event_t* e) {
     LV_UNUSED(e);
-    // Visual feedback: restore original orange
+    // Visual feedback: restore original gray
     if (files_btn) {
-        lv_obj_set_style_bg_color(files_btn, lv_color_hex(0xFF4500), 0);
+        lv_obj_set_style_bg_color(files_btn, lv_color_hex(0xC1CDCD), 0);
     }
 }
 
@@ -5706,9 +5706,9 @@ void setup() {
 #if ENABLE_FILE_BROWSER
         // FILES button at the top of utility box
         files_btn = lv_obj_create(utility_box);
-        lv_obj_set_size(files_btn, 150, 44);
+        lv_obj_set_size(files_btn, 235, 44);
         lv_obj_align(files_btn, LV_ALIGN_TOP_LEFT, 0, 0);
-        lv_obj_set_style_bg_color(files_btn, lv_color_hex(0xFF4500), 0);  // Orange
+        lv_obj_set_style_bg_color(files_btn, lv_color_hex(0xC1CDCD), 0);  // Gray
         lv_obj_set_style_bg_opa(files_btn, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(files_btn, 3, 0);
         lv_obj_set_style_border_width(files_btn, 0, 0);

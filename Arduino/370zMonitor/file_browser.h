@@ -303,6 +303,11 @@ static void fb_createScreens() {
     lv_obj_set_style_radius(g_fb.textArea, 0, 0);  // No rounded corners
     lv_obj_clear_flag(g_fb.textArea, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     
+    // Enable horizontal scrolling (disable text wrap) and always show scrollbars
+    lv_obj_t* ta_label = lv_textarea_get_label(g_fb.textArea);
+    lv_obj_set_width(ta_label, LV_SIZE_CONTENT);  // Label width = content width (no wrap)
+    lv_obj_set_scrollbar_mode(g_fb.textArea, LV_SCROLLBAR_MODE_ON);  // Always show scrollbars
+    
     Serial.println("[FB] Screens created");
 }
 

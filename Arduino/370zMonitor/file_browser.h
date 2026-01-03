@@ -62,6 +62,8 @@ struct FileBrowserContext {
     FileBrowserState state;
     char currentPath[FB_MAX_PATH_LEN];
     std::vector<FileEntry> files;
+    std::vector<FileEntry> cachedFolders;  // Cached folder list (scan once)
+    bool foldersCached;                     // True after first scan
     int totalSessions;  // Total sessions found
     
     // LVGL objects
@@ -110,6 +112,7 @@ static void fb_textBackBtnCb(lv_event_t* e);
 void fb_init() {
     memset(&g_fb, 0, sizeof(g_fb));
     g_fb.state = FB_STATE_INACTIVE;
+    g_fb.foldersCached = false;
     strcpy(g_fb.currentPath, "/");
     Serial.println("[FB] File browser initialized");
 }
@@ -170,8 +173,11 @@ void fb_exit() {
     g_fb_pause_sd_writes = false;
     Serial.println("[FB] SD logging resumed");
     
+    // Clear file list but keep cached folders
     g_fb.files.clear();
     g_fb.files.shrink_to_fit();
+    // Note: g_fb.cachedFolders is kept for next time
+    
     fb_destroyScreens();
 }
 
@@ -218,7 +224,7 @@ static void fb_createScreens() {
     
     // Path label
     g_fb.pathLabel = lv_label_create(headerBar);
-    lv_label_set_text(g_fb.pathLabel, "/");
+    lv_label_set_text(g_fb.pathLabel, "root/");
     lv_obj_set_style_text_font(g_fb.pathLabel, &lv_font_unscii_16, 0);
     lv_obj_set_style_text_color(g_fb.pathLabel, textColor, 0);
     lv_obj_align(g_fb.pathLabel, LV_ALIGN_LEFT_MID, 125, 0);
@@ -245,12 +251,6 @@ static void fb_createScreens() {
     lv_obj_set_style_radius(statusBar, 0, 0);  // No rounded corners
     lv_obj_set_style_pad_left(statusBar, 10, 0);
     lv_obj_clear_flag(statusBar, LV_OBJ_FLAG_SCROLLABLE);
-    
-    g_fb.statusLabel = lv_label_create(statusBar);
-    lv_label_set_text(g_fb.statusLabel, "Back from root to exit");
-    lv_obj_set_style_text_font(g_fb.statusLabel, &lv_font_unscii_8, 0);
-    lv_obj_set_style_text_color(g_fb.statusLabel, lv_color_hex(0x888888), 0);
-    lv_obj_align(g_fb.statusLabel, LV_ALIGN_LEFT_MID, 0, 0);
     
     //-------------------------------------------------------------
     // TEXT VIEWER SCREEN
@@ -320,33 +320,70 @@ static void fb_destroyScreens() {
 
 static void fb_loadRecentSessions() {
     g_fb.files.clear();
+    g_fb.files.reserve(FB_MAX_FILES_TO_DISPLAY + 10);  // Pre-allocate to reduce fragmentation
     
     uint32_t bootCount = g_current_boot_count;
     Serial.printf("[FB] Loading recent sessions from boot count %lu\n", bootCount);
     
-    // FIRST: Scan for ALL directories and add them at the top
-    File root = SD.open("/");
-    if (root && root.isDirectory()) {
-        File entry;
-        while ((entry = root.openNextFile())) {
-            if (entry.isDirectory()) {
-                // Skip system folders
-                const char* name = entry.name();
-                if (strcmp(name, "System Volume Information") != 0) {
-                    FileEntry fe;
-                    strncpy(fe.name, name, FB_MAX_FILENAME_LEN - 1);
-                    fe.size = 0;
-                    fe.isDirectory = true;
-                    g_fb.files.push_back(fe);
+    // FIRST: Add cached folders (or scan once if not cached)
+    if (!g_fb.foldersCached) {
+        Serial.println("[FB] Scanning for folders (one-time)...");
+        
+        // Update loading screen to show scanning progress
+        if (g_fb.fileListContainer) {
+            lv_obj_clean(g_fb.fileListContainer);
+            lv_obj_t* scanLabel = lv_label_create(g_fb.fileListContainer);
+            lv_label_set_text(scanLabel, "Scanning folders...\n(first time only)");
+            lv_obj_set_style_text_color(scanLabel, lv_color_hex(0xFFFF00), 0);
+            lv_obj_set_style_text_font(scanLabel, &lv_font_montserrat_20, 0);
+            lv_obj_center(scanLabel);
+            lv_refr_now(NULL);
+        }
+        
+        g_fb.cachedFolders.clear();
+        g_fb.cachedFolders.reserve(20);  // Pre-allocate for up to 20 folders
+        
+        File root = SD.open("/");
+        if (root && root.isDirectory()) {
+            File entry;
+            int scanned = 0;
+            while ((entry = root.openNextFile())) {
+                if (entry.isDirectory()) {
+                    const char* name = entry.name();
+                    // Skip system folders
+                    if (strcmp(name, "System Volume Information") != 0) {
+                        FileEntry fe;
+                        strncpy(fe.name, name, FB_MAX_FILENAME_LEN - 1);
+                        fe.name[FB_MAX_FILENAME_LEN - 1] = '\0';
+                        fe.size = 0;
+                        fe.isDirectory = true;
+                        g_fb.cachedFolders.push_back(fe);
+                        Serial.printf("[FB] Found folder: %s\n", name);
+                    }
+                }
+                entry.close();
+                scanned++;
+                
+                // Yield and update progress every 50 files
+                if (scanned % 50 == 0) {
+                    vTaskDelay(1);
+                    Serial.printf("[FB] Scanned %d files...\n", scanned);
                 }
             }
-            entry.close();
+            root.close();
+            Serial.printf("[FB] Folder scan complete: %d files scanned\n", scanned);
         }
-        root.close();
+        g_fb.foldersCached = true;
+        Serial.printf("[FB] Cached %d folders\n", (int)g_fb.cachedFolders.size());
+    } else {
+        Serial.printf("[FB] Using cached folders (%d)\n", (int)g_fb.cachedFolders.size());
     }
     
+    // Add cached folders to file list
+    for (const auto& folder : g_fb.cachedFolders) {
+        g_fb.files.push_back(folder);
+    }
     int foldersFound = g_fb.files.size();
-    Serial.printf("[FB] Found %d folders\n", foldersFound);
     
     // SECOND: Add special files (if they exist)
     const char* specialFiles[] = { "wifi.cfg", "test_write.csv" };
@@ -365,10 +402,9 @@ static void fb_loadRecentSessions() {
     }
     
     // THIRD: Generate session filenames from current boot_count down
-    // Try BOTH 8-digit (new) and 5-digit (legacy) formats
     int filesFound = g_fb.files.size();
     int consecutiveMisses = 0;
-    const int MAX_CONSECUTIVE_MISSES = 10;  // Stop after 10 misses in a row
+    const int MAX_CONSECUTIVE_MISSES = 10;
     
     for (uint32_t i = bootCount; i > 0 && filesFound < FB_MAX_FILES_TO_DISPLAY; i--) {
         bool foundAny = false;
@@ -387,7 +423,7 @@ static void fb_loadRecentSessions() {
         
         if (csvFile && filesFound < FB_MAX_FILES_TO_DISPLAY) {
             FileEntry fe;
-            strncpy(fe.name, csvPath + 1, FB_MAX_FILENAME_LEN - 1);  // Skip leading /
+            strncpy(fe.name, csvPath + 1, FB_MAX_FILENAME_LEN - 1);
             fe.size = csvFile.size();
             fe.isDirectory = false;
             g_fb.files.push_back(fe);
@@ -431,13 +467,12 @@ static void fb_loadRecentSessions() {
             }
         }
         
-        // Yield every iteration to prevent watchdog
-        vTaskDelay(1);
+        vTaskDelay(1);  // Yield every iteration
     }
     
     g_fb.totalSessions = filesFound;
-    Serial.printf("[FB] Found %d total items (%d folders, %d files)\n", 
-                  (int)g_fb.files.size(), foldersFound, filesFound - foldersFound);
+    Serial.printf("[FB] Total: %d items (%d folders, %d files)\n", 
+                  (int)g_fb.files.size(), foldersFound, (int)g_fb.files.size() - foldersFound);
 }
 
 //=================================================================
@@ -448,7 +483,17 @@ static void fb_navigateTo(const char* path) {
     strncpy(g_fb.currentPath, path, FB_MAX_PATH_LEN - 1);
     
     if (strcmp(path, "/") == 0) {
-        // Root directory - use optimized boot_count method
+        // Root directory - show loading if folders not cached yet
+        if (!g_fb.foldersCached && g_fb.fileListContainer) {
+            lv_obj_clean(g_fb.fileListContainer);
+            lv_obj_t* loadLabel = lv_label_create(g_fb.fileListContainer);
+            lv_label_set_text(loadLabel, "Loading...");
+            lv_obj_set_style_text_color(loadLabel, lv_color_hex(0xFFFF00), 0);
+            lv_obj_set_style_text_font(loadLabel, &lv_font_montserrat_20, 0);
+            lv_obj_center(loadLabel);
+            lv_refr_now(NULL);
+        }
+        // Use optimized boot_count method
         fb_loadRecentSessions();
     } else {
         // Subdirectory - use traditional scan (for System Volume Information etc)

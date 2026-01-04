@@ -1,9 +1,19 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v4.7 - Dual-Core Architecture
+ * 370zMonitor v4.8 - Dual-Core Architecture
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v4.8 Changes:
+ * - Added system status toast notification on startup
+ * - Green toast "All Systems Online" if all systems OK (3 sec)
+ * - Red toast lists all failures if any system offline (15 sec)
+ * - Checks: SD Card, Logs Writing, RTC (HW-084), Time Sync, Modbus RTU, Sensors
+ * - Reusable showToast() function for future notifications
+ * - Comprehensive Serial.printf logging for all system checks
+ * - FIXED: Touch not working on cold boot (GT911 power-on timing)
+ * - Double-reset cycle ensures reliable GT911 init on cold boot
  *
  * v4.7 Changes:
  * - File browser OPTIMIZED: Uses boot_count to generate filenames (instant load)
@@ -1316,6 +1326,32 @@ static uint32_t g_utility_press_start = 0;
 static bool g_utility_long_press_triggered = false;
 static bool g_utility_long_press_consumed = false;  // Prevents tap after long-press release
 #define DEMO_MODE_TOGGLE_HOLD_MS 5000  // 5 seconds to toggle demo mode
+
+//=================================================================
+// SYSTEM STATUS TOAST - Shows "All systems checked" on startup
+//=================================================================
+static lv_obj_t* g_toast_obj = NULL;
+static lv_timer_t* g_toast_timer = NULL;
+static lv_timer_t* g_system_check_timer = NULL;
+static lv_timer_t* g_system_monitor_timer = NULL;  // Background monitoring timer
+#define TOAST_SUCCESS_MS        3000   // Green toast duration
+#define TOAST_ERROR_MS         30000   // Red toast duration (30 seconds)
+#define TOAST_RECOVERY_MS      15000   // Green recovery toast duration (15 seconds)
+#define SYSTEM_CHECK_DELAY_MS   5000   // Delay after main screen loads to check systems
+#define SYSTEM_MONITOR_INTERVAL_MS 10000  // Background monitoring interval (10 seconds)
+#define TOAST_COLOR_SUCCESS   0x2E7D32 // Green
+#define TOAST_COLOR_ERROR     0xB71C1C // Dark red
+
+// Previous system status for change detection (background monitoring)
+static struct {
+    bool sd_card_ok;
+    bool logs_writing_ok;
+    bool rtc_ok;
+    bool time_sync_ok;
+    bool modbus_ok;
+    bool oil_pressure_sensor_ok;
+    bool initialized;  // Set true after first check
+} g_prev_system_status = {true, true, true, true, true, true, false};
 
 // Chart series
 static lv_chart_series_t* chart_series_oil_press = NULL;
@@ -3064,6 +3100,13 @@ void initTimeKeeping() {
     // Load WiFi config from SD card
     loadWifiConfig();
     
+    // IMPORTANT: Always detect RTC here, even if SD card failed
+    // RTC is on I2C and works independently of SD card
+    // This ensures g_sd_state.rtc_available is set correctly
+    if (!g_sd_state.rtc_available) {
+        g_sd_state.rtc_available = sdDetectRTC();
+    }
+    
     // Check RTC status
     if (g_sd_state.rtc_available) {
         Serial.println("[TIME] DS3231 RTC detected on I2C");
@@ -3687,6 +3730,369 @@ static void updateModeIndicator() {
     }
     // Update tap box visibility based on mode
     updateTapBoxVisibility();
+}
+
+//=================================================================
+// TOAST NOTIFICATION SYSTEM
+// Shows temporary messages on screen that auto-disappear
+//=================================================================
+
+// Toast auto-hide callback
+static void toast_hide_cb(lv_timer_t* t) {
+    LV_UNUSED(t);
+    if (g_toast_obj) {
+        lv_obj_delete(g_toast_obj);
+        g_toast_obj = NULL;
+    }
+    g_toast_timer = NULL;
+}
+
+// Hide toast immediately (used when system recovers)
+static void hideToast() {
+    if (g_toast_obj) {
+        lv_obj_delete(g_toast_obj);
+        g_toast_obj = NULL;
+    }
+    if (g_toast_timer) {
+        lv_timer_delete(g_toast_timer);
+        g_toast_timer = NULL;
+    }
+}
+
+// Show a toast notification
+// msg: Text to display
+// color: Background color (e.g., 0x2E7D32 for green success)
+// duration_ms: How long to show (0 = use default TOAST_DISPLAY_MS)
+static void showToast(const char* msg, uint32_t color, uint32_t duration_ms) {
+    if (!ui_Screen1) return;
+    
+    // Remove any existing toast
+    if (g_toast_obj) {
+        lv_obj_delete(g_toast_obj);
+        g_toast_obj = NULL;
+    }
+    if (g_toast_timer) {
+        lv_timer_delete(g_toast_timer);
+        g_toast_timer = NULL;
+    }
+    
+    // Create toast container
+    g_toast_obj = lv_obj_create(ui_Screen1);
+    lv_obj_set_size(g_toast_obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_align(g_toast_obj, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_set_style_bg_color(g_toast_obj, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(g_toast_obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(g_toast_obj, 0, 0);
+    lv_obj_set_style_border_width(g_toast_obj, 0, 0);
+    lv_obj_set_style_pad_hor(g_toast_obj, 30, 0);
+    lv_obj_set_style_pad_ver(g_toast_obj, 18, 0);
+    lv_obj_remove_flag(g_toast_obj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(g_toast_obj, LV_OBJ_FLAG_CLICKABLE);
+    
+    // Create label inside toast
+    lv_obj_t* label = lv_label_create(g_toast_obj);
+    lv_label_set_text(label, msg);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
+    lv_obj_center(label);
+    
+    // Set timer to auto-hide
+    uint32_t dur = (duration_ms > 0) ? duration_ms : TOAST_SUCCESS_MS;
+    g_toast_timer = lv_timer_create(toast_hide_cb, dur, NULL);
+    lv_timer_set_repeat_count(g_toast_timer, 1);
+    
+    Serial.printf("[TOAST] %s\n", msg);
+}
+
+// Check all "hidden" systems and show appropriate toast
+// Green toast if all systems online, Red toast listing failures
+static void checkSystemsAndShowToast() {
+    // System status flags
+    bool sd_card_ok = true;
+    bool logs_writing_ok = true;
+    bool rtc_ok = true;
+    bool time_sync_ok = true;
+    bool modbus_ok = true;
+    bool oil_pressure_sensor_ok = true;
+    
+    // Build list of failures
+    char error_msg[256] = "";
+    int error_count = 0;
+    
+    Serial.println("\n[SYSTEM CHECK] ========== Starting System Check ==========");
+    
+#if ENABLE_SD_LOGGING
+    // Check SD Card
+    sd_card_ok = g_sd_state.card_present && g_sd_state.initialized;
+    Serial.printf("[SYSTEM CHECK] SD Card: %s (present=%d, init=%d)\n", 
+                  sd_card_ok ? "OK" : "FAIL", g_sd_state.card_present, g_sd_state.initialized);
+    if (!sd_card_ok) {
+        if (error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "SD Card offline");
+        error_count++;
+    }
+    
+    // Check Logs Writing (only if SD card is OK)
+    if (sd_card_ok) {
+        logs_writing_ok = g_sd_state.file_open || g_sd_state.log_file_open;
+        Serial.printf("[SYSTEM CHECK] Logs Writing: %s (data=%d, log=%d)\n", 
+                      logs_writing_ok ? "OK" : "FAIL", g_sd_state.file_open, g_sd_state.log_file_open);
+        if (!logs_writing_ok) {
+            if (error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Logs writing offline");
+            error_count++;
+        }
+    } else {
+        logs_writing_ok = false;  // Can't write logs without SD
+        Serial.println("[SYSTEM CHECK] Logs Writing: SKIP (no SD card)");
+    }
+    
+    // Check RTC (HW-084 / DS3231)
+    rtc_ok = g_sd_state.rtc_available;
+    Serial.printf("[SYSTEM CHECK] RTC (HW-084): %s\n", rtc_ok ? "OK" : "FAIL");
+    if (!rtc_ok) {
+        if (error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "Time keeper offline");
+        error_count++;
+    }
+    
+    // Check Time Sync (fail only if BOTH RTC AND WiFi/NTP failed)
+    // If RTC is OK, time_sync is OK even without WiFi
+    time_sync_ok = g_time_state.time_available;
+    Serial.printf("[SYSTEM CHECK] Time Sync: %s (rtc=%d, wifi=%d, available=%d)\n", 
+                  time_sync_ok ? "OK" : "FAIL", 
+                  g_time_state.rtc_active, g_time_state.wifi_time_active, g_time_state.time_available);
+    // Only report time sync failed if RTC also failed (WiFi alone failing is expected away from home)
+    if (!time_sync_ok && !rtc_ok) {
+        if (error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "Time sync failed");
+        error_count++;
+    }
+#else
+    Serial.println("[SYSTEM CHECK] SD Logging disabled - skipping SD/RTC/Time checks");
+#endif
+
+#if ENABLE_MODBUS_SENSORS
+    // Check Modbus RTU
+    modbus_ok = g_modbus_initialized && g_modbus_comm_ok;
+    Serial.printf("[SYSTEM CHECK] Modbus RTU: %s (init=%d, comm=%d)\n", 
+                  modbus_ok ? "OK" : "FAIL", g_modbus_initialized, g_modbus_comm_ok);
+    if (!modbus_ok) {
+        if (error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "Modbus RTU offline");
+        error_count++;
+    }
+    
+    // Check Oil Pressure Sensor (only if Modbus is OK)
+    if (modbus_ok) {
+        oil_pressure_sensor_ok = g_sensor_ch1_connected;
+        Serial.printf("[SYSTEM CHECK] Oil Pressure Sensor: %s\n", 
+                      oil_pressure_sensor_ok ? "OK" : "FAIL");
+        if (!oil_pressure_sensor_ok) {
+            if (error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Sensor Oil Pressure offline");
+            error_count++;
+        }
+    } else {
+        oil_pressure_sensor_ok = false;
+        Serial.println("[SYSTEM CHECK] Oil Pressure Sensor: SKIP (no Modbus)");
+    }
+#else
+    Serial.println("[SYSTEM CHECK] Modbus disabled - skipping sensor checks");
+#endif
+    
+    Serial.println("[SYSTEM CHECK] ========== System Check Complete ==========");
+    Serial.printf("[SYSTEM CHECK] Result: %d error(s)\n\n", error_count);
+    
+    // Save current status for background monitoring
+    g_prev_system_status.sd_card_ok = sd_card_ok;
+    g_prev_system_status.logs_writing_ok = logs_writing_ok;
+    g_prev_system_status.rtc_ok = rtc_ok;
+    g_prev_system_status.time_sync_ok = time_sync_ok;
+    g_prev_system_status.modbus_ok = modbus_ok;
+    g_prev_system_status.oil_pressure_sensor_ok = oil_pressure_sensor_ok;
+    g_prev_system_status.initialized = true;
+    
+    // Show appropriate toast
+    if (error_count == 0) {
+        // All systems online!
+        showToast("All Systems Online", TOAST_COLOR_SUCCESS, TOAST_SUCCESS_MS);
+    } else {
+        // Show error toast with list of failures
+        showToast(error_msg, TOAST_COLOR_ERROR, TOAST_ERROR_MS);
+    }
+}
+
+// Background system monitor - checks for NEW failures AND recoveries
+static void backgroundSystemMonitor() {
+    // Current system status
+    bool sd_card_ok = true;
+    bool logs_writing_ok = true;
+    bool rtc_ok = true;
+    bool time_sync_ok = true;
+    bool modbus_ok = true;
+    bool oil_pressure_sensor_ok = true;
+    
+    // Build list of NEW failures (things that just went offline)
+    char error_msg[256] = "";
+    int new_error_count = 0;
+    int recovery_count = 0;  // Track recoveries to show green toast
+    char recovery_msg[256] = "";
+    
+#if ENABLE_SD_LOGGING
+    // Runtime probe: Check if SD card is still accessible
+    // Try to get card type - returns CARD_NONE if card was removed
+    if (g_sd_state.initialized) {
+        uint8_t cardType = SD.cardType();
+        if (cardType == CARD_NONE) {
+            g_sd_state.card_present = false;
+            g_sd_state.initialized = false;
+        }
+    }
+    
+    sd_card_ok = g_sd_state.card_present && g_sd_state.initialized;
+    if (!sd_card_ok && g_prev_system_status.sd_card_ok) {
+        if (new_error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "SD Card offline");
+        new_error_count++;
+        Serial.println("[MONITOR] SD Card went OFFLINE");
+    } else if (sd_card_ok && !g_prev_system_status.sd_card_ok) {
+        if (recovery_count > 0) strcat(recovery_msg, "\n");
+        strcat(recovery_msg, "SD Card back online");
+        recovery_count++;
+        Serial.println("[MONITOR] SD Card RECOVERED");
+    }
+    
+    if (sd_card_ok) {
+        logs_writing_ok = g_sd_state.file_open || g_sd_state.log_file_open;
+        if (!logs_writing_ok && g_prev_system_status.logs_writing_ok) {
+            if (new_error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Logs writing offline");
+            new_error_count++;
+            Serial.println("[MONITOR] Logs writing went OFFLINE");
+        } else if (logs_writing_ok && !g_prev_system_status.logs_writing_ok) {
+            if (recovery_count > 0) strcat(recovery_msg, "\n");
+            strcat(recovery_msg, "Logs writing back online");
+            recovery_count++;
+            Serial.println("[MONITOR] Logs writing RECOVERED");
+        }
+    } else {
+        logs_writing_ok = false;
+    }
+    
+    // Runtime probe: Check if RTC is still accessible on I2C
+    Wire.beginTransmission(DS3231_ADDR);
+    rtc_ok = (Wire.endTransmission() == 0);
+    g_sd_state.rtc_available = rtc_ok;  // Update global state
+    
+    if (!rtc_ok && g_prev_system_status.rtc_ok) {
+        if (new_error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "Time keeper offline");
+        new_error_count++;
+        Serial.println("[MONITOR] RTC went OFFLINE");
+    } else if (rtc_ok && !g_prev_system_status.rtc_ok) {
+        if (recovery_count > 0) strcat(recovery_msg, "\n");
+        strcat(recovery_msg, "Time keeper back online");
+        recovery_count++;
+        Serial.println("[MONITOR] RTC RECOVERED");
+    }
+    
+    time_sync_ok = g_time_state.time_available;
+    // Only report if both RTC and time sync failed (and wasn't already failed)
+    if (!time_sync_ok && !rtc_ok && (g_prev_system_status.time_sync_ok || g_prev_system_status.rtc_ok)) {
+        if (new_error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "Time sync failed");
+        new_error_count++;
+        Serial.println("[MONITOR] Time sync went OFFLINE");
+    } else if ((time_sync_ok || rtc_ok) && !g_prev_system_status.time_sync_ok && !g_prev_system_status.rtc_ok) {
+        if (recovery_count > 0) strcat(recovery_msg, "\n");
+        strcat(recovery_msg, "Time sync back online");
+        recovery_count++;
+        Serial.println("[MONITOR] Time sync RECOVERED");
+    }
+#endif
+
+#if ENABLE_MODBUS_SENSORS
+    modbus_ok = g_modbus_initialized && g_modbus_comm_ok;
+    if (!modbus_ok && g_prev_system_status.modbus_ok) {
+        if (new_error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "Modbus RTU offline");
+        new_error_count++;
+        Serial.println("[MONITOR] Modbus RTU went OFFLINE");
+    } else if (modbus_ok && !g_prev_system_status.modbus_ok) {
+        if (recovery_count > 0) strcat(recovery_msg, "\n");
+        strcat(recovery_msg, "Modbus RTU back online");
+        recovery_count++;
+        Serial.println("[MONITOR] Modbus RTU RECOVERED");
+    }
+    
+    if (modbus_ok) {
+        oil_pressure_sensor_ok = g_sensor_ch1_connected;
+        if (!oil_pressure_sensor_ok && g_prev_system_status.oil_pressure_sensor_ok) {
+            if (new_error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Sensor Oil Pressure offline");
+            new_error_count++;
+            Serial.println("[MONITOR] Oil Pressure Sensor went OFFLINE");
+        } else if (oil_pressure_sensor_ok && !g_prev_system_status.oil_pressure_sensor_ok) {
+            if (recovery_count > 0) strcat(recovery_msg, "\n");
+            strcat(recovery_msg, "Sensor Oil Pressure back online");
+            recovery_count++;
+            Serial.println("[MONITOR] Oil Pressure Sensor RECOVERED");
+        }
+    } else {
+        oil_pressure_sensor_ok = false;
+    }
+#endif
+    
+    // Update previous status
+    g_prev_system_status.sd_card_ok = sd_card_ok;
+    g_prev_system_status.logs_writing_ok = logs_writing_ok;
+    g_prev_system_status.rtc_ok = rtc_ok;
+    g_prev_system_status.time_sync_ok = time_sync_ok;
+    g_prev_system_status.modbus_ok = modbus_ok;
+    g_prev_system_status.oil_pressure_sensor_ok = oil_pressure_sensor_ok;
+    
+    // Handle toast display
+    if (new_error_count > 0) {
+        // Show toast for NEW failures (takes priority)
+        showToast(error_msg, TOAST_COLOR_ERROR, TOAST_ERROR_MS);
+    } else if (recovery_count > 0) {
+        // System(s) recovered - show green recovery toast
+        showToast(recovery_msg, TOAST_COLOR_SUCCESS, TOAST_RECOVERY_MS);
+    }
+}
+
+// Timer callback for background system monitoring
+static void system_monitor_timer_cb(lv_timer_t* t) {
+    LV_UNUSED(t);
+    backgroundSystemMonitor();
+}
+
+// Timer callback for delayed system check (runs once after main screen loads)
+static void system_check_timer_cb(lv_timer_t* t) {
+    LV_UNUSED(t);
+    g_system_check_timer = NULL;
+    checkSystemsAndShowToast();
+    
+    // Start background monitoring (repeating timer)
+    if (g_system_monitor_timer) {
+        lv_timer_delete(g_system_monitor_timer);
+    }
+    g_system_monitor_timer = lv_timer_create(system_monitor_timer_cb, SYSTEM_MONITOR_INTERVAL_MS, NULL);
+    // No repeat count set = runs indefinitely
+}
+
+// Called when main screen finishes loading - schedules system check
+static void onMainScreenLoaded(lv_event_t* e) {
+    LV_UNUSED(e);
+    Serial.println("[UI] Main screen loaded, scheduling system check...");
+    
+    // Schedule system check after delay (allows time sync to complete)
+    if (g_system_check_timer) {
+        lv_timer_delete(g_system_check_timer);
+    }
+    g_system_check_timer = lv_timer_create(system_check_timer_cb, SYSTEM_CHECK_DELAY_MS, NULL);
+    lv_timer_set_repeat_count(g_system_check_timer, 1);
 }
 
 static void utility_box_single_tap_cb(lv_timer_t* t) {
@@ -5522,7 +5928,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v4.7 - Dual-Core");
+    Serial.println("   370zMonitor v4.8 - Dual-Core");
     Serial.println("========================================");
 
     if (psramFound()) {
@@ -5550,15 +5956,28 @@ void setup() {
     Serial.printf("      %s\n", g_ioexp_ok ? "OK" : "FAILED");
 
     Serial.println("[2/8] Touch controller...");
-    // Hardware reset GT911 before initialization (important after crash/reset)
-    // Longer delays prevent startup failures that require recovery
+    // Hardware reset GT911 before initialization
+    // CRITICAL: On cold boot, GT911 needs time to power up before reset sequence
+    // Double-reset cycle ensures reliable startup on both cold boot and warm reset
+    
+    // Step 1: Power-on stabilization (GT911 needs 5-10ms after power-on)
+    // On cold boot this is critical; on warm reset it's harmless
+    delay(100);  // Allow GT911 power rails to stabilize
+    
+    // Step 2: First reset cycle (clears any garbage state from power-on)
     exio_set(EXIO_TP_RST, false);  // Assert reset
+    delay(20);                      // Hold reset low
+    exio_set(EXIO_TP_RST, true);   // Release reset
+    delay(100);                     // Let it partially boot
+    
+    // Step 3: Second reset cycle (ensures clean initialization)
+    exio_set(EXIO_TP_RST, false);  // Assert reset again
     delay(50);                      // Hold reset low longer
     exio_set(EXIO_TP_RST, true);   // Release reset
-    delay(350);  // GT911 needs time to boot after reset (increased from 200)
+    delay(350);                     // GT911 full boot time after reset
     
     touch.begin();
-    delay(150);  // Allow I2C to stabilize (increased from 100)
+    delay(150);  // Allow I2C to stabilize
     touch.setRotation(0);
     
     // Create touch mutex for dual-core architecture
@@ -5623,6 +6042,11 @@ void setup() {
         Serial.println("      FATAL: ui_Screen1 is NULL!");
         while (1) delay(100);
     }
+    
+    // Register callback for when main screen loads (after splash)
+    // This triggers the "All systems checked" toast
+    lv_obj_add_event_cb(ui_Screen1, onMainScreenLoaded, LV_EVENT_SCREEN_LOADED, NULL);
+    
     Serial.println("      OK");
 
     Serial.println("[7/8] Data providers...");

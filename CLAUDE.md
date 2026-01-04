@@ -287,6 +287,104 @@ Entry: Double-tap → FILES button
 
 ---
 
+## Toast Notification System
+
+Real-time system health monitoring with visual feedback. Located in `370zMonitor.ino`.
+
+### Key Components
+
+| Component | Purpose |
+|-----------|---------|
+| `g_toast_obj` | LVGL toast container object |
+| `g_toast_timer` | Auto-hide timer |
+| `g_system_monitor_timer` | Background monitoring (10 sec interval) |
+| `g_prev_system_status` | Previous state for change detection |
+
+### Timing Constants
+
+```cpp
+#define TOAST_SUCCESS_MS        3000   // Green "All Systems Online" (3 sec)
+#define TOAST_ERROR_MS         30000   // Red error toast (30 sec)
+#define TOAST_RECOVERY_MS      15000   // Green recovery toast (15 sec)
+#define SYSTEM_CHECK_DELAY_MS   5000   // Initial check delay after boot
+#define SYSTEM_MONITOR_INTERVAL_MS 10000  // Background check interval
+```
+
+### Monitored Systems
+
+| System | Check Method | Error Message | Recovery Message |
+|--------|--------------|---------------|------------------|
+| SD Card | `SD.cardType()` runtime probe | "SD Card offline" | "SD Card back online" |
+| Logs Writing | `file_open \|\| log_file_open` | "Logs writing offline" | "Logs writing back online" |
+| RTC (HW-084) | I2C probe to DS3231 (0x68) | "Time keeper offline" | "Time keeper back online" |
+| Time Sync | `time_available` flag | "Time sync failed" | "Time sync back online" |
+| Modbus RTU | `initialized && comm_ok` | "Modbus RTU offline" | "Modbus RTU back online" |
+| Oil Pressure | `sensor_ch1_connected` | "Sensor Oil Pressure offline" | "Sensor Oil Pressure back online" |
+
+### Toast Behavior
+
+1. **Boot sequence:** 5 seconds after main screen loads → full system check → green "All Systems Online" or red error list
+2. **Background monitoring:** Every 10 seconds, checks all systems for state changes
+3. **Error detection:** Only shows toast when system transitions from OK → FAIL
+4. **Recovery detection:** Shows green toast when system transitions from FAIL → OK
+5. **Priority:** New errors take priority over recovery toasts
+
+### Adding New Sensors/Devices to Toast System
+
+1. **Add to `g_prev_system_status` struct:**
+   ```cpp
+   static struct {
+       // ... existing fields ...
+       bool new_sensor_ok;
+   } g_prev_system_status = {true, true, ..., true, false};
+   ```
+
+2. **Add check in `checkSystemsAndShowToast()`:** (initial boot check)
+   ```cpp
+   new_sensor_ok = /* your check */;
+   if (!new_sensor_ok) {
+       strcat(error_msg, "New Sensor offline");
+       error_count++;
+   }
+   ```
+
+3. **Add check in `backgroundSystemMonitor()`:** (runtime monitoring)
+   ```cpp
+   // Runtime probe for new sensor (e.g., I2C check)
+   Wire.beginTransmission(NEW_SENSOR_ADDR);
+   new_sensor_ok = (Wire.endTransmission() == 0);
+   
+   // Offline detection
+   if (!new_sensor_ok && g_prev_system_status.new_sensor_ok) {
+       strcat(error_msg, "New Sensor offline");
+       new_error_count++;
+       Serial.println("[MONITOR] New Sensor went OFFLINE");
+   }
+   // Recovery detection
+   else if (new_sensor_ok && !g_prev_system_status.new_sensor_ok) {
+       strcat(recovery_msg, "New Sensor back online");
+       recovery_count++;
+       Serial.println("[MONITOR] New Sensor RECOVERED");
+   }
+   
+   // Update previous status
+   g_prev_system_status.new_sensor_ok = new_sensor_ok;
+   ```
+
+### Toast Styling
+
+```cpp
+lv_font_montserrat_20           // Font
+lv_obj_set_style_pad_hor(..., 30, 0)   // Horizontal padding
+lv_obj_set_style_pad_ver(..., 18, 0)   // Vertical padding
+lv_obj_set_style_radius(..., 0, 0)     // No rounded corners
+lv_obj_set_style_bg_opa(..., LV_OPA_COVER, 0)  // Fully opaque
+TOAST_COLOR_SUCCESS  0x2E7D32  // Green
+TOAST_COLOR_ERROR    0xB71C1C  // Dark red
+```
+
+---
+
 ## Known Issues / Gotchas
 
 1. **GPIO46 Conflict:** Cannot use GPIO46 for SD card - it's HSYNC for display
@@ -301,7 +399,7 @@ Entry: Double-tap → FILES button
 
 | Version | Key Changes |
 |---------|-------------|
-| v4.8 | Toast notifications, "All systems checked" |
+| v4.8 | Toast notification system with runtime monitoring, error/recovery detection |
 | v4.7 | File browser optimization, 8-digit sessions |
 | v4.6 | SD card file browser, CSV/text viewers |
 | v4.5 | Sensor failure detection, "---" UI feedback |

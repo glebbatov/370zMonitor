@@ -314,7 +314,7 @@ Real-time system health monitoring with visual feedback. Located in `370zMonitor
 
 | System | Check Method | Error Message | Recovery Message |
 |--------|--------------|---------------|------------------|
-| SD Card | `SD.cardType()` runtime probe | "SD Card offline" | "SD Card back online" |
+| SD Card | `SD.cardType()` runtime probe + hot-swap recovery | "SD Card offline" | "SD Card back online" |
 | Logs Writing | `file_open \|\| log_file_open` | "Logs writing offline" | "Logs writing back online" |
 | RTC (HW-084) | I2C probe to DS3231 (0x68) | "Time keeper offline" | "Time keeper back online" |
 | Time Sync | `time_available` flag | "Time sync failed" | "Time sync back online" |
@@ -328,6 +328,20 @@ Real-time system health monitoring with visual feedback. Located in `370zMonitor
 3. **Error detection:** Only shows toast when system transitions from OK → FAIL
 4. **Recovery detection:** Shows green toast when system transitions from FAIL → OK
 5. **Priority:** New errors take priority over recovery toasts
+
+### SD Card Hot-Swap Recovery
+
+The system automatically attempts to recover when an SD card is reinserted:
+
+1. Background monitor detects card is offline (`initialized = false`)
+2. Calls `sdTryReinit()` which:
+   - Cleans up with `SD.end()`
+   - Attempts `SD.begin()` to detect card
+   - If successful: restores state, increments boot count, starts new session
+3. Recovery toast shows "SD Card back online"
+4. New session files created (SESS_XXXXXXXX.csv/.log)
+
+**Note:** This creates a new session with incremented boot count - previous session data from before removal is preserved.
 
 ### Adding New Sensors/Devices to Toast System
 

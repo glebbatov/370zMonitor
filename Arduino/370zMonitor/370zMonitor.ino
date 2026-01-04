@@ -2155,6 +2155,7 @@ static SemaphoreHandle_t g_time_mutex = NULL;  // Protects g_time_state from rac
 
 // Forward declarations
 bool sdInit();
+bool sdTryReinit();
 bool sdStartSession();
 bool loadWifiConfig();  // Load WiFi credentials from SD card
 void sdEndSession();
@@ -2261,6 +2262,68 @@ bool sdInit() {
 
     Serial.println("[SD] Initialization successful");
     return true;
+}
+
+// Try to reinitialize SD card after hot-swap (card was removed and reinserted)
+// Returns true if card is back online and session started
+bool sdTryReinit() {
+    // Only attempt if card is currently offline
+    if (g_sd_state.initialized && g_sd_state.card_present) {
+        return true;  // Already online
+    }
+    
+    Serial.println("[SD] Attempting hot-swap recovery...");
+    
+    // Clean up any previous state
+    SD.end();
+    delay(50);
+    
+    // Select SD card via IO expander
+    exio_set(EXIO_SD_CS, false);  // CS low = selected
+    delay(10);
+    
+    // Try to initialize
+    if (!SD.begin(6, SPI, SD_SPI_FREQ)) {
+        exio_set(EXIO_SD_CS, true);  // Deselect on failure
+        return false;  // Card still not present
+    }
+    
+    // Check card type
+    uint8_t cardType = SD.cardType();
+    if (cardType == CARD_NONE) {
+        return false;
+    }
+    
+    const char* cardTypeName = "UNKNOWN";
+    switch (cardType) {
+    case CARD_MMC:  cardTypeName = "MMC";  break;
+    case CARD_SD:   cardTypeName = "SD";   break;
+    case CARD_SDHC: cardTypeName = "SDHC"; break;
+    }
+    
+    Serial.printf("[SD] Hot-swap: Card detected - %s\n", cardTypeName);
+    
+    // Restore state
+    g_sd_state.total_bytes = SD.totalBytes();
+    g_sd_state.used_bytes = SD.usedBytes();
+    g_sd_state.initialized = true;
+    g_sd_state.card_present = true;
+    g_sd_state.logging_enabled = true;
+    
+    // Read boot count (might be different card)
+    g_sd_state.boot_count = sdReadBootCount();
+    g_sd_state.boot_count++;
+    sdWriteBootCount(g_sd_state.boot_count);
+    Serial.printf("[SD] Hot-swap: Boot count: %lu\n", g_sd_state.boot_count);
+    
+    // Start new session
+    if (sdStartSession()) {
+        Serial.println("[SD] Hot-swap recovery successful!");
+        return true;
+    } else {
+        Serial.println("[SD] Hot-swap: Card online but session start failed");
+        return false;
+    }
 }
 
 // Generate unique session filename
@@ -3947,6 +4010,14 @@ static void backgroundSystemMonitor() {
         if (cardType == CARD_NONE) {
             g_sd_state.card_present = false;
             g_sd_state.initialized = false;
+            g_sd_state.file_open = false;
+            g_sd_state.log_file_open = false;
+        }
+    } else {
+        // Card is offline - try hot-swap recovery
+        if (sdTryReinit()) {
+            // Recovery successful - card is back online
+            Serial.println("[MONITOR] SD Card hot-swap recovery successful");
         }
     }
     

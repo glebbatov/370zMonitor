@@ -1477,6 +1477,7 @@ static uint32_t fuel_trust_start = 0;
 #define CHART_BUCKET_MS 5000    // crate a new bar every (ms)
 
 #define CHART_POINTS 24
+#define CHART_NO_DATA INT32_MIN  // Sentinel value for "no data" in history arrays
 static int32_t oil_press_history[CHART_POINTS] = { 0 };
 static int32_t oil_temp_history[CHART_POINTS] = { 0 };
 static int32_t water_temp_history[CHART_POINTS] = { 0 };
@@ -1858,7 +1859,7 @@ void resetCharts() {
     // Reset oil pressure chart
     if (ui_OIL_PRESS_CHART && chart_series_oil_press) {
         for (int i = 0; i < CHART_POINTS; i++) {
-            oil_press_history[i] = 0;
+            oil_press_history[i] = CHART_NO_DATA;
         }
         // Clear all points by setting to below range
         lv_chart_set_all_value(ui_OIL_PRESS_CHART, chart_series_oil_press, LV_CHART_POINT_NONE);
@@ -1867,7 +1868,7 @@ void resetCharts() {
     // Reset oil temp chart
     if (ui_OIL_TEMP_CHART && chart_series_oil_temp) {
         for (int i = 0; i < CHART_POINTS; i++) {
-            oil_temp_history[i] = 0;
+            oil_temp_history[i] = CHART_NO_DATA;
         }
         lv_chart_set_all_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_OIL_TEMP_CHART);
@@ -1875,7 +1876,7 @@ void resetCharts() {
     // Reset water temp chart
     if (ui_W_TEMP_CHART && chart_series_water_temp) {
         for (int i = 0; i < CHART_POINTS; i++) {
-            water_temp_history[i] = 0;
+            water_temp_history[i] = CHART_NO_DATA;
         }
         lv_chart_set_all_value(ui_W_TEMP_CHART, chart_series_water_temp, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_W_TEMP_CHART);
@@ -1883,7 +1884,7 @@ void resetCharts() {
     // Reset transmission temp chart
     if (ui_TRAN_TEMP_CHART && chart_series_transmission_temp) {
         for (int i = 0; i < CHART_POINTS; i++) {
-            transmission_temp_history[i] = 0;
+            transmission_temp_history[i] = CHART_NO_DATA;
         }
         lv_chart_set_all_value(ui_TRAN_TEMP_CHART, chart_series_transmission_temp, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_TRAN_TEMP_CHART);
@@ -1891,7 +1892,7 @@ void resetCharts() {
     // Reset steering temp chart
     if (ui_STEER_TEMP_CHART && chart_series_steering_temp) {
         for (int i = 0; i < CHART_POINTS; i++) {
-            steering_temp_history[i] = 0;
+            steering_temp_history[i] = CHART_NO_DATA;
         }
         lv_chart_set_all_value(ui_STEER_TEMP_CHART, chart_series_steering_temp, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_STEER_TEMP_CHART);
@@ -1899,7 +1900,7 @@ void resetCharts() {
     // Reset differencial temp chart
     if (ui_DIFF_TEMP_CHART && chart_series_differencial_temp) {
         for (int i = 0; i < CHART_POINTS; i++) {
-            differencial_temp_history[i] = 0;
+            differencial_temp_history[i] = CHART_NO_DATA;
         }
         lv_chart_set_all_value(ui_DIFF_TEMP_CHART, chart_series_differencial_temp, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_DIFF_TEMP_CHART);
@@ -1907,7 +1908,7 @@ void resetCharts() {
     // Reset fuel trust chart
     if (ui_FUEL_TRUST_CHART && chart_series_fuel_trust) {
         for (int i = 0; i < CHART_POINTS; i++) {
-            fuel_trust_history[i] = 0;
+            fuel_trust_history[i] = CHART_NO_DATA;
         }
         lv_chart_set_all_value(ui_FUEL_TRUST_CHART, chart_series_fuel_trust, LV_CHART_POINT_NONE);
         lv_chart_refresh(ui_FUEL_TRUST_CHART);
@@ -3770,6 +3771,8 @@ static void oil_press_chart_draw_cb(lv_event_t* e) {
     if (idx >= CHART_POINTS) return;
 
     int32_t psi = oil_press_history[idx];
+    if (psi == CHART_NO_DATA) return;  // Skip no-data points
+    
     bool is_critical = (psi < OIL_PRESS_ValueCriticalLow) || (psi > OIL_PRESS_ValueCriticalAbsolute);
 
     if (is_critical && psi > 0) {
@@ -3792,6 +3795,8 @@ static void oil_temp_chart_draw_cb(lv_event_t* e) {
     if (idx >= CHART_POINTS) return;
 
     int32_t temp_f = oil_temp_history[idx];
+    if (temp_f == CHART_NO_DATA) return;  // Skip no-data points
+    
     bool is_critical = (temp_f > OIL_TEMP_ValueCriticalF);
 
     if (is_critical && temp_f > 0) {
@@ -3815,6 +3820,8 @@ static void generic_temp_chart_draw_cb(lv_event_t* e, int32_t* history, int crit
     if (idx >= CHART_POINTS) return;
 
     int32_t temp_f = history[idx];
+    if (temp_f == CHART_NO_DATA) return;  // Skip no-data points
+    
     bool is_critical = (temp_f > critical_threshold);
 
     if (is_critical && temp_f > 0) {
@@ -3853,6 +3860,8 @@ static void fuel_trust_chart_draw_cb(lv_event_t* e) {
     if (idx >= CHART_POINTS) return;
 
     int32_t trust = fuel_trust_history[idx];
+    if (trust == CHART_NO_DATA) return;  // Skip no-data points
+    
     bool is_critical = (trust < FUEL_TRUST_ValueCritical) && (trust > 0);
 
     if (is_critical) {
@@ -5904,139 +5913,245 @@ void updateCharts() {
     if (fuel_trust_start == 0) fuel_trust_start = now;
 
     // Push to charts every CHART_BUCKET_MS - also update critical flags
+    // Charts always advance to maintain time progression (gaps show "no data")
     if ((now - oil_pressure_bucket_start) >= CHART_BUCKET_MS && chart_series_oil_press) {
+        // Chart min is 0 for oil pressure - only show bars for values > 0
         if (oil_pressure_samples > 0) {
             int32_t avg = oil_pressure_sum / oil_pressure_samples;
             if (avg < 0) avg = 0;
             if (avg > 150) avg = 150;
-            shift_history(oil_press_history, avg);
-            lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, avg);
-
-            // Check if ANY point in history is critical
-            g_chart_has_critical_oil_press = false;
-            for (int i = 0; i < CHART_POINTS; i++) {
-                if (oil_press_history[i] > 0 &&
-                    (oil_press_history[i] < OIL_PRESS_ValueCriticalLow ||
-                        oil_press_history[i] > OIL_PRESS_ValueCriticalAbsolute)) {
-                    g_chart_has_critical_oil_press = true;
-                    break;
-                }
+            
+            if (avg > 0) {
+                // Valid data above chart minimum - show bar
+                shift_history(oil_press_history, avg);
+                lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, avg);
+            } else {
+                // Value at or below chart minimum - show gap
+                shift_history(oil_press_history, CHART_NO_DATA);
+                lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, LV_CHART_POINT_NONE);
+            }
+        } else {
+            // No samples (sensor invalid) - show gap
+            shift_history(oil_press_history, CHART_NO_DATA);
+            lv_chart_set_next_value(ui_OIL_PRESS_CHART, chart_series_oil_press, LV_CHART_POINT_NONE);
+        }
+        
+        // Check if ANY point in history is critical
+        g_chart_has_critical_oil_press = false;
+        for (int i = 0; i < CHART_POINTS; i++) {
+            if (oil_press_history[i] != CHART_NO_DATA && oil_press_history[i] > 0 &&
+                (oil_press_history[i] < OIL_PRESS_ValueCriticalLow ||
+                    oil_press_history[i] > OIL_PRESS_ValueCriticalAbsolute)) {
+                g_chart_has_critical_oil_press = true;
+                break;
             }
         }
+        
         oil_pressure_sum = 0;
         oil_pressure_samples = 0;
         oil_pressure_bucket_start = now;
     }
 
     if ((now - oil_temp_bucket_start) >= CHART_BUCKET_MS && chart_series_oil_temp) {
+        // Chart min is OIL_TEMP_Min_F - only show bars for values > min
         if (oil_temp_samples > 0) {
             int32_t avg = oil_temp_sum / oil_temp_samples;
-            shift_history(oil_temp_history, avg);
-            lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, avg);
-
-            g_chart_has_critical_oil_temp = false;
-            for (int i = 0; i < CHART_POINTS; i++) {
-                if (oil_temp_history[i] > OIL_TEMP_ValueCriticalF) {
-                    g_chart_has_critical_oil_temp = true;
-                    break;
-                }
+            
+            if (avg > OIL_TEMP_Min_F) {
+                // Valid data above chart minimum - show bar
+                shift_history(oil_temp_history, avg);
+                lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, avg);
+            } else {
+                // Value at or below chart minimum - show gap
+                shift_history(oil_temp_history, CHART_NO_DATA);
+                lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, LV_CHART_POINT_NONE);
+            }
+        } else {
+            // No samples (sensor invalid) - show gap
+            shift_history(oil_temp_history, CHART_NO_DATA);
+            lv_chart_set_next_value(ui_OIL_TEMP_CHART, chart_series_oil_temp, LV_CHART_POINT_NONE);
+        }
+        
+        // Check if ANY point in history is critical
+        g_chart_has_critical_oil_temp = false;
+        for (int i = 0; i < CHART_POINTS; i++) {
+            if (oil_temp_history[i] != CHART_NO_DATA && oil_temp_history[i] > OIL_TEMP_ValueCriticalF) {
+                g_chart_has_critical_oil_temp = true;
+                break;
             }
         }
+        
         oil_temp_sum = 0;
         oil_temp_samples = 0;
         oil_temp_bucket_start = now;
     }
 
     if ((now - water_temp_bucket_start) >= CHART_BUCKET_MS && chart_series_water_temp) {
+        // Chart min is W_TEMP_Min_F - only show bars for values > min
         if (water_temp_samples > 0) {
             int32_t avg = water_temp_sum / water_temp_samples;
-            shift_history(water_temp_history, avg);
-            lv_chart_set_next_value(ui_W_TEMP_CHART, chart_series_water_temp, avg);
-
-            g_chart_has_critical_water_temp = false;
-            for (int i = 0; i < CHART_POINTS; i++) {
-                if (water_temp_history[i] > W_TEMP_ValueCritical_F) {
-                    g_chart_has_critical_water_temp = true;
-                    break;
-                }
+            
+            if (avg > W_TEMP_Min_F) {
+                // Valid data above chart minimum - show bar
+                shift_history(water_temp_history, avg);
+                lv_chart_set_next_value(ui_W_TEMP_CHART, chart_series_water_temp, avg);
+            } else {
+                // Value at or below chart minimum - show gap
+                shift_history(water_temp_history, CHART_NO_DATA);
+                lv_chart_set_next_value(ui_W_TEMP_CHART, chart_series_water_temp, LV_CHART_POINT_NONE);
+            }
+        } else {
+            // No samples (sensor invalid) - show gap
+            shift_history(water_temp_history, CHART_NO_DATA);
+            lv_chart_set_next_value(ui_W_TEMP_CHART, chart_series_water_temp, LV_CHART_POINT_NONE);
+        }
+        
+        // Check if ANY point in history is critical
+        g_chart_has_critical_water_temp = false;
+        for (int i = 0; i < CHART_POINTS; i++) {
+            if (water_temp_history[i] != CHART_NO_DATA && water_temp_history[i] > W_TEMP_ValueCritical_F) {
+                g_chart_has_critical_water_temp = true;
+                break;
             }
         }
+        
         water_temp_sum = 0;
         water_temp_samples = 0;
         water_temp_bucket_start = now;
     }
 
     if ((now - transmission_temp_bucket_start) >= CHART_BUCKET_MS && chart_series_transmission_temp) {
+        // Chart min is TRAN_TEMP_Min_F - only show bars for values > min
         if (transmission_temp_samples > 0) {
             int32_t avg = transmission_temp_sum / transmission_temp_samples;
-            shift_history(transmission_temp_history, avg);
-            lv_chart_set_next_value(ui_TRAN_TEMP_CHART, chart_series_transmission_temp, avg);
-
-            g_chart_has_critical_trans_temp = false;
-            for (int i = 0; i < CHART_POINTS; i++) {
-                if (transmission_temp_history[i] > TRAN_TEMP_ValueCritical_F) {
-                    g_chart_has_critical_trans_temp = true;
-                    break;
-                }
+            
+            if (avg > TRAN_TEMP_Min_F) {
+                // Valid data above chart minimum - show bar
+                shift_history(transmission_temp_history, avg);
+                lv_chart_set_next_value(ui_TRAN_TEMP_CHART, chart_series_transmission_temp, avg);
+            } else {
+                // Value at or below chart minimum - show gap
+                shift_history(transmission_temp_history, CHART_NO_DATA);
+                lv_chart_set_next_value(ui_TRAN_TEMP_CHART, chart_series_transmission_temp, LV_CHART_POINT_NONE);
+            }
+        } else {
+            // No samples (sensor invalid) - show gap
+            shift_history(transmission_temp_history, CHART_NO_DATA);
+            lv_chart_set_next_value(ui_TRAN_TEMP_CHART, chart_series_transmission_temp, LV_CHART_POINT_NONE);
+        }
+        
+        // Check if ANY point in history is critical
+        g_chart_has_critical_trans_temp = false;
+        for (int i = 0; i < CHART_POINTS; i++) {
+            if (transmission_temp_history[i] != CHART_NO_DATA && transmission_temp_history[i] > TRAN_TEMP_ValueCritical_F) {
+                g_chart_has_critical_trans_temp = true;
+                break;
             }
         }
+        
         transmission_temp_sum = 0;
         transmission_temp_samples = 0;
         transmission_temp_bucket_start = now;
     }
 
     if ((now - steering_temp_bucket_start) >= CHART_BUCKET_MS && chart_series_steering_temp) {
+        // Chart min is STEER_TEMP_Min_F - only show bars for values > min
         if (steering_temp_samples > 0) {
             int32_t avg = steering_temp_sum / steering_temp_samples;
-            shift_history(steering_temp_history, avg);
-            lv_chart_set_next_value(ui_STEER_TEMP_CHART, chart_series_steering_temp, avg);
-
-            g_chart_has_critical_steer_temp = false;
-            for (int i = 0; i < CHART_POINTS; i++) {
-                if (steering_temp_history[i] > STEER_TEMP_ValueCritical_F) {
-                    g_chart_has_critical_steer_temp = true;
-                    break;
-                }
+            
+            if (avg > STEER_TEMP_Min_F) {
+                // Valid data above chart minimum - show bar
+                shift_history(steering_temp_history, avg);
+                lv_chart_set_next_value(ui_STEER_TEMP_CHART, chart_series_steering_temp, avg);
+            } else {
+                // Value at or below chart minimum - show gap
+                shift_history(steering_temp_history, CHART_NO_DATA);
+                lv_chart_set_next_value(ui_STEER_TEMP_CHART, chart_series_steering_temp, LV_CHART_POINT_NONE);
+            }
+        } else {
+            // No samples (sensor invalid) - show gap
+            shift_history(steering_temp_history, CHART_NO_DATA);
+            lv_chart_set_next_value(ui_STEER_TEMP_CHART, chart_series_steering_temp, LV_CHART_POINT_NONE);
+        }
+        
+        // Check if ANY point in history is critical
+        g_chart_has_critical_steer_temp = false;
+        for (int i = 0; i < CHART_POINTS; i++) {
+            if (steering_temp_history[i] != CHART_NO_DATA && steering_temp_history[i] > STEER_TEMP_ValueCritical_F) {
+                g_chart_has_critical_steer_temp = true;
+                break;
             }
         }
+        
         steering_temp_sum = 0;
         steering_temp_samples = 0;
         steering_temp_bucket_start = now;
     }
 
     if ((now - differencial_temp_bucket_start) >= CHART_BUCKET_MS && chart_series_differencial_temp) {
+        // Chart min is DIFF_TEMP_Min_F - only show bars for values > min
         if (differencial_temp_samples > 0) {
             int32_t avg = differencial_temp_sum / differencial_temp_samples;
-            shift_history(differencial_temp_history, avg);
-            lv_chart_set_next_value(ui_DIFF_TEMP_CHART, chart_series_differencial_temp, avg);
-
-            g_chart_has_critical_diff_temp = false;
-            for (int i = 0; i < CHART_POINTS; i++) {
-                if (differencial_temp_history[i] > DIFF_TEMP_ValueCritical_F) {
-                    g_chart_has_critical_diff_temp = true;
-                    break;
-                }
+            
+            if (avg > DIFF_TEMP_Min_F) {
+                // Valid data above chart minimum - show bar
+                shift_history(differencial_temp_history, avg);
+                lv_chart_set_next_value(ui_DIFF_TEMP_CHART, chart_series_differencial_temp, avg);
+            } else {
+                // Value at or below chart minimum - show gap
+                shift_history(differencial_temp_history, CHART_NO_DATA);
+                lv_chart_set_next_value(ui_DIFF_TEMP_CHART, chart_series_differencial_temp, LV_CHART_POINT_NONE);
+            }
+        } else {
+            // No samples (sensor invalid) - show gap
+            shift_history(differencial_temp_history, CHART_NO_DATA);
+            lv_chart_set_next_value(ui_DIFF_TEMP_CHART, chart_series_differencial_temp, LV_CHART_POINT_NONE);
+        }
+        
+        // Check if ANY point in history is critical
+        g_chart_has_critical_diff_temp = false;
+        for (int i = 0; i < CHART_POINTS; i++) {
+            if (differencial_temp_history[i] != CHART_NO_DATA && differencial_temp_history[i] > DIFF_TEMP_ValueCritical_F) {
+                g_chart_has_critical_diff_temp = true;
+                break;
             }
         }
+        
         differencial_temp_sum = 0;
         differencial_temp_samples = 0;
         differencial_temp_bucket_start = now;
     }
 
     if ((now - fuel_trust_start) >= CHART_BUCKET_MS && chart_series_fuel_trust) {
+        // Chart min is 0 for fuel trust - only show bars for values > 0
         if (fuel_trust_samples > 0) {
             int32_t avg = fuel_trust_sum / fuel_trust_samples;
-            shift_history(fuel_trust_history, avg);
-            lv_chart_set_next_value(ui_FUEL_TRUST_CHART, chart_series_fuel_trust, avg);
-
-            g_chart_has_critical_fuel_trust = false;
-            for (int i = 0; i < CHART_POINTS; i++) {
-                if (fuel_trust_history[i] > 0 && fuel_trust_history[i] < FUEL_TRUST_ValueCritical) {
-                    g_chart_has_critical_fuel_trust = true;
-                    break;
-                }
+            
+            if (avg > 0) {
+                // Valid data above chart minimum - show bar
+                shift_history(fuel_trust_history, avg);
+                lv_chart_set_next_value(ui_FUEL_TRUST_CHART, chart_series_fuel_trust, avg);
+            } else {
+                // Value at or below chart minimum - show gap
+                shift_history(fuel_trust_history, CHART_NO_DATA);
+                lv_chart_set_next_value(ui_FUEL_TRUST_CHART, chart_series_fuel_trust, LV_CHART_POINT_NONE);
+            }
+        } else {
+            // No samples (sensor invalid) - show gap
+            shift_history(fuel_trust_history, CHART_NO_DATA);
+            lv_chart_set_next_value(ui_FUEL_TRUST_CHART, chart_series_fuel_trust, LV_CHART_POINT_NONE);
+        }
+        
+        // Check if ANY point in history is critical (low fuel)
+        g_chart_has_critical_fuel_trust = false;
+        for (int i = 0; i < CHART_POINTS; i++) {
+            if (fuel_trust_history[i] != CHART_NO_DATA && fuel_trust_history[i] > 0 && 
+                fuel_trust_history[i] < FUEL_TRUST_ValueCritical) {
+                g_chart_has_critical_fuel_trust = true;
+                break;
             }
         }
+        
         fuel_trust_sum = 0;
         fuel_trust_samples = 0;
         fuel_trust_start = now;
@@ -6097,7 +6212,7 @@ void initChart(lv_obj_t* chart, lv_chart_series_t** series, int min_val, int max
     // Initialize with no data
     for (int i = 0; i < CHART_POINTS; i++) {
         lv_chart_set_next_value(chart, *series, LV_CHART_POINT_NONE);
-        if (history) history[i] = 0;
+        if (history) history[i] = CHART_NO_DATA;
     }
     lv_chart_refresh(chart);
 }

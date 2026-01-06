@@ -2,12 +2,11 @@ SET(SOURCES ui_Screen1.c
     ui.c
     ui_comp_hook.c
     ui_helpers.c
+    ui_img_1419182761.c
     ui_img_788234086.c
-    ui_img_111761047.c
-    ui_img_91236053.c
     ui_img_1610037518.c
     ui_img_1101422646.c
-    ui_img_837429808.c
+    ui_img_1867695354.c
     ui_img_260142572.c
     ui_img_2038433484.c
     fonts/ui_font_OrbitronExtraBold12.c

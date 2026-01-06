@@ -37,12 +37,11 @@ extern "C" {
 extern lv_obj_t * ui____initial_actions0;
 
 // IMAGES AND IMAGE SETS
+LV_IMG_DECLARE(ui_img_1419182761);    // assets/flaticon-pressure/flaticon-pressure128.png
 LV_IMG_DECLARE(ui_img_788234086);    // assets/icons8-engine-oil-windows-10/icons8-engine-oil-96.png
-LV_IMG_DECLARE(ui_img_111761047);    // assets/icons8-pressure-windows-10/icons8-pressure-64.png
-LV_IMG_DECLARE(ui_img_91236053);    // assets/icons8-temperature-windows-10/icons8-temperature-64.png
 LV_IMG_DECLARE(ui_img_1610037518);    // assets/icons8-wave-lines-windows-10/icons8-wave-lines-96.png
 LV_IMG_DECLARE(ui_img_1101422646);    // assets/icons8-gear-windows-11-outline/icons8-gear-96.png
-LV_IMG_DECLARE(ui_img_837429808);    // assets/icons8-steering-wheel-windows-11-filled/icons8-steering-wheel-96.png
+LV_IMG_DECLARE(ui_img_1867695354);    // assets/icons8-steering-wheel-windows-11-outline/icons8-steering-wheel-96.png
 LV_IMG_DECLARE(ui_img_260142572);    // assets/icons8-differential/icons8-differential-96.png
 LV_IMG_DECLARE(ui_img_2038433484);    // assets/icons8-petrol-windows-10/icons8-petrol-96.png
 

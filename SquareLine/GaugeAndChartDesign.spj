@@ -1643,8 +1643,8 @@
                         "flags": 17,
                         "strtype": "OBJECT/Position",
                         "intarray": [
-                          218,
-                          0
+                          202,
+                          -1
                         ],
                         "InheritedType": 7
                       },
@@ -1653,7 +1653,7 @@
                         "flags": 51,
                         "strtype": "OBJECT/Size",
                         "intarray": [
-                          0,
+                          1,
                           0
                         ],
                         "InheritedType": 7
@@ -1720,7 +1720,7 @@
                       {
                         "nid": 1020,
                         "strtype": "IMAGE/Asset",
-                        "strval": "assets/icons8-engine-oil-windows-10/icons8-engine-oil-96.png",
+                        "strval": "assets/flaticon-pressure/flaticon-pressure128.png",
                         "InheritedType": 5
                       },
                       {
@@ -1740,7 +1740,7 @@
                       {
                         "nid": 1050,
                         "strtype": "IMAGE/Scale",
-                        "integer": 140,
+                        "integer": 96,
                         "InheritedType": 6
                       },
                       {
@@ -3214,7 +3214,7 @@
                         "strtype": "OBJECT/Position",
                         "intarray": [
                           218,
-                          0
+                          -1
                         ],
                         "InheritedType": 7
                       },
@@ -3310,7 +3310,7 @@
                       {
                         "nid": 1050,
                         "strtype": "IMAGE/Scale",
-                        "integer": 140,
+                        "integer": 145,
                         "InheritedType": 6
                       },
                       {
@@ -4926,7 +4926,7 @@
                         "strtype": "OBJECT/Position",
                         "intarray": [
                           218,
-                          0
+                          -1
                         ],
                         "InheritedType": 7
                       },
@@ -5022,7 +5022,7 @@
                       {
                         "nid": 1050,
                         "strtype": "IMAGE/Scale",
-                        "integer": 155,
+                        "integer": 165,
                         "InheritedType": 6
                       },
                       {
@@ -6637,7 +6637,7 @@
                         "strtype": "OBJECT/Position",
                         "intarray": [
                           218,
-                          0
+                          -1
                         ],
                         "InheritedType": 7
                       },
@@ -6733,7 +6733,7 @@
                       {
                         "nid": 1050,
                         "strtype": "IMAGE/Scale",
-                        "integer": 140,
+                        "integer": 145,
                         "InheritedType": 6
                       },
                       {
@@ -8348,7 +8348,7 @@
                         "strtype": "OBJECT/Position",
                         "intarray": [
                           218,
-                          0
+                          -1
                         ],
                         "InheritedType": 7
                       },
@@ -8424,7 +8424,7 @@
                       {
                         "nid": 1020,
                         "strtype": "IMAGE/Asset",
-                        "strval": "assets/icons8-steering-wheel-windows-11-filled/icons8-steering-wheel-96.png",
+                        "strval": "assets/icons8-steering-wheel-windows-11-outline/icons8-steering-wheel-96.png",
                         "InheritedType": 5
                       },
                       {
@@ -8444,7 +8444,7 @@
                       {
                         "nid": 1050,
                         "strtype": "IMAGE/Scale",
-                        "integer": 130,
+                        "integer": 140,
                         "InheritedType": 6
                       },
                       {
@@ -10059,7 +10059,7 @@
                         "strtype": "OBJECT/Position",
                         "intarray": [
                           218,
-                          0
+                          -1
                         ],
                         "InheritedType": 7
                       },
@@ -10155,7 +10155,7 @@
                       {
                         "nid": 1050,
                         "strtype": "IMAGE/Scale",
-                        "integer": 140,
+                        "integer": 145,
                         "InheritedType": 6
                       },
                       {
@@ -11770,7 +11770,7 @@
                         "strtype": "OBJECT/Position",
                         "intarray": [
                           218,
-                          0
+                          -1
                         ],
                         "InheritedType": 7
                       },
@@ -11866,7 +11866,7 @@
                       {
                         "nid": 1050,
                         "strtype": "IMAGE/Scale",
-                        "integer": 130,
+                        "integer": 135,
                         "InheritedType": 6
                       },
                       {
@@ -13436,7 +13436,7 @@
     "theme_color1": 5,
     "theme_color2": 0,
     "custom_variable_prefix": "uic",
-    "backup_cnt": 37,
+    "backup_cnt": 50,
     "autosave_cnt": 0,
     "group_color_cnt": 0,
     "lvgl_version": "9.1.0",

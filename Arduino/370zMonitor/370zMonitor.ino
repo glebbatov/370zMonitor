@@ -4336,9 +4336,17 @@ static void utility_box_tap_cb(lv_event_t* e) {
         if (utility_box) {
             if (utilities_visible) {
                 lv_obj_set_style_opa(utility_box, LV_OPA_COVER, 0);
+                // Re-enable files button when utility box is visible
+                if (files_btn) {
+                    lv_obj_add_flag(files_btn, LV_OBJ_FLAG_CLICKABLE);
+                }
             }
             else {
                 lv_obj_set_style_opa(utility_box, LV_OPA_TRANSP, 0);
+                // Disable files button when utility box is hidden
+                if (files_btn) {
+                    lv_obj_remove_flag(files_btn, LV_OBJ_FLAG_CLICKABLE);
+                }
             }
         }
 
@@ -6451,8 +6459,7 @@ void setup() {
         lv_obj_set_style_radius(files_btn, 3, 0);
         lv_obj_set_style_border_width(files_btn, 0, 0);
         lv_obj_set_style_pad_all(files_btn, 2, 0);
-        lv_obj_add_flag(files_btn, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_remove_flag(files_btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(files_btn, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);  // Start disabled (utility box hidden)
         
         // FILES label inside button
         lv_obj_t* files_lbl = lv_label_create(files_btn);

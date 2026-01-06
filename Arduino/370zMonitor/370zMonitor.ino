@@ -1768,7 +1768,8 @@ void initLightweightBars() {
         
         // Exact overlay placement matching original bar
         lv_obj_set_pos(bar, x, y);
-        lv_obj_set_size(bar, 1, h);  // Start 1px wide, full real height
+        lv_obj_set_size(bar, 0, h);  // Start 0px wide (hidden), full real height
+        lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);  // Start hidden until valid data
         
         // Visuals
         lv_obj_set_style_bg_color(bar, lv_color_hex(LIGHT_BAR_COLOR), LV_PART_MAIN);
@@ -1809,14 +1810,22 @@ void updateLightweightBar(int index, float value) {
     normalized = constrain(normalized, 0.0f, 1.0f);
     
     int16_t new_width = (int16_t)(normalized * bar.max_width);
-    if (new_width < 1) new_width = 1;  // Minimum 1 pixel
+    // Allow 0 width - bar will be hidden when empty
     
     // Only update if width changed by threshold (reduces redraws)
     int16_t diff = new_width - bar.last_width;
     if (diff < 0) diff = -diff;  // abs
     
     if (diff >= LIGHT_BAR_WIDTH_THRESHOLD || bar.last_width < 0) {
-        lv_obj_set_width(bar.obj, new_width);  // Direct object width, not style
+        if (new_width <= 0) {
+            // Hide bar completely when no value
+            lv_obj_add_flag(bar.obj, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_width(bar.obj, 0);
+        } else {
+            // Show bar and set width
+            lv_obj_remove_flag(bar.obj, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_width(bar.obj, new_width);
+        }
         bar.last_width = new_width;
     }
 }
@@ -1834,8 +1843,9 @@ bool shouldUpdateLightweightBars() {
 void resetLightweightBars() {
     for (int i = 0; i < 7; i++) {
         if (g_light_bars[i].obj) {
-            lv_obj_set_width(g_light_bars[i].obj, 1);  // Direct object width, not style
-            g_light_bars[i].last_width = 1;
+            lv_obj_add_flag(g_light_bars[i].obj, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_width(g_light_bars[i].obj, 0);
+            g_light_bars[i].last_width = 0;
         }
     }
 }

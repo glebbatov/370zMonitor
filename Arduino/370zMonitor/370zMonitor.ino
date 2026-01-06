@@ -1,9 +1,16 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v4.8 - Dual-Core Architecture
+ * 370zMonitor v4.9 - Dual-Core Architecture
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v4.9 Changes:
+ * - Added PT100 oil temperature sensor via uxcell 24V transmitter on Modbus CH2
+ * - Now reading 2 channels from Waveshare 8-Ch module (pressure + temp)
+ * - Added convertToTempC() for PT100 linear 0-10V to -50/+200°C conversion
+ * - Oil temperature displayed via existing gauge with F/C unit toggle
+ * - Toast system monitors PT100 sensor connection status
  *
  * v4.8 Changes:
  * - Added system status toast notification on startup
@@ -544,18 +551,26 @@ void resetUIElements();
 #define MODBUS_READ_INTERVAL_MS 100 // How often to poll sensors (ms)
 
 // Sensor Channel Mapping on 8-Ch Module
-#define MODBUS_CH_OIL_PRESSURE  0   // Channel 1 (index 0)
-#define MODBUS_CH_OIL_TEMP      1   // Channel 2 (index 1) - future
-#define MODBUS_CH_WATER_TEMP    2   // Channel 3 (index 2) - future
+#define MODBUS_CH_OIL_PRESSURE  0   // Channel 1 (AI1) - PX3 pressure sensor
+#define MODBUS_CH_OIL_TEMP      1   // Channel 2 (AI2) - PT100 via uxcell 24V transmitter
+#define MODBUS_CH_WATER_TEMP    2   // Channel 3 (AI3) - future
 
 // Number of channels to read
-#define MODBUS_NUM_CHANNELS     1   // Just oil pressure for now
+#define MODBUS_NUM_CHANNELS     2   // Oil pressure + Oil temperature
 
 // Pressure Sensor Calibration (PX3AN2BH150PSAAX with voltage divider)
 // Your voltage divider: 10kΩ / 22kΩ = ratio of 0.6875
 #define PRESSURE_DIVIDER_RATIO  1.4545f  // Inverse of 0.6875
 #define PRESSURE_OFFSET_MV      500.0f   // 0.5V = 500mV at 0 PSI
 #define PRESSURE_SCALE          0.0375f  // 150 PSI / 4000 mV range
+
+// PT100 Temperature Sensor Calibration (uxcell transmitter, 24V powered)
+// uxcell outputs 0-10V linear for -50°C to +200°C (250°C range)
+// Waveshare 8-Ch (Model B) reads 0-10V directly, returns millivolts
+// 0 mV = -50°C, 10000 mV = +200°C
+#define PT100_OFFSET_C          -50.0f   // 0V = -50°C
+#define PT100_SCALE_C_PER_MV    0.025f   // 250°C / 10000 mV = 0.025°C per mV
+#define PT100_MIN_VALID_MV      50       // Below this = sensor/transmitter disconnected
 
 // Sensor Health Detection
 // When sensor is disconnected, modbus reads 0 mV
@@ -573,7 +588,8 @@ static uint16_t g_modbus_channel_values[8] = {0};
 
 // Sensor and communication state tracking for logging
 static bool g_modbus_comm_ok = false;           // Is modbus communication working?
-static bool g_sensor_ch1_connected = false;     // Is CH1 sensor connected? (mV >= threshold)
+static bool g_sensor_ch1_connected = false;     // Is CH1 (oil pressure) sensor connected?
+static bool g_sensor_ch2_connected = false;     // Is CH2 (oil temp PT100) sensor connected?
 
 //-----------------------------------------------------------------------------
 // modbusCRC16() - Calculate CRC-16 checksum for Modbus RTU
@@ -770,6 +786,28 @@ static float convertToPSI(uint16_t modbus_mV) {
 }
 
 //-----------------------------------------------------------------------------
+// convertToTempC() - Convert Modbus mV reading to Temperature (Celsius)
+//-----------------------------------------------------------------------------
+// Sensor: PT100 RTD with uxcell transmitter (24V powered)
+//
+// The uxcell transmitter outputs 0-10V linearly for -50°C to +200°C.
+// Waveshare 8-Ch (Model B) reads 0-10V directly, no voltage divider needed.
+//
+//   0 mV    = -50°C
+//   5000 mV =  75°C  (midpoint)
+//   10000 mV = +200°C
+//
+// Conversion: temp_C = (mV * 0.025) - 50
+//
+static float convertToTempC(uint16_t modbus_mV) {
+    float temp_c = (float)modbus_mV * PT100_SCALE_C_PER_MV + PT100_OFFSET_C;
+    // Clamp to valid sensor range
+    if (temp_c < -50.0f) temp_c = -50.0f;
+    if (temp_c > 200.0f) temp_c = 200.0f;
+    return temp_c;
+}
+
+//-----------------------------------------------------------------------------
 // initModbusSensors() - Initialize RS485 and test communication
 //-----------------------------------------------------------------------------
 // Called once at startup. Configures Serial1 for RS485 communication
@@ -907,9 +945,6 @@ void readModbusSensors() {
         
         if (sensor_connected) {
             // Sensor connected and reading valid
-            g_modbus_success_count++;
-            g_modbus_error_count = 0;  // Reset error count on success
-            
             float oil_press_psi = convertToPSI(oil_press_mV);
             
             g_vehicle_data.oil_pressure_psi = (int)(oil_press_psi + 0.5f);
@@ -925,8 +960,53 @@ void readModbusSensors() {
         } else {
             // Sensor disconnected
             g_vehicle_data.oil_pressure_valid = false;
-            g_modbus_error_count++;  // Track as error for status
         }
+        
+        // Channel 2: Oil Temperature (PT100 via uxcell transmitter)
+        uint16_t oil_temp_mV = g_modbus_channel_values[MODBUS_CH_OIL_TEMP];
+        bool temp_sensor_connected = (oil_temp_mV >= PT100_MIN_VALID_MV);
+        
+        // DEBUG: Always log CH2 raw value for troubleshooting
+        static uint32_t ch2DebugCounter = 0;
+        if (++ch2DebugCounter >= 20) {  // Every ~2 sec
+            ch2DebugCounter = 0;
+            Serial.printf("[MODBUS] CH2 DEBUG: raw=%d mV (threshold=%d)\n", oil_temp_mV, PT100_MIN_VALID_MV);
+        }
+        
+        // Log sensor state changes
+        if (temp_sensor_connected != g_sensor_ch2_connected) {
+            if (temp_sensor_connected) {
+                Serial.printf("[MODBUS] CH2: PT100 Sensor CONNECTED (%d mV)\n", oil_temp_mV);
+            } else {
+                Serial.printf("[MODBUS] CH2: PT100 Sensor DISCONNECTED (%d mV < %d mV threshold)\n", 
+                             oil_temp_mV, PT100_MIN_VALID_MV);
+            }
+            g_sensor_ch2_connected = temp_sensor_connected;
+        }
+        
+        if (temp_sensor_connected) {
+            // Sensor connected and reading valid
+            float oil_temp_c = convertToTempC(oil_temp_mV);
+            float oil_temp_f = celsiusToFahrenheit(oil_temp_c);
+            
+            g_vehicle_data.oil_temp_pan_f = (int)(oil_temp_f + 0.5f);
+            g_vehicle_data.oil_temp_valid = true;
+            g_vehicle_data.has_received_data = true;
+            
+            // Log every ~2 seconds (offset from pressure to reduce log spam)
+            static uint32_t tempLogCounter = 20;
+            if (++tempLogCounter >= 40) {
+                tempLogCounter = 0;
+                Serial.printf("[MODBUS] CH2: %d mV -> %.1f C (%.1f F)\n", oil_temp_mV, oil_temp_c, oil_temp_f);
+            }
+        } else {
+            // Sensor disconnected
+            g_vehicle_data.oil_temp_valid = false;
+        }
+        
+        // Reset error count if we got here (communication succeeded)
+        g_modbus_success_count++;
+        g_modbus_error_count = 0;
     } else {
         // Modbus communication failed
         g_modbus_error_count++;
@@ -939,6 +1019,7 @@ void readModbusSensors() {
                 g_modbus_comm_ok = false;
             }
             g_vehicle_data.oil_pressure_valid = false;
+            g_vehicle_data.oil_temp_valid = false;
         }
         
         static uint32_t lastErrorLog = 0;
@@ -1350,8 +1431,9 @@ static struct {
     bool time_sync_ok;
     bool modbus_ok;
     bool oil_pressure_sensor_ok;
+    bool oil_temp_sensor_ok;
     bool initialized;  // Set true after first check
-} g_prev_system_status = {true, true, true, true, true, true, false};
+} g_prev_system_status = {true, true, true, true, true, true, true, false};
 
 // Chart series
 static lv_chart_series_t* chart_series_oil_press = NULL;
@@ -3877,6 +3959,7 @@ static void checkSystemsAndShowToast() {
     bool time_sync_ok = true;
     bool modbus_ok = true;
     bool oil_pressure_sensor_ok = true;
+    bool oil_temp_sensor_ok = true;
     
     // Build list of failures
     char error_msg[256] = "";
@@ -3956,9 +4039,20 @@ static void checkSystemsAndShowToast() {
             strcat(error_msg, "Sensor Oil Pressure offline");
             error_count++;
         }
+        
+        // Check Oil Temperature Sensor (PT100 via uxcell transmitter)
+        oil_temp_sensor_ok = g_sensor_ch2_connected;
+        Serial.printf("[SYSTEM CHECK] Oil Temp Sensor (PT100): %s\n", 
+                      oil_temp_sensor_ok ? "OK" : "FAIL");
+        if (!oil_temp_sensor_ok) {
+            if (error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Sensor Oil Temp offline");
+            error_count++;
+        }
     } else {
         oil_pressure_sensor_ok = false;
-        Serial.println("[SYSTEM CHECK] Oil Pressure Sensor: SKIP (no Modbus)");
+        oil_temp_sensor_ok = false;
+        Serial.println("[SYSTEM CHECK] Sensors: SKIP (no Modbus)");
     }
 #else
     Serial.println("[SYSTEM CHECK] Modbus disabled - skipping sensor checks");
@@ -3974,6 +4068,7 @@ static void checkSystemsAndShowToast() {
     g_prev_system_status.time_sync_ok = time_sync_ok;
     g_prev_system_status.modbus_ok = modbus_ok;
     g_prev_system_status.oil_pressure_sensor_ok = oil_pressure_sensor_ok;
+    g_prev_system_status.oil_temp_sensor_ok = oil_temp_sensor_ok;
     g_prev_system_status.initialized = true;
     
     // Show appropriate toast
@@ -3995,6 +4090,7 @@ static void backgroundSystemMonitor() {
     bool time_sync_ok = true;
     bool modbus_ok = true;
     bool oil_pressure_sensor_ok = true;
+    bool oil_temp_sensor_ok = true;
     
     // Build list of NEW failures (things that just went offline)
     char error_msg[256] = "";
@@ -4098,6 +4194,7 @@ static void backgroundSystemMonitor() {
     }
     
     if (modbus_ok) {
+        // Oil Pressure Sensor (CH1)
         oil_pressure_sensor_ok = g_sensor_ch1_connected;
         if (!oil_pressure_sensor_ok && g_prev_system_status.oil_pressure_sensor_ok) {
             if (new_error_count > 0) strcat(error_msg, "\n");
@@ -4110,8 +4207,23 @@ static void backgroundSystemMonitor() {
             recovery_count++;
             Serial.println("[MONITOR] Oil Pressure Sensor RECOVERED");
         }
+        
+        // Oil Temperature Sensor (CH2 - PT100 via uxcell)
+        oil_temp_sensor_ok = g_sensor_ch2_connected;
+        if (!oil_temp_sensor_ok && g_prev_system_status.oil_temp_sensor_ok) {
+            if (new_error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Sensor Oil Temp offline");
+            new_error_count++;
+            Serial.println("[MONITOR] Oil Temp Sensor (PT100) went OFFLINE");
+        } else if (oil_temp_sensor_ok && !g_prev_system_status.oil_temp_sensor_ok) {
+            if (recovery_count > 0) strcat(recovery_msg, "\n");
+            strcat(recovery_msg, "Sensor Oil Temp back online");
+            recovery_count++;
+            Serial.println("[MONITOR] Oil Temp Sensor (PT100) RECOVERED");
+        }
     } else {
         oil_pressure_sensor_ok = false;
+        oil_temp_sensor_ok = false;
     }
 #endif
     
@@ -4122,6 +4234,7 @@ static void backgroundSystemMonitor() {
     g_prev_system_status.time_sync_ok = time_sync_ok;
     g_prev_system_status.modbus_ok = modbus_ok;
     g_prev_system_status.oil_pressure_sensor_ok = oil_pressure_sensor_ok;
+    g_prev_system_status.oil_temp_sensor_ok = oil_temp_sensor_ok;
     
     // Handle toast display
     if (new_error_count > 0) {
@@ -5999,7 +6112,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v4.8 - Dual-Core");
+    Serial.println("   370zMonitor v4.9 - Dual-Core");
     Serial.println("========================================");
 
     if (psramFound()) {

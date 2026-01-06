@@ -4,7 +4,7 @@
 
 **370zMonitor** is a track car data logging and display system for a 2018 Nissan 370Z. It uses an ESP32-S3 microcontroller with a 7" touchscreen to display real-time sensor data during track days.
 
-- **Current Version:** v4.8
+- **Current Version:** v4.9
 - **Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (800×480)
 - **Framework:** Arduino with LVGL 9.1.0
 - **Architecture:** Dual-core (Core 0: I/O, Core 1: LVGL rendering)
@@ -149,26 +149,44 @@ Transparent Serial wrapper that automatically mirrors all `Serial.print()` outpu
 ## Modbus RS485 Sensors
 
 ### Hardware
-- Waveshare 8-Ch Analog Acquisition Module
+- Waveshare 8-Ch Analog Acquisition Module (Model B, 0-10V)
 - SP3485 transceiver (auto-direction, no DE/RE pin)
 - 9600 baud, 8N1
 
 ### Channel Mapping
-| Channel | Sensor |
-|---------|--------|
-| 0 | Oil Pressure (PX3AN2BH150PSAAX) |
-| 1-7 | Reserved for future sensors |
+| Channel | Sensor | Signal |
+|---------|--------|--------|
+| 0 (AI1) | Oil Pressure (PX3AN2BH150PSAAX) | 0.5-4.5V via 10kΩ/22kΩ divider |
+| 1 (AI2) | Oil Temperature (PT100 + uxcell transmitter) | 0-10V direct |
+| 2-7 | Reserved for future sensors | - |
 
-### Pressure Sensor Calibration
+### Pressure Sensor Calibration (CH1)
 ```cpp
 // PX3AN2BH150PSAAX: 0.5V-4.5V for 0-150 PSI
 // Voltage divider: 10kΩ / 22kΩ (ratio 0.6875)
 PSI = (raw_mV * 1.4545 - 500) * 0.0375
 ```
 
+### Temperature Sensor Calibration (CH2)
+```cpp
+// PT100 RTD with uxcell transmitter (24V powered)
+// Transmitter outputs 0-10V linear for -50°C to +200°C
+// Waveshare Model B reads 0-10V directly (no divider needed)
+temp_C = (raw_mV * 0.025) - 50
+// Then converted to Fahrenheit for internal storage
+```
+
+### Wiring Diagram
+```
+[PT100 Probe] ▶ [uxcell Transmitter] ▶ [Waveshare AI2+/AI2-]
+  3-wire RTD      24V DC powered         0-10V input mode
+                  outputs 0-10V
+```
+
 ### Error Handling
-- 3 consecutive errors → mark sensor invalid
-- mV < 100 → sensor disconnected
+- 3 consecutive Modbus errors → mark sensors invalid
+- CH1: mV < 100 → pressure sensor disconnected
+- CH2: mV < 50 → PT100/transmitter disconnected
 - UI shows "---" when invalid
 
 ---
@@ -319,7 +337,8 @@ Real-time system health monitoring with visual feedback. Located in `370zMonitor
 | RTC (HW-084) | I2C probe to DS3231 (0x68) | "Time keeper offline" | "Time keeper back online" |
 | Time Sync | `time_available` flag | "Time sync failed" | "Time sync back online" |
 | Modbus RTU | `initialized && comm_ok` | "Modbus RTU offline" | "Modbus RTU back online" |
-| Oil Pressure | `sensor_ch1_connected` | "Sensor Oil Pressure offline" | "Sensor Oil Pressure back online" |
+| Oil Pressure | `g_sensor_ch1_connected` | "Sensor Oil Pressure offline" | "Sensor Oil Pressure back online" |
+| Oil Temp (PT100) | `g_sensor_ch2_connected` | "Sensor Oil Temp offline" | "Sensor Oil Temp back online" |
 
 ### Toast Behavior
 
@@ -413,6 +432,7 @@ TOAST_COLOR_ERROR    0xB71C1C  // Dark red
 
 | Version | Key Changes |
 |---------|-------------|
+| v4.9 | PT100 oil temperature sensor via uxcell transmitter on Modbus CH2 |
 | v4.8 | Toast notification system with runtime monitoring, error/recovery detection |
 | v4.7 | File browser optimization, 8-digit sessions |
 | v4.6 | SD card file browser, CSV/text viewers |

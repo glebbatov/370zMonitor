@@ -6435,7 +6435,7 @@ void setup() {
         lv_obj_set_style_opa(utility_box, LV_OPA_TRANSP, 0);    // Start hidden (double-tap to reveal)
         lv_obj_set_style_border_color(utility_box, lv_color_hex(0x444444), 0);
         lv_obj_set_style_border_width(utility_box, 1, 0);
-        lv_obj_set_style_radius(utility_box, 5, 0);
+        lv_obj_set_style_radius(utility_box, 0, 0);
         lv_obj_set_style_pad_all(utility_box, 5, 0);
         lv_obj_add_flag(utility_box, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_flag(utility_box, LV_OBJ_FLAG_SCROLLABLE);
@@ -6456,7 +6456,7 @@ void setup() {
         lv_obj_align(files_btn, LV_ALIGN_TOP_LEFT, 0, 0);
         lv_obj_set_style_bg_color(files_btn, lv_color_hex(0xC1CDCD), 0);  // Gray
         lv_obj_set_style_bg_opa(files_btn, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(files_btn, 3, 0);
+        lv_obj_set_style_radius(files_btn, 0, 0);
         lv_obj_set_style_border_width(files_btn, 0, 0);
         lv_obj_set_style_pad_all(files_btn, 2, 0);
         lv_obj_remove_flag(files_btn, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);  // Start disabled (utility box hidden)

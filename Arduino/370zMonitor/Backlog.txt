@@ -1,0 +1,51 @@
+add Water pressure sensor
+======================================
++Touch
+--
+*touch isn't persice on touch overall.
+It seems to be offset, and I'm not sure where and how. 
+Also: 
+*there is a strip on the most left (~1cm) where touch dont register
+*there is a strip on the most bottom (~1cm) where touch dont register
+======================================
++File navigation
+--
+*Navigation on csv file view is laggy and slow, very hard to scroll to a sertainm timeframe. there should be some sort of search.
+Suggest me better navigation method:
+-to go to a sertain timeframe (I guess a timestamp search?)
+-to go to lines with values that are anomalies (filter view? Color read all anomalies?)
+
+don't write any code yet
+======================================
++UI
+
+======================================
++G-Sensor
+--
+For I2C connected devices I now have this hub:
+Crowtail- I2C Hub 2.0 (SKU CRT00529H)
+https://www.elecrow.com/crowtail-i2c-hub.html?srsltid=AfmBOooBa4Y1iGZ-kH2GVltxPF1q3H6aFfJPbCT6YgM_RjfxTxf8zcK1
+
+I have these connections:
+*esp32 connected to the hub
+*HW-084 connected to the hub
+*ADA2809 connected to the hub
+
+I want to implement the accelerometer functionality with ADA2809.
+
+let's do a test read first.
+what data does it output?
+======================================
++Modbus
+--
+connect temp sensor
+--
+connect second Modbus RTU
+--
+add isValueCritical bool parameters for each sensor values in logs
+======================================
++Other
+*add time stamp to .log files. Now: "[58766] [STATUS] FPS=1 (FRAMES=1..." - no timestamp
+*add auto diming schedule (the same as on Android Auto Maps)
+*if a fan kicks in (engine/trans/diff) show it visualy (animation/trigger) on the monitor display
+======================================

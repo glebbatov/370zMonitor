@@ -4,8 +4,11 @@
 
 **370zMonitor** is a track car data logging and display system for a 2018 Nissan 370Z. It uses an ESP32-S3 microcontroller with a 7" touchscreen to display real-time sensor data during track days.
 
-- **Current Version:** v4.9
+- **Current Version:** v5.0
 - **Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (800×480)
+- **Hardware:** Waveshare Modbus RTU Analog Output 8CH (B)
+- **Sensor:** Oil Pressure: PX3AN2BH150PSAAX (Channel 1 on Waveshare Modbus RTU)
+- **Sensor:** Oil Temperature: PRTXI-1/2N-1/4-4-IO | Mode 3 (4-20mA) (Channel 2 on Waveshare Modbus RTU)
 - **Framework:** Arduino with LVGL 9.1.0
 - **Architecture:** Dual-core (Core 0: I/O, Core 1: LVGL rendering)
 
@@ -154,11 +157,11 @@ Transparent Serial wrapper that automatically mirrors all `Serial.print()` outpu
 - 9600 baud, 8N1
 
 ### Channel Mapping
-| Channel | Sensor | Signal |
-|---------|--------|--------|
-| 0 (AI1) | Oil Pressure (PX3AN2BH150PSAAX) | 0.5-4.5V via 10kΩ/22kΩ divider |
-| 1 (AI2) | Oil Temperature (PT100 + uxcell transmitter) | 0-10V direct |
-| 2-7 | Reserved for future sensors | - |
+| Channel | Sensor | Signal | Waveshare Mode |
+|---------|--------|--------|----------------|
+| 0 (AI1) | Oil Pressure (PX3AN2BH150PSAAX) | 0.5-4.5V via 10kΩ/22kΩ divider | Mode 1 (0-10V) |
+| 1 (AI2) | Oil Temperature (PRTXI-1/2N-1/4-4-IO) | 4-20mA loop-powered | Mode 3 (4-20mA) |
+| 2-7 | Reserved for future sensors | - | - |
 
 ### Pressure Sensor Calibration (CH1)
 ```cpp
@@ -169,24 +172,34 @@ PSI = (raw_mV * 1.4545 - 500) * 0.0375
 
 ### Temperature Sensor Calibration (CH2)
 ```cpp
-// PT100 RTD with uxcell transmitter (24V powered)
-// Transmitter outputs 0-10V linear for -50°C to +200°C
-// Waveshare Model B reads 0-10V directly (no divider needed)
-temp_C = (raw_mV * 0.025) - 50
+// PRTXI-1/2N-1/4-4-IO RTD Temperature Transmitter (4-20mA output)
+// Outputs 4-20mA linear for -50°C to +200°C
+// Waveshare CH2 in Mode 3 (4-20mA) returns microamps (µA)
+//
+//   4000 µA  (4mA)   = -50°C
+//   8800 µA  (8.8mA) =  25°C  (room temp)
+//   12000 µA (12mA)  =  75°C  (midpoint)
+//   20000 µA (20mA)  = +200°C
+//
+temp_C = ((raw_uA - 4000) * 0.015625) - 50
 // Then converted to Fahrenheit for internal storage
 ```
 
-### Wiring Diagram
+### Wiring Diagram (PRTXI)
 ```
-[PT100 Probe] ▶ [uxcell Transmitter] ▶ [Waveshare AI2+/AI2-]
-  3-wire RTD      24V DC powered         0-10V input mode
-                  outputs 0-10V
+24V+ ────────────────▶ PRTXI Pin 1 (V+)
+
+PRTXI Pin 2 (V-/Signal) ────▶ Waveshare AI2+
+
+Waveshare AI2- ────────────▶ GND (24V-)
+
+PRTXI Pins 3,4: Not used (IO-Link mode only)
 ```
 
 ### Error Handling
 - 3 consecutive Modbus errors → mark sensors invalid
 - CH1: mV < 100 → pressure sensor disconnected
-- CH2: mV < 50 → PT100/transmitter disconnected
+- CH2: µA < 3500 → PRTXI sensor disconnected (below 4mA)
 - UI shows "---" when invalid
 
 ---
@@ -338,7 +351,7 @@ Real-time system health monitoring with visual feedback. Located in `370zMonitor
 | Time Sync | `time_available` flag | "Time sync failed" | "Time sync back online" |
 | Modbus RTU | `initialized && comm_ok` | "Modbus RTU offline" | "Modbus RTU back online" |
 | Oil Pressure | `g_sensor_ch1_connected` | "Sensor Oil Pressure offline" | "Sensor Oil Pressure back online" |
-| Oil Temp (PT100) | `g_sensor_ch2_connected` | "Sensor Oil Temp offline" | "Sensor Oil Temp back online" |
+| Oil Temp (PRTXI) | `g_sensor_ch2_connected` | "Sensor Oil Temp offline" | "Sensor Oil Temp back online" |
 
 ### Toast Behavior
 
@@ -432,6 +445,7 @@ TOAST_COLOR_ERROR    0xB71C1C  // Dark red
 
 | Version | Key Changes |
 |---------|-------------|
+| v5.0 | PRTXI-1/2N-1/4-4-IO RTD transmitter on CH2 (4-20mA mode), replaced PT100+uxcell |
 | v4.9 | PT100 oil temperature sensor via uxcell transmitter on Modbus CH2 |
 | v4.8 | Toast notification system with runtime monitoring, error/recovery detection |
 | v4.7 | File browser optimization, 8-digit sessions |

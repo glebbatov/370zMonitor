@@ -1,11 +1,18 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v4.9 - Dual-Core Architecture
+ * 370zMonitor v5.0 - Dual-Core Architecture
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
  *
- * v4.9 Changes:
+ * v5.0 Changes:
+ * - Replaced PT100+uxcell with PRTXI-1/2N-1/4-4-IO RTD transmitter on Modbus CH2
+ * - PRTXI outputs 4-20mA for -50°C to +200°C (loop-powered, 2-wire)
+ * - Waveshare CH2 configured for 4-20mA mode (Mode 3, jumper ON)
+ * - Updated convertToTempC() for 4-20mA to temperature conversion
+ * - Updated sensor disconnect threshold for current mode
+ *
+ * v4.9 Changes (historical):
  * - Added PT100 oil temperature sensor via uxcell 24V transmitter on Modbus CH2
  * - Now reading 2 channels from Waveshare 8-Ch module (pressure + temp)
  * - Added convertToTempC() for PT100 linear 0-10V to -50/+200°C conversion
@@ -135,7 +142,8 @@ uint32_t g_current_boot_count = 0;
 void sdLogSerialWrite(const char* msg);
 
 // Store reference to the REAL Serial before we redefine it
-HardwareSerial& _RealSerial = Serial;
+// Use auto& because Serial is HWCDC when USB CDC is enabled, HardwareSerial otherwise
+auto& _RealSerial = Serial;
 
 class TeeSerial : public Print {
 private:
@@ -179,8 +187,9 @@ public:
     }
     
     // Forward HardwareSerial methods we need
+    // Note: HWCDC::begin() only takes baud, ignores config parameter
     void begin(unsigned long baud) { _RealSerial.begin(baud); }
-    void begin(unsigned long baud, uint32_t config) { _RealSerial.begin(baud, config); }
+    void begin(unsigned long baud, uint32_t config) { (void)config; _RealSerial.begin(baud); }
     void end() { _RealSerial.end(); }
     int available() { return _RealSerial.available(); }
     int read() { return _RealSerial.read(); }
@@ -552,11 +561,20 @@ void resetUIElements();
 
 // Sensor Channel Mapping on 8-Ch Module
 #define MODBUS_CH_OIL_PRESSURE  0   // Channel 1 (AI1) - PX3 pressure sensor
-#define MODBUS_CH_OIL_TEMP      1   // Channel 2 (AI2) - PT100 via uxcell 24V transmitter
+#define MODBUS_CH_OIL_TEMP      1   // Channel 2 (AI2) - PRTXI RTD transmitter (4-20mA)
 #define MODBUS_CH_WATER_TEMP    2   // Channel 3 (AI3) - future
 
 // Number of channels to read
 #define MODBUS_NUM_CHANNELS     2   // Oil pressure + Oil temperature
+
+// Waveshare Channel Mode Configuration (Holding Registers)
+// Write to holding register 0x00XX to set channel XX mode
+#define WAVESHARE_MODE_0_5V     0x00  // Mode 0: 0-5V
+#define WAVESHARE_MODE_0_10V    0x01  // Mode 1: 0-10V (default)
+#define WAVESHARE_MODE_0_20MA   0x02  // Mode 2: 0-20mA
+#define WAVESHARE_MODE_4_20MA   0x03  // Mode 3: 4-20mA  <-- We need this for PRTXI
+#define WAVESHARE_CH1_MODE_REG  0x0000  // Holding register for CH1 mode
+#define WAVESHARE_CH2_MODE_REG  0x0001  // Holding register for CH2 mode
 
 // Pressure Sensor Calibration (PX3AN2BH150PSAAX with voltage divider)
 // Your voltage divider: 10kΩ / 22kΩ = ratio of 0.6875
@@ -564,13 +582,14 @@ void resetUIElements();
 #define PRESSURE_OFFSET_MV      500.0f   // 0.5V = 500mV at 0 PSI
 #define PRESSURE_SCALE          0.0375f  // 150 PSI / 4000 mV range
 
-// PT100 Temperature Sensor Calibration (uxcell transmitter, 24V powered)
-// uxcell outputs 0-10V linear for -50°C to +200°C (250°C range)
-// Waveshare 8-Ch (Model B) reads 0-10V directly, returns millivolts
-// 0 mV = -50°C, 10000 mV = +200°C
-#define PT100_OFFSET_C          -50.0f   // 0V = -50°C
-#define PT100_SCALE_C_PER_MV    0.025f   // 250°C / 10000 mV = 0.025°C per mV
-#define PT100_MIN_VALID_MV      50       // Below this = sensor/transmitter disconnected
+// PRTXI Temperature Sensor Calibration (4-20mA output, loop-powered)
+// PRTXI-1/2N-1/4-4-IO outputs 4-20mA linear for -50°C to +200°C (250°C range)
+// Waveshare CH2 in 4-20mA mode (Mode 3) returns microamps (µA)
+// 4000 µA (4mA) = -50°C, 20000 µA (20mA) = +200°C
+#define PRTXI_OFFSET_C          -50.0f    // 4mA = -50°C
+#define PRTXI_SCALE_C_PER_UA    0.015625f // 250°C / 16000 µA = 0.015625°C per µA
+#define PRTXI_ZERO_CURRENT_UA   4000      // 4mA baseline (0% of range)
+#define PRTXI_MIN_VALID_UA      3500      // Below this = sensor disconnected (under 4mA)
 
 // Sensor Health Detection
 // When sensor is disconnected, modbus reads 0 mV
@@ -761,6 +780,98 @@ static bool modbusReadInputRegisters(uint8_t slaveAddr, uint16_t startReg,
 }
 
 //-----------------------------------------------------------------------------
+// modbusWriteHoldingRegister() - Write a single holding register
+//-----------------------------------------------------------------------------
+// Modbus Function Code 0x06: Write Single Register
+// Used to configure Waveshare channel modes (voltage vs current input)
+//
+// Request frame (8 bytes):
+//   [0] Slave address
+//   [1] Function code (0x06)
+//   [2] Register address high byte
+//   [3] Register address low byte
+//   [4] Value high byte
+//   [5] Value low byte
+//   [6] CRC low byte
+//   [7] CRC high byte
+//
+// Response: Echo of request (success) or exception response (failure)
+//
+static bool modbusWriteHoldingRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t value) {
+    uint8_t request[8];
+    request[0] = slaveAddr;
+    request[1] = 0x06;  // Function code: Write Single Register
+    request[2] = (regAddr >> 8) & 0xFF;
+    request[3] = regAddr & 0xFF;
+    request[4] = (value >> 8) & 0xFF;
+    request[5] = value & 0xFF;
+    
+    uint16_t crc = modbusCRC16(request, 6);
+    request[6] = crc & 0xFF;
+    request[7] = (crc >> 8) & 0xFF;
+    
+    uint8_t response[8];
+    int received = modbusTransaction(request, 8, response, 8);
+    
+    // Success = echo of request (same first 6 bytes)
+    if (received >= 8 && 
+        response[0] == slaveAddr && 
+        response[1] == 0x06 &&
+        response[2] == request[2] &&
+        response[3] == request[3] &&
+        response[4] == request[4] &&
+        response[5] == request[5]) {
+        return true;
+    }
+    
+    // Check for exception response (function code with high bit set)
+    if (received >= 5 && response[1] == 0x86) {
+        Serial.printf("[MODBUS] Write exception: code 0x%02X\n", response[2]);
+    }
+    
+    return false;
+}
+
+//-----------------------------------------------------------------------------
+// modbusReadHoldingRegister() - Read a single holding register
+//-----------------------------------------------------------------------------
+// Modbus Function Code 0x03: Read Holding Registers
+// Used to read configuration values from Waveshare module
+//
+static bool modbusReadHoldingRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t* value) {
+    uint8_t request[8];
+    request[0] = slaveAddr;
+    request[1] = 0x03;  // Function code: Read Holding Registers
+    request[2] = (regAddr >> 8) & 0xFF;
+    request[3] = regAddr & 0xFF;
+    request[4] = 0x00;  // Number of registers high byte
+    request[5] = 0x01;  // Number of registers low byte (1 register)
+    
+    uint16_t crc = modbusCRC16(request, 6);
+    request[6] = crc & 0xFF;
+    request[7] = (crc >> 8) & 0xFF;
+    
+    uint8_t response[16];
+    int received = modbusTransaction(request, 8, response, 16);
+    
+    // Expected response: slaveAddr, 0x03, byteCount(2), dataHi, dataLo, crcLo, crcHi
+    if (received >= 7 && 
+        response[0] == slaveAddr && 
+        response[1] == 0x03 &&
+        response[2] == 0x02) {  // 2 bytes of data
+        *value = (response[3] << 8) | response[4];
+        return true;
+    }
+    
+    // Check for exception response
+    if (received >= 5 && response[1] == 0x83) {
+        Serial.printf("[MODBUS] Read exception: code 0x%02X\n", response[2]);
+    }
+    
+    return false;
+}
+
+//-----------------------------------------------------------------------------
 // convertToPSI() - Convert Modbus mV reading to PSI
 //-----------------------------------------------------------------------------
 // Sensor: PX3AN2BH150PSAAX (0-150 PSI, 0.5V-4.5V output)
@@ -786,21 +897,26 @@ static float convertToPSI(uint16_t modbus_mV) {
 }
 
 //-----------------------------------------------------------------------------
-// convertToTempC() - Convert Modbus mV reading to Temperature (Celsius)
+// convertToTempC() - Convert Modbus µA reading to Temperature (Celsius)
 //-----------------------------------------------------------------------------
-// Sensor: PT100 RTD with uxcell transmitter (24V powered)
+// Sensor: PRTXI-1/2N-1/4-4-IO RTD Temperature Transmitter (4-20mA output)
 //
-// The uxcell transmitter outputs 0-10V linearly for -50°C to +200°C.
-// Waveshare 8-Ch (Model B) reads 0-10V directly, no voltage divider needed.
+// The PRTXI outputs 4-20mA linearly for -50°C to +200°C.
+// Waveshare CH2 in 4-20mA mode (Mode 3) returns current in microamps.
 //
-//   0 mV    = -50°C
-//   5000 mV =  75°C  (midpoint)
-//   10000 mV = +200°C
+//   4000 µA  (4mA)  = -50°C
+//   8800 µA  (8.8mA)=  25°C  (room temp)
+//   12000 µA (12mA) =  75°C  (midpoint)
+//   20000 µA (20mA) = +200°C
 //
-// Conversion: temp_C = (mV * 0.025) - 50
+// Conversion: temp_C = ((µA - 4000) * 0.015625) - 50
+//           = (µA - 4000) / 16000 * 250 - 50
 //
-static float convertToTempC(uint16_t modbus_mV) {
-    float temp_c = (float)modbus_mV * PT100_SCALE_C_PER_MV + PT100_OFFSET_C;
+// Example: At room temp 25°C, expect ~8800 µA (8.8 mA)
+//          ((8800 - 4000) * 0.015625) - 50 = 25°C
+//
+static float convertToTempC(uint16_t modbus_uA) {
+    float temp_c = ((float)modbus_uA - PRTXI_ZERO_CURRENT_UA) * PRTXI_SCALE_C_PER_UA + PRTXI_OFFSET_C;
     // Clamp to valid sensor range
     if (temp_c < -50.0f) temp_c = -50.0f;
     if (temp_c > 200.0f) temp_c = 200.0f;
@@ -871,6 +987,30 @@ void initModbusSensors() {
             if (!g_sensor_ch1_connected) {
                 Serial.printf("[MODBUS] CH1: Sensor not connected at startup (%d mV)\n", value);
             }
+            
+            // ========== THE MONEY LINE ==========
+            // Configure CH2 for 4-20mA mode (PRTXI temperature sensor)
+            // This writes to Waveshare holding register 0x0001 with value 0x03
+            Serial.println("[MODBUS] Configuring CH2 for 4-20mA mode...");
+            
+            // First, try to READ current CH2 mode configuration
+            uint16_t currentMode = 0;
+            if (modbusReadHoldingRegister(MODBUS_SLAVE_ADDR, WAVESHARE_CH2_MODE_REG, &currentMode)) {
+                Serial.printf("[MODBUS] CH2 current mode: %d (0=0-5V, 1=0-10V, 2=0-20mA, 3=4-20mA)\n", currentMode);
+            } else {
+                Serial.println("[MODBUS] Could not read CH2 mode register");
+                Serial.println("[MODBUS] NOTE: Check hardware jumper on Waveshare module!");
+                Serial.println("[MODBUS]       CH2 jumper must be in 'I' or 'mA' position for current input");
+            }
+            
+            if (modbusWriteHoldingRegister(MODBUS_SLAVE_ADDR, WAVESHARE_CH2_MODE_REG, WAVESHARE_MODE_4_20MA)) {
+                Serial.println("[MODBUS] CH2 configured for 4-20mA mode (Mode 3)");
+            } else {
+                Serial.println("[MODBUS] WARNING: Failed to configure CH2 mode!");
+                Serial.println("[MODBUS] This module may require HARDWARE JUMPER for current mode");
+                Serial.println("[MODBUS] Check: Is CH2 jumper set to 'I' or 'mA' position?");
+            }
+            // =====================================
         } else {
             Serial.println("[MODBUS] Got data but unexpected format");
             g_modbus_initialized = false;
@@ -962,31 +1102,31 @@ void readModbusSensors() {
             g_vehicle_data.oil_pressure_valid = false;
         }
         
-        // Channel 2: Oil Temperature (PT100 via uxcell transmitter)
-        uint16_t oil_temp_mV = g_modbus_channel_values[MODBUS_CH_OIL_TEMP];
-        bool temp_sensor_connected = (oil_temp_mV >= PT100_MIN_VALID_MV);
+        // Channel 2: Oil Temperature (PRTXI 4-20mA transmitter)
+        uint16_t oil_temp_uA = g_modbus_channel_values[MODBUS_CH_OIL_TEMP];
+        bool temp_sensor_connected = (oil_temp_uA >= PRTXI_MIN_VALID_UA);
         
         // DEBUG: Always log CH2 raw value for troubleshooting
         static uint32_t ch2DebugCounter = 0;
         if (++ch2DebugCounter >= 20) {  // Every ~2 sec
             ch2DebugCounter = 0;
-            Serial.printf("[MODBUS] CH2 DEBUG: raw=%d mV (threshold=%d)\n", oil_temp_mV, PT100_MIN_VALID_MV);
+            Serial.printf("[MODBUS] CH2 DEBUG: raw=%d uA (threshold=%d)\n", oil_temp_uA, PRTXI_MIN_VALID_UA);
         }
         
         // Log sensor state changes
         if (temp_sensor_connected != g_sensor_ch2_connected) {
             if (temp_sensor_connected) {
-                Serial.printf("[MODBUS] CH2: PT100 Sensor CONNECTED (%d mV)\n", oil_temp_mV);
+                Serial.printf("[MODBUS] CH2: PRTXI Sensor CONNECTED (%d uA)\n", oil_temp_uA);
             } else {
-                Serial.printf("[MODBUS] CH2: PT100 Sensor DISCONNECTED (%d mV < %d mV threshold)\n", 
-                             oil_temp_mV, PT100_MIN_VALID_MV);
+                Serial.printf("[MODBUS] CH2: PRTXI Sensor DISCONNECTED (%d uA < %d uA threshold)\n", 
+                             oil_temp_uA, PRTXI_MIN_VALID_UA);
             }
             g_sensor_ch2_connected = temp_sensor_connected;
         }
         
         if (temp_sensor_connected) {
             // Sensor connected and reading valid
-            float oil_temp_c = convertToTempC(oil_temp_mV);
+            float oil_temp_c = convertToTempC(oil_temp_uA);
             float oil_temp_f = celsiusToFahrenheit(oil_temp_c);
             
             g_vehicle_data.oil_temp_pan_f = (int)(oil_temp_f + 0.5f);
@@ -997,7 +1137,7 @@ void readModbusSensors() {
             static uint32_t tempLogCounter = 20;
             if (++tempLogCounter >= 40) {
                 tempLogCounter = 0;
-                Serial.printf("[MODBUS] CH2: %d mV -> %.1f C (%.1f F)\n", oil_temp_mV, oil_temp_c, oil_temp_f);
+                Serial.printf("[MODBUS] CH2: %d uA -> %.1f C (%.1f F)\n", oil_temp_uA, oil_temp_c, oil_temp_f);
             }
         } else {
             // Sensor disconnected
@@ -2093,7 +2233,7 @@ void updateSensorData() {
     readModbusSensors();
     
     // Mark other sensors as invalid for now (until you add them to Modbus channels)
-    g_vehicle_data.oil_temp_valid = false;
+    // Note: oil_pressure and oil_temp are handled by readModbusSensors() - don't override here
     g_vehicle_data.water_temp_valid = false;
     g_vehicle_data.trans_temp_valid = false;
     g_vehicle_data.steer_temp_valid = false;
@@ -4059,9 +4199,9 @@ static void checkSystemsAndShowToast() {
             error_count++;
         }
         
-        // Check Oil Temperature Sensor (PT100 via uxcell transmitter)
+        // Check Oil Temperature Sensor (PRTXI 4-20mA transmitter)
         oil_temp_sensor_ok = g_sensor_ch2_connected;
-        Serial.printf("[SYSTEM CHECK] Oil Temp Sensor (PT100): %s\n", 
+        Serial.printf("[SYSTEM CHECK] Oil Temp Sensor (PRTXI): %s\n", 
                       oil_temp_sensor_ok ? "OK" : "FAIL");
         if (!oil_temp_sensor_ok) {
             if (error_count > 0) strcat(error_msg, "\n");
@@ -4227,18 +4367,18 @@ static void backgroundSystemMonitor() {
             Serial.println("[MONITOR] Oil Pressure Sensor RECOVERED");
         }
         
-        // Oil Temperature Sensor (CH2 - PT100 via uxcell)
+        // Oil Temperature Sensor (CH2 - PRTXI 4-20mA)
         oil_temp_sensor_ok = g_sensor_ch2_connected;
         if (!oil_temp_sensor_ok && g_prev_system_status.oil_temp_sensor_ok) {
             if (new_error_count > 0) strcat(error_msg, "\n");
             strcat(error_msg, "Sensor Oil Temp offline");
             new_error_count++;
-            Serial.println("[MONITOR] Oil Temp Sensor (PT100) went OFFLINE");
+            Serial.println("[MONITOR] Oil Temp Sensor (PRTXI) went OFFLINE");
         } else if (oil_temp_sensor_ok && !g_prev_system_status.oil_temp_sensor_ok) {
             if (recovery_count > 0) strcat(recovery_msg, "\n");
             strcat(recovery_msg, "Sensor Oil Temp back online");
             recovery_count++;
-            Serial.println("[MONITOR] Oil Temp Sensor (PT100) RECOVERED");
+            Serial.println("[MONITOR] Oil Temp Sensor (PRTXI) RECOVERED");
         }
     } else {
         oil_pressure_sensor_ok = false;
@@ -6245,7 +6385,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v4.9 - Dual-Core");
+    Serial.println("   370zMonitor v5.0 - Dual-Core");
     Serial.println("========================================");
 
     if (psramFound()) {

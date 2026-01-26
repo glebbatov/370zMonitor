@@ -1,9 +1,15 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v5.2 - Dual-Core Architecture
+ * 370zMonitor v5.3 - Dual-Core Architecture
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v5.3 Changes:
+ * - Added +5°C calibration offset to PRTXI temperature reading
+ * - Ice water test confirmed PRTXI accuracy (0°C in 0°C ice water)
+ * - Offset provides conservative margin for metal surface measurements
+ * - Updated clamp range to -45°C to 205°C (accounts for offset)
  *
  * v5.2 Changes:
  * - FIXED: Waveshare mode register address (0x0001 → 0x1001 per wiki)
@@ -942,12 +948,14 @@ static float convertToPSI(uint16_t modbus_mV) {
 //
 static float convertToTempC(uint16_t modbus_uA) {
     // Direct linear conversion: µA → °C
+    // +5°C calibration offset for conservative reading on metal surfaces
+    // (Ice water test confirmed sensor accuracy; offset is for peace of mind)
     float temp_c = ((float)(modbus_uA - PRTXI_MIN_CURRENT_UA) / (float)PRTXI_CURRENT_SPAN_UA) 
-                   * PRTXI_TEMP_SPAN_C + PRTXI_OFFSET_C;
+                   * PRTXI_TEMP_SPAN_C + PRTXI_OFFSET_C + 5.0f;
     
-    // Clamp to valid sensor range
-    if (temp_c < -50.0f) temp_c = -50.0f;
-    if (temp_c > 200.0f) temp_c = 200.0f;
+    // Clamp to valid sensor range (offset means we can read up to 205°C display)
+    if (temp_c < -45.0f) temp_c = -45.0f;
+    if (temp_c > 205.0f) temp_c = 205.0f;
     return temp_c;
 }
 

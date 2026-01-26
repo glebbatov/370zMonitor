@@ -31,15 +31,13 @@ void ui_init(void)
                                                true, LV_FONT_DEFAULT);
     lv_disp_set_theme(dispp, theme);
     
-    // Initialize splash screen first
-    ui_ScreenSplash_screen_init();
-    
-    // Initialize main screen (needed for splash->main transition)
-    ui_Screen1_screen_init();
+    // Initialize both screens
+    ui_ScreenSplash_screen_init();  // Splash screen (loaded first)
+    ui_Screen1_screen_init();        // Main screen (loaded after splash)
     
     ui____initial_actions0 = lv_obj_create(NULL);
     
-    // Load splash screen at startup (will auto-transition to main after 5 seconds)
+    // Load splash screen first - it will auto-transition to Screen1
     lv_disp_load_scr(ui_ScreenSplash);
 }
 

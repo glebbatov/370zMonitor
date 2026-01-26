@@ -38,8 +38,7 @@ lv_obj_t * ui_OIL_TEMP_CHART_Xaxis = NULL;
 lv_obj_t * ui_OIL_TEMP_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_OIL_TEMP_CHART_Yaxis2 = NULL;
 lv_obj_t * ui_OIL_TEMP_Value_Tap_Panel = NULL;
-lv_obj_t * ui_OIL_TEMP_Value_P = NULL;
-lv_obj_t * ui_OIL_TEMP_Value_C = NULL;
+lv_obj_t * ui_OIL_TEMP_Value = NULL;
 lv_obj_t * ui_OIL_TEMP_VALUE_CRITICAL_Label = NULL;
 lv_obj_t * ui_W_TEMP = NULL;
 lv_obj_t * ui_W_TEMP_Label = NULL;
@@ -50,8 +49,7 @@ lv_obj_t * ui_W_TEMP_CHART_Xaxis = NULL;
 lv_obj_t * ui_W_TEMP_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_W_TEMP_CHART_Yaxis2 = NULL;
 lv_obj_t * ui_W_TEMP_Value_Tap_Panel = NULL;
-lv_obj_t * ui_W_TEMP_Value_H = NULL;
-lv_obj_t * ui_W_TEMP_Value_C = NULL;
+lv_obj_t * ui_W_TEMP_Value = NULL;
 lv_obj_t * ui_W_TEMP_VALUE_CRITICAL_Label = NULL;
 lv_obj_t * ui_TRAN_TEMP = NULL;
 lv_obj_t * ui_TRAN_TEMP_Label = NULL;
@@ -62,8 +60,7 @@ lv_obj_t * ui_TRAN_TEMP_CHART_Xaxis = NULL;
 lv_obj_t * ui_TRAN_TEMP_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_TRAN_TEMP_CHART_Yaxis2 = NULL;
 lv_obj_t * ui_TRAN_TEMP_Value_Tap_Panel = NULL;
-lv_obj_t * ui_TRAN_TEMP_Value_H = NULL;
-lv_obj_t * ui_TRAN_TEMP_Value_C = NULL;
+lv_obj_t * ui_TRAN_TEMP_Value = NULL;
 lv_obj_t * ui_TRAN_TEMP_VALUE_CRITICAL_Label = NULL;
 lv_obj_t * ui_STEER_TEMP = NULL;
 lv_obj_t * ui_STEER_TEMP_Label = NULL;
@@ -74,8 +71,7 @@ lv_obj_t * ui_STEER_TEMP_CHART_Xaxis = NULL;
 lv_obj_t * ui_STEER_TEMP_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_STEER_TEMP_CHART_Yaxis2 = NULL;
 lv_obj_t * ui_STEER_TEMP_Value_Tap_Panel = NULL;
-lv_obj_t * ui_STEER_TEMP_Value_H = NULL;
-lv_obj_t * ui_STEER_TEMP_Value_C = NULL;
+lv_obj_t * ui_STEER_TEMP_Value = NULL;
 lv_obj_t * ui_STEER_TEMP_VALUE_CRITICAL_Label = NULL;
 lv_obj_t * ui_DIFF_TEMP = NULL;
 lv_obj_t * ui_DIFF_TEMP_Label = NULL;
@@ -86,8 +82,7 @@ lv_obj_t * ui_DIFF_TEMP_CHART_Xaxis = NULL;
 lv_obj_t * ui_DIFF_TEMP_CHART_Yaxis1 = NULL;
 lv_obj_t * ui_DIFF_TEMP_CHART_Yaxis2 = NULL;
 lv_obj_t * ui_DIFF_TEMP_Value_Tap_Panel = NULL;
-lv_obj_t * ui_DIFF_TEMP_Value_H = NULL;
-lv_obj_t * ui_DIFF_TEMP_Value_C = NULL;
+lv_obj_t * ui_DIFF_TEMP_Value = NULL;
 lv_obj_t * ui_DIFF_TEMP_VALUE_CRITICAL_Label = NULL;
 lv_obj_t * ui_FUEL_TRUST = NULL;
 lv_obj_t * ui_FUEL_TRUST_Label = NULL;
@@ -330,10 +325,10 @@ void ui_Screen1_screen_init(void)
     ui_OIL_PRESS_Value = lv_label_create(ui_OIL_PRESS);
     lv_obj_set_width(ui_OIL_PRESS_Value, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_OIL_PRESS_Value, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_OIL_PRESS_Value, -4);
+    lv_obj_set_x(ui_OIL_PRESS_Value, -10);
     lv_obj_set_y(ui_OIL_PRESS_Value, 0);
     lv_obj_set_align(ui_OIL_PRESS_Value, LV_ALIGN_RIGHT_MID);
-    lv_label_set_text(ui_OIL_PRESS_Value, "150 PSI");
+    lv_label_set_text(ui_OIL_PRESS_Value, "100 PSI");
     lv_obj_set_style_text_color(ui_OIL_PRESS_Value, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_OIL_PRESS_Value, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_OIL_PRESS_Value, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -481,23 +476,14 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_style_bg_color(ui_OIL_TEMP_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_OIL_TEMP_Value_P = lv_label_create(ui_OIL_TEMP);
-    lv_obj_set_width(ui_OIL_TEMP_Value_P, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_OIL_TEMP_Value_P, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_OIL_TEMP_Value_P, -4);
-    lv_obj_set_y(ui_OIL_TEMP_Value_P, -13);
-    lv_obj_set_align(ui_OIL_TEMP_Value_P, LV_ALIGN_RIGHT_MID);
-    lv_label_set_text(ui_OIL_TEMP_Value_P, "000°F [P]");
-    lv_obj_set_style_text_font(ui_OIL_TEMP_Value_P, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    ui_OIL_TEMP_Value_C = lv_label_create(ui_OIL_TEMP);
-    lv_obj_set_width(ui_OIL_TEMP_Value_C, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_OIL_TEMP_Value_C, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_OIL_TEMP_Value_C, -4);
-    lv_obj_set_y(ui_OIL_TEMP_Value_C, 14);
-    lv_obj_set_align(ui_OIL_TEMP_Value_C, LV_ALIGN_RIGHT_MID);
-    lv_label_set_text(ui_OIL_TEMP_Value_C, "000°F [C]");
-    lv_obj_set_style_text_font(ui_OIL_TEMP_Value_C, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_OIL_TEMP_Value = lv_label_create(ui_OIL_TEMP);
+    lv_obj_set_width(ui_OIL_TEMP_Value, LV_SIZE_CONTENT);   /// 1
+    lv_obj_set_height(ui_OIL_TEMP_Value, LV_SIZE_CONTENT);    /// 1
+    lv_obj_set_x(ui_OIL_TEMP_Value, -10);
+    lv_obj_set_y(ui_OIL_TEMP_Value, 0);
+    lv_obj_set_align(ui_OIL_TEMP_Value, LV_ALIGN_RIGHT_MID);
+    lv_label_set_text(ui_OIL_TEMP_Value, "000°F");
+    lv_obj_set_style_text_font(ui_OIL_TEMP_Value, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_OIL_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_OIL_TEMP);
     lv_obj_set_width(ui_OIL_TEMP_VALUE_CRITICAL_Label, lv_pct(42));
@@ -641,23 +627,14 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_style_bg_color(ui_W_TEMP_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_W_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_W_TEMP_Value_H = lv_label_create(ui_W_TEMP);
-    lv_obj_set_width(ui_W_TEMP_Value_H, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_W_TEMP_Value_H, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_W_TEMP_Value_H, -5);
-    lv_obj_set_y(ui_W_TEMP_Value_H, -13);
-    lv_obj_set_align(ui_W_TEMP_Value_H, LV_ALIGN_RIGHT_MID);
-    lv_label_set_text(ui_W_TEMP_Value_H, "000°F [H]");
-    lv_obj_set_style_text_font(ui_W_TEMP_Value_H, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    ui_W_TEMP_Value_C = lv_label_create(ui_W_TEMP);
-    lv_obj_set_width(ui_W_TEMP_Value_C, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_W_TEMP_Value_C, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_W_TEMP_Value_C, -5);
-    lv_obj_set_y(ui_W_TEMP_Value_C, 14);
-    lv_obj_set_align(ui_W_TEMP_Value_C, LV_ALIGN_RIGHT_MID);
-    lv_label_set_text(ui_W_TEMP_Value_C, "000°F [C]");
-    lv_obj_set_style_text_font(ui_W_TEMP_Value_C, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_W_TEMP_Value = lv_label_create(ui_W_TEMP);
+    lv_obj_set_width(ui_W_TEMP_Value, LV_SIZE_CONTENT);   /// 1
+    lv_obj_set_height(ui_W_TEMP_Value, LV_SIZE_CONTENT);    /// 1
+    lv_obj_set_x(ui_W_TEMP_Value, -10);
+    lv_obj_set_y(ui_W_TEMP_Value, 0);
+    lv_obj_set_align(ui_W_TEMP_Value, LV_ALIGN_RIGHT_MID);
+    lv_label_set_text(ui_W_TEMP_Value, "000°F");
+    lv_obj_set_style_text_font(ui_W_TEMP_Value, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_W_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_W_TEMP);
     lv_obj_set_width(ui_W_TEMP_VALUE_CRITICAL_Label, lv_pct(42));
@@ -801,23 +778,14 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_style_bg_color(ui_TRAN_TEMP_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_TRAN_TEMP_Value_H = lv_label_create(ui_TRAN_TEMP);
-    lv_obj_set_width(ui_TRAN_TEMP_Value_H, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_TRAN_TEMP_Value_H, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_TRAN_TEMP_Value_H, -5);
-    lv_obj_set_y(ui_TRAN_TEMP_Value_H, -13);
-    lv_obj_set_align(ui_TRAN_TEMP_Value_H, LV_ALIGN_RIGHT_MID);
-    lv_label_set_text(ui_TRAN_TEMP_Value_H, "000°F [H]");
-    lv_obj_set_style_text_font(ui_TRAN_TEMP_Value_H, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    ui_TRAN_TEMP_Value_C = lv_label_create(ui_TRAN_TEMP);
-    lv_obj_set_width(ui_TRAN_TEMP_Value_C, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_TRAN_TEMP_Value_C, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_TRAN_TEMP_Value_C, -5);
-    lv_obj_set_y(ui_TRAN_TEMP_Value_C, 14);
-    lv_obj_set_align(ui_TRAN_TEMP_Value_C, LV_ALIGN_RIGHT_MID);
-    lv_label_set_text(ui_TRAN_TEMP_Value_C, "000°F [C]");
-    lv_obj_set_style_text_font(ui_TRAN_TEMP_Value_C, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_TRAN_TEMP_Value = lv_label_create(ui_TRAN_TEMP);
+    lv_obj_set_width(ui_TRAN_TEMP_Value, LV_SIZE_CONTENT);   /// 1
+    lv_obj_set_height(ui_TRAN_TEMP_Value, LV_SIZE_CONTENT);    /// 1
+    lv_obj_set_x(ui_TRAN_TEMP_Value, -10);
+    lv_obj_set_y(ui_TRAN_TEMP_Value, 0);
+    lv_obj_set_align(ui_TRAN_TEMP_Value, LV_ALIGN_RIGHT_MID);
+    lv_label_set_text(ui_TRAN_TEMP_Value, "000°F");
+    lv_obj_set_style_text_font(ui_TRAN_TEMP_Value, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_TRAN_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_TRAN_TEMP);
     lv_obj_set_width(ui_TRAN_TEMP_VALUE_CRITICAL_Label, lv_pct(42));
@@ -962,23 +930,14 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_style_bg_color(ui_STEER_TEMP_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_STEER_TEMP_Value_H = lv_label_create(ui_STEER_TEMP);
-    lv_obj_set_width(ui_STEER_TEMP_Value_H, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_STEER_TEMP_Value_H, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_STEER_TEMP_Value_H, -5);
-    lv_obj_set_y(ui_STEER_TEMP_Value_H, -13);
-    lv_obj_set_align(ui_STEER_TEMP_Value_H, LV_ALIGN_RIGHT_MID);
-    lv_label_set_text(ui_STEER_TEMP_Value_H, "000°F [H]");
-    lv_obj_set_style_text_font(ui_STEER_TEMP_Value_H, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    ui_STEER_TEMP_Value_C = lv_label_create(ui_STEER_TEMP);
-    lv_obj_set_width(ui_STEER_TEMP_Value_C, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_STEER_TEMP_Value_C, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_STEER_TEMP_Value_C, -5);
-    lv_obj_set_y(ui_STEER_TEMP_Value_C, 14);
-    lv_obj_set_align(ui_STEER_TEMP_Value_C, LV_ALIGN_RIGHT_MID);
-    lv_label_set_text(ui_STEER_TEMP_Value_C, "000°F [C]");
-    lv_obj_set_style_text_font(ui_STEER_TEMP_Value_C, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_STEER_TEMP_Value = lv_label_create(ui_STEER_TEMP);
+    lv_obj_set_width(ui_STEER_TEMP_Value, LV_SIZE_CONTENT);   /// 1
+    lv_obj_set_height(ui_STEER_TEMP_Value, LV_SIZE_CONTENT);    /// 1
+    lv_obj_set_x(ui_STEER_TEMP_Value, -10);
+    lv_obj_set_y(ui_STEER_TEMP_Value, 0);
+    lv_obj_set_align(ui_STEER_TEMP_Value, LV_ALIGN_RIGHT_MID);
+    lv_label_set_text(ui_STEER_TEMP_Value, "000°F");
+    lv_obj_set_style_text_font(ui_STEER_TEMP_Value, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_STEER_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_STEER_TEMP);
     lv_obj_set_width(ui_STEER_TEMP_VALUE_CRITICAL_Label, lv_pct(42));
@@ -1124,23 +1083,14 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_style_bg_color(ui_DIFF_TEMP_Value_Tap_Panel, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_Tap_Panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_DIFF_TEMP_Value_H = lv_label_create(ui_DIFF_TEMP);
-    lv_obj_set_width(ui_DIFF_TEMP_Value_H, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_DIFF_TEMP_Value_H, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_DIFF_TEMP_Value_H, -5);
-    lv_obj_set_y(ui_DIFF_TEMP_Value_H, -13);
-    lv_obj_set_align(ui_DIFF_TEMP_Value_H, LV_ALIGN_RIGHT_MID);
-    lv_label_set_text(ui_DIFF_TEMP_Value_H, "000°F [H]");
-    lv_obj_set_style_text_font(ui_DIFF_TEMP_Value_H, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    ui_DIFF_TEMP_Value_C = lv_label_create(ui_DIFF_TEMP);
-    lv_obj_set_width(ui_DIFF_TEMP_Value_C, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_DIFF_TEMP_Value_C, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_DIFF_TEMP_Value_C, -5);
-    lv_obj_set_y(ui_DIFF_TEMP_Value_C, 14);
-    lv_obj_set_align(ui_DIFF_TEMP_Value_C, LV_ALIGN_RIGHT_MID);
-    lv_label_set_text(ui_DIFF_TEMP_Value_C, "000°F [C]");
-    lv_obj_set_style_text_font(ui_DIFF_TEMP_Value_C, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_DIFF_TEMP_Value = lv_label_create(ui_DIFF_TEMP);
+    lv_obj_set_width(ui_DIFF_TEMP_Value, LV_SIZE_CONTENT);   /// 1
+    lv_obj_set_height(ui_DIFF_TEMP_Value, LV_SIZE_CONTENT);    /// 1
+    lv_obj_set_x(ui_DIFF_TEMP_Value, -10);
+    lv_obj_set_y(ui_DIFF_TEMP_Value, 0);
+    lv_obj_set_align(ui_DIFF_TEMP_Value, LV_ALIGN_RIGHT_MID);
+    lv_label_set_text(ui_DIFF_TEMP_Value, "000°F");
+    lv_obj_set_style_text_font(ui_DIFF_TEMP_Value, &ui_font_OrbitronRegular26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_DIFF_TEMP_VALUE_CRITICAL_Label = lv_label_create(ui_DIFF_TEMP);
     lv_obj_set_width(ui_DIFF_TEMP_VALUE_CRITICAL_Label, lv_pct(42));
@@ -1288,7 +1238,7 @@ void ui_Screen1_screen_init(void)
     ui_FUEL_TRUST_Value = lv_label_create(ui_FUEL_TRUST);
     lv_obj_set_width(ui_FUEL_TRUST_Value, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_FUEL_TRUST_Value, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_FUEL_TRUST_Value, -5);
+    lv_obj_set_x(ui_FUEL_TRUST_Value, -10);
     lv_obj_set_y(ui_FUEL_TRUST_Value, -1);
     lv_obj_set_align(ui_FUEL_TRUST_Value, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(ui_FUEL_TRUST_Value, "100 %");
@@ -1349,8 +1299,7 @@ void ui_Screen1_screen_destroy(void)
     ui_OIL_TEMP_Bar = NULL;
     ui_OIL_TEMP_CHART = NULL;
     ui_OIL_TEMP_Value_Tap_Panel = NULL;
-    ui_OIL_TEMP_Value_P = NULL;
-    ui_OIL_TEMP_Value_C = NULL;
+    ui_OIL_TEMP_Value = NULL;
     ui_OIL_TEMP_VALUE_CRITICAL_Label = NULL;
     ui_W_TEMP = NULL;
     ui_W_TEMP_Label = NULL;
@@ -1358,8 +1307,7 @@ void ui_Screen1_screen_destroy(void)
     ui_W_TEMP_Bar = NULL;
     ui_W_TEMP_CHART = NULL;
     ui_W_TEMP_Value_Tap_Panel = NULL;
-    ui_W_TEMP_Value_H = NULL;
-    ui_W_TEMP_Value_C = NULL;
+    ui_W_TEMP_Value = NULL;
     ui_W_TEMP_VALUE_CRITICAL_Label = NULL;
     ui_TRAN_TEMP = NULL;
     ui_TRAN_TEMP_Label = NULL;
@@ -1367,8 +1315,7 @@ void ui_Screen1_screen_destroy(void)
     ui_TRAN_TEMP_Bar = NULL;
     ui_TRAN_TEMP_CHART = NULL;
     ui_TRAN_TEMP_Value_Tap_Panel = NULL;
-    ui_TRAN_TEMP_Value_H = NULL;
-    ui_TRAN_TEMP_Value_C = NULL;
+    ui_TRAN_TEMP_Value = NULL;
     ui_TRAN_TEMP_VALUE_CRITICAL_Label = NULL;
     ui_STEER_TEMP = NULL;
     ui_STEER_TEMP_Label = NULL;
@@ -1376,8 +1323,7 @@ void ui_Screen1_screen_destroy(void)
     ui_STEER_TEMP_Bar = NULL;
     ui_STEER_TEMP_CHART = NULL;
     ui_STEER_TEMP_Value_Tap_Panel = NULL;
-    ui_STEER_TEMP_Value_H = NULL;
-    ui_STEER_TEMP_Value_C = NULL;
+    ui_STEER_TEMP_Value = NULL;
     ui_STEER_TEMP_VALUE_CRITICAL_Label = NULL;
     ui_DIFF_TEMP = NULL;
     ui_DIFF_TEMP_Label = NULL;
@@ -1385,8 +1331,7 @@ void ui_Screen1_screen_destroy(void)
     ui_DIFF_TEMP_Bar = NULL;
     ui_DIFF_TEMP_CHART = NULL;
     ui_DIFF_TEMP_Value_Tap_Panel = NULL;
-    ui_DIFF_TEMP_Value_H = NULL;
-    ui_DIFF_TEMP_Value_C = NULL;
+    ui_DIFF_TEMP_Value = NULL;
     ui_DIFF_TEMP_VALUE_CRITICAL_Label = NULL;
     ui_FUEL_TRUST = NULL;
     ui_FUEL_TRUST_Label = NULL;

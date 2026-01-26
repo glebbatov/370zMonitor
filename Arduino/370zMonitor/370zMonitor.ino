@@ -38,7 +38,7 @@
  *
  * v5.1 Changes:
  * - Attempted voltage-mode fix (incorrect - wrong register address)
- * - Oil temp [C] gauge shows "---" (single sensor measures pan only)
+ * - Oil temp gauge simplified to single value per unit
  *
  * v5.0 Changes:
  * - PRTXI-1/2N-1/4-4-IO RTD transmitter on Modbus CH2
@@ -1540,43 +1540,38 @@ extern lv_obj_t* ui_OIL_PRESS_Value;
 extern lv_obj_t* ui_OIL_PRESS_VALUE_CRITICAL_Label;
 extern lv_obj_t* ui_OIL_PRESS_Value_Tap_Panel;
 
-//OIL TEMP [Oil pan/C]
+//OIL TEMP
 extern lv_obj_t* ui_OIL_TEMP_Bar;
 extern lv_obj_t* ui_OIL_TEMP_CHART;
-extern lv_obj_t* ui_OIL_TEMP_Value_P;
-extern lv_obj_t* ui_OIL_TEMP_Value_C;
+extern lv_obj_t* ui_OIL_TEMP_Value;
 extern lv_obj_t* ui_OIL_TEMP_VALUE_CRITICAL_Label;
 extern lv_obj_t* ui_OIL_TEMP_Value_Tap_Panel;
 
-//WATER TEMP [H/C]
+//WATER TEMP
 extern lv_obj_t* ui_W_TEMP_Bar;
 extern lv_obj_t* ui_W_TEMP_CHART;
-extern lv_obj_t* ui_W_TEMP_Value_H;
-extern lv_obj_t* ui_W_TEMP_Value_c;
+extern lv_obj_t* ui_W_TEMP_Value;
 extern lv_obj_t* ui_W_TEMP_VALUE_CRITICAL_Label;
 extern lv_obj_t* ui_W_TEMP_Value_Tap_Panel;
 
-//TRAN TEMP [H/C]
+//TRAN TEMP
 extern lv_obj_t* ui_TRAN_TEMP_Bar;
 extern lv_obj_t* ui_TRAN_TEMP_CHART;
-extern lv_obj_t* ui_TRAN_TEMP_Value_H;
-extern lv_obj_t* ui_TRAN_TEMP_Value_C;
+extern lv_obj_t* ui_TRAN_TEMP_Value;
 extern lv_obj_t* ui_TRAN_TEMP_VALUE_CRITICAL_Label;
 extern lv_obj_t* ui_TRAN_TEMP_Value_Tap_Panel;
 
-//STEER TEMP [H/C]
+//STEER TEMP
 extern lv_obj_t* ui_STEER_TEMP_Bar;
 extern lv_obj_t* ui_STEER_TEMP_CHART;
-extern lv_obj_t* ui_STEER_TEMP_Value_H;
-extern lv_obj_t* ui_STEER_TEMP_Value_C;
+extern lv_obj_t* ui_STEER_TEMP_Value;
 extern lv_obj_t* ui_STEER_TEMP_VALUE_CRITICAL_Label;
 extern lv_obj_t* ui_STEER_TEMP_Value_Tap_Panel;
 
-//DIFF TEMP [H/C]
+//DIFF TEMP
 extern lv_obj_t* ui_DIFF_TEMP_Bar;
 extern lv_obj_t* ui_DIFF_TEMP_CHART;
-extern lv_obj_t* ui_DIFF_TEMP_Value_H;
-extern lv_obj_t* ui_DIFF_TEMP_Value_C;
+extern lv_obj_t* ui_DIFF_TEMP_Value;
 extern lv_obj_t* ui_DIFF_TEMP_VALUE_CRITICAL_Label;
 extern lv_obj_t* ui_DIFF_TEMP_Value_Tap_Panel;
 
@@ -1905,38 +1900,28 @@ void resetUIElements() {
 
     // Oil Temp - uses g_oil_temp_unit
     const char* oilTempUnit = getTempUnitStr(g_oil_temp_unit);
-    snprintf(buf, sizeof(buf), "---°%s [P]", oilTempUnit);
-    if (ui_OIL_TEMP_Value_P) lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
-    snprintf(buf, sizeof(buf), "---°%s [C]", oilTempUnit);
-    if (ui_OIL_TEMP_Value_C) lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
+    snprintf(buf, sizeof(buf), "---°%s", oilTempUnit);
+    if (ui_OIL_TEMP_Value) lv_label_set_text(ui_OIL_TEMP_Value, buf);
 
     // Water Temp - uses g_water_temp_unit
     const char* waterTempUnit = getTempUnitStr(g_water_temp_unit);
-    snprintf(buf, sizeof(buf), "---°%s [H]", waterTempUnit);
-    if (ui_W_TEMP_Value_H) lv_label_set_text(ui_W_TEMP_Value_H, buf);
-    snprintf(buf, sizeof(buf), "---°%s [C]", waterTempUnit);
-    if (ui_W_TEMP_Value_C) lv_label_set_text(ui_W_TEMP_Value_C, buf);
+    snprintf(buf, sizeof(buf), "---°%s", waterTempUnit);
+    if (ui_W_TEMP_Value) lv_label_set_text(ui_W_TEMP_Value, buf);
 
     // Trans Temp - uses g_trans_temp_unit
     const char* transTempUnit = getTempUnitStr(g_trans_temp_unit);
-    snprintf(buf, sizeof(buf), "---°%s [H]", transTempUnit);
-    if (ui_TRAN_TEMP_Value_H) lv_label_set_text(ui_TRAN_TEMP_Value_H, buf);
-    snprintf(buf, sizeof(buf), "---°%s [C]", transTempUnit);
-    if (ui_TRAN_TEMP_Value_C) lv_label_set_text(ui_TRAN_TEMP_Value_C, buf);
+    snprintf(buf, sizeof(buf), "---°%s", transTempUnit);
+    if (ui_TRAN_TEMP_Value) lv_label_set_text(ui_TRAN_TEMP_Value, buf);
 
     // Steer Temp - uses g_steer_temp_unit
     const char* steerTempUnit = getTempUnitStr(g_steer_temp_unit);
-    snprintf(buf, sizeof(buf), "---°%s [H]", steerTempUnit);
-    if (ui_STEER_TEMP_Value_H) lv_label_set_text(ui_STEER_TEMP_Value_H, buf);
-    snprintf(buf, sizeof(buf), "---°%s [C]", steerTempUnit);
-    if (ui_STEER_TEMP_Value_C) lv_label_set_text(ui_STEER_TEMP_Value_C, buf);
+    snprintf(buf, sizeof(buf), "---°%s", steerTempUnit);
+    if (ui_STEER_TEMP_Value) lv_label_set_text(ui_STEER_TEMP_Value, buf);
 
     // Diff Temp - uses g_diff_temp_unit
     const char* diffTempUnit = getTempUnitStr(g_diff_temp_unit);
-    snprintf(buf, sizeof(buf), "---°%s [H]", diffTempUnit);
-    if (ui_DIFF_TEMP_Value_H) lv_label_set_text(ui_DIFF_TEMP_Value_H, buf);
-    snprintf(buf, sizeof(buf), "---°%s [C]", diffTempUnit);
-    if (ui_DIFF_TEMP_Value_C) lv_label_set_text(ui_DIFF_TEMP_Value_C, buf);
+    snprintf(buf, sizeof(buf), "---°%s", diffTempUnit);
+    if (ui_DIFF_TEMP_Value) lv_label_set_text(ui_DIFF_TEMP_Value, buf);
 
     if (ui_FUEL_TRUST_Value) lv_label_set_text(ui_FUEL_TRUST_Value, "--- %");
 
@@ -1948,63 +1933,38 @@ void resetUIElements() {
     }
 
     // Reset oil temp label styling to default
-    if (ui_OIL_TEMP_Value_P) {
-        lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_P, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_P, 0, 0);
-    }
-    if (ui_OIL_TEMP_Value_C) {
-        lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_C, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_all(ui_OIL_TEMP_Value_C, 0, 0);
+    if (ui_OIL_TEMP_Value) {
+        lv_obj_set_style_text_color(ui_OIL_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_OIL_TEMP_Value, 0, 0);
     }
 
     // Reset water temp label styling to default
-    if (ui_W_TEMP_Value_H) {
-        lv_obj_set_style_text_color(ui_W_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(ui_W_TEMP_Value_H, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_all(ui_W_TEMP_Value_H, 0, 0);
-    }
-    if (ui_W_TEMP_Value_C) {
-        lv_obj_set_style_text_color(ui_W_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(ui_W_TEMP_Value_C, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_all(ui_W_TEMP_Value_C, 0, 0);
+    if (ui_W_TEMP_Value) {
+        lv_obj_set_style_text_color(ui_W_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_W_TEMP_Value, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_W_TEMP_Value, 0, 0);
     }
 
     // Reset trans temp label styling to default
-    if (ui_TRAN_TEMP_Value_H) {
-        lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_H, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_H, 0, 0);
-    }
-    if (ui_TRAN_TEMP_Value_C) {
-        lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_C, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value_C, 0, 0);
+    if (ui_TRAN_TEMP_Value) {
+        lv_obj_set_style_text_color(ui_TRAN_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_TRAN_TEMP_Value, 0, 0);
     }
 
     // Reset steer temp label styling to default
-    if (ui_STEER_TEMP_Value_H) {
-        lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_H, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_H, 0, 0);
-    }
-    if (ui_STEER_TEMP_Value_C) {
-        lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_C, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_all(ui_STEER_TEMP_Value_C, 0, 0);
+    if (ui_STEER_TEMP_Value) {
+        lv_obj_set_style_text_color(ui_STEER_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_STEER_TEMP_Value, 0, 0);
     }
 
     // Reset diff temp label styling to default
-    if (ui_DIFF_TEMP_Value_H) {
-        lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_H, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_H, 0, 0);
-    }
-    if (ui_DIFF_TEMP_Value_C) {
-        lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_C, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value_C, 0, 0);
+    if (ui_DIFF_TEMP_Value) {
+        lv_obj_set_style_text_color(ui_DIFF_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(ui_DIFF_TEMP_Value, 0, 0);
     }
 
     // Reset fuel trust label styling to default
@@ -4036,23 +3996,33 @@ void runUSBMSCMode() {
     // Start USB, money line
     USB.begin();
 
+    // Give USB stack time to initialize before resetting the flag
+    delay(100);
+    
     // Reset connection flag AFTER USB.begin() - callbacks during init don't count
     g_usb_connected = false;
 
-    // Show static "USB is initializing..." - NO display updates during USB enumeration!
-    // This prevents screen shaking caused by SPI/USB conflicts
+    // Show waiting message with blinking dots to indicate activity
+    // Note: Minimal display updates to prevent SPI/USB conflicts
     gfx->fillRect(100, 342, 600, 40, GRAY_BG);
-    gfx->setCursor(286, 352);
+    gfx->setCursor(250, 352);
     gfx->setTextColor(WHITE);
-    gfx->print("USB is initializing...");
+    gfx->print("Waiting for USB host...");
 
-    // Wait for USB host to connect (detected via onStartStop callback)
-    // No display updates during this time to prevent shaking
+    // Wait for USB host to connect (detected via onStartStop or onRead callback)
+    // Blink dots to show we're alive, but minimize display updates
+    int dot_count = 0;
     while (!g_usb_connected) {
-        delay(100);  // Check every 100ms, but no display updates
+        delay(500);  // Check every 500ms
+        
+        // Update dots to show activity (minimal update)
+        dot_count = (dot_count + 1) % 4;
+        gfx->fillRect(502, 352, 50, 20, GRAY_BG);  // Clear dot area only
+        gfx->setCursor(502, 352);
+        for (int i = 0; i < dot_count; i++) gfx->print(".");
     }
 
-    // Clear the "USB is initializing..." text before showing "USB Ready!"
+    // Clear the "Waiting for USB host..." text before showing "USB Ready!"
     // Use larger clear area to ensure complete removal
     gfx->fillRect(50, 340, 700, 50, GRAY_BG);
 
@@ -4742,17 +4712,9 @@ static void system_check_timer_cb(lv_timer_t* t) {
 }
 
 // Called when main screen finishes loading - schedules system check
-static void onMainScreenLoaded(lv_event_t* e) {
-    LV_UNUSED(e);
-    Serial.println("[UI] Main screen loaded, scheduling system check...");
-    
-    // Schedule system check after delay (allows time sync to complete)
-    if (g_system_check_timer) {
-        lv_timer_delete(g_system_check_timer);
-    }
-    g_system_check_timer = lv_timer_create(system_check_timer_cb, SYSTEM_CHECK_DELAY_MS, NULL);
-    lv_timer_set_repeat_count(g_system_check_timer, 1);
-}
+// Note: onMainScreenLoaded was removed because ui_init() loads Screen1 directly,
+// causing LV_EVENT_SCREEN_LOADED to fire before we could register the callback.
+// The system check timer is now set up directly in setup() after ui_init().
 
 static void utility_box_single_tap_cb(lv_timer_t* t) {
     LV_UNUSED(t);
@@ -5059,13 +5021,9 @@ static void oil_temp_tap_cb(lv_event_t* e) {
     if (!g_vehicle_data.oil_temp_valid) {
         char buf[32];
         const char* unit = getTempUnitStr(g_oil_temp_unit);
-        if (ui_OIL_TEMP_Value_P) {
-            snprintf(buf, sizeof(buf), "---°%s [P]", unit);
-            lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
-        }
-        if (ui_OIL_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "---°%s [C]", unit);
-            lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
+        if (ui_OIL_TEMP_Value) {
+            snprintf(buf, sizeof(buf), "---°%s", unit);
+            lv_label_set_text(ui_OIL_TEMP_Value, buf);
         }
     }
 }
@@ -5080,13 +5038,9 @@ static void water_temp_tap_cb(lv_event_t* e) {
     if (!g_vehicle_data.water_temp_valid) {
         char buf[32];
         const char* unit = getTempUnitStr(g_water_temp_unit);
-        if (ui_W_TEMP_Value_H) {
-            snprintf(buf, sizeof(buf), "---°%s [H]", unit);
-            lv_label_set_text(ui_W_TEMP_Value_H, buf);
-        }
-        if (ui_W_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "---°%s [C]", unit);
-            lv_label_set_text(ui_W_TEMP_Value_C, buf);
+        if (ui_W_TEMP_Value) {
+            snprintf(buf, sizeof(buf), "---°%s", unit);
+            lv_label_set_text(ui_W_TEMP_Value, buf);
         }
     }
 }
@@ -5101,13 +5055,9 @@ static void trans_temp_tap_cb(lv_event_t* e) {
     if (!g_vehicle_data.trans_temp_valid) {
         char buf[32];
         const char* unit = getTempUnitStr(g_trans_temp_unit);
-        if (ui_TRAN_TEMP_Value_H) {
-            snprintf(buf, sizeof(buf), "---°%s [H]", unit);
-            lv_label_set_text(ui_TRAN_TEMP_Value_H, buf);
-        }
-        if (ui_TRAN_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "---°%s [C]", unit);
-            lv_label_set_text(ui_TRAN_TEMP_Value_C, buf);
+        if (ui_TRAN_TEMP_Value) {
+            snprintf(buf, sizeof(buf), "---°%s", unit);
+            lv_label_set_text(ui_TRAN_TEMP_Value, buf);
         }
     }
 }
@@ -5122,13 +5072,9 @@ static void steer_temp_tap_cb(lv_event_t* e) {
     if (!g_vehicle_data.steer_temp_valid) {
         char buf[32];
         const char* unit = getTempUnitStr(g_steer_temp_unit);
-        if (ui_STEER_TEMP_Value_H) {
-            snprintf(buf, sizeof(buf), "---°%s [H]", unit);
-            lv_label_set_text(ui_STEER_TEMP_Value_H, buf);
-        }
-        if (ui_STEER_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "---°%s [C]", unit);
-            lv_label_set_text(ui_STEER_TEMP_Value_C, buf);
+        if (ui_STEER_TEMP_Value) {
+            snprintf(buf, sizeof(buf), "---°%s", unit);
+            lv_label_set_text(ui_STEER_TEMP_Value, buf);
         }
     }
 }
@@ -5143,13 +5089,9 @@ static void diff_temp_tap_cb(lv_event_t* e) {
     if (!g_vehicle_data.diff_temp_valid) {
         char buf[32];
         const char* unit = getTempUnitStr(g_diff_temp_unit);
-        if (ui_DIFF_TEMP_Value_H) {
-            snprintf(buf, sizeof(buf), "---°%s [H]", unit);
-            lv_label_set_text(ui_DIFF_TEMP_Value_H, buf);
-        }
-        if (ui_DIFF_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "---°%s [C]", unit);
-            lv_label_set_text(ui_DIFF_TEMP_Value_C, buf);
+        if (ui_DIFF_TEMP_Value) {
+            snprintf(buf, sizeof(buf), "---°%s", unit);
+            lv_label_set_text(ui_DIFF_TEMP_Value, buf);
         }
     }
 }
@@ -5870,7 +5812,7 @@ void updateUI() {
     if (g_vehicle_data.oil_temp_valid) {
         const char* oilTempUnit = getTempUnitStr(g_oil_temp_unit);
         float temp_pan_disp = tempToDisplay((float)g_vehicle_data.oil_temp_pan_f, g_oil_temp_unit);
-        // NOTE: temp_cooled_disp removed - single PRTXI sensor, [C] gauge shows "---"
+        // Single temperature value per gauge
 
         if (smooth_oil_temp_f < 0) {
             smooth_oil_temp_f = temp_pan_disp;
@@ -5892,11 +5834,11 @@ void updateUI() {
         if (update_bars_this_frame) updateLightweightBar(1, g_vehicle_data.oil_temp_pan_f);
 #endif
 
-        if (ui_OIL_TEMP_Value_P) {
+        if (ui_OIL_TEMP_Value) {
             int pan_display_val = (int)(temp_pan_disp + 0.5f);
             if (pan_display_val != last_oil_temp_pan_display || oil_temp_unit_changed) {
-                snprintf(buf, sizeof(buf), "%d°%s [P]", pan_display_val, oilTempUnit);
-                lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
+                snprintf(buf, sizeof(buf), "%d°%s", pan_display_val, oilTempUnit);
+                lv_label_set_text(ui_OIL_TEMP_Value, buf);
                 last_oil_temp_pan_display = pan_display_val;
             }
 
@@ -5905,27 +5847,16 @@ void updateUI() {
             static bool oil_temp_was_value_critical = false;
             if (value_critical != oil_temp_was_value_critical) {
                 if (value_critical) {
-                    lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_text_color(ui_OIL_TEMP_Value, lv_color_hex(0x000000), 0);
                 }
                 else {
-                    lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_text_color(ui_OIL_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
                 }
                 oil_temp_was_value_critical = value_critical;
             }
         }
 
-        // NOTE: [C] gauge always shows "---" - single PRTXI sensor measures pan temp only
-        // When a second sensor is added for cooled line, remove this override
-        if (ui_OIL_TEMP_Value_C) {
-            static bool cooled_set_once = false;
-            if (!cooled_set_once) {
-                lv_label_set_text(ui_OIL_TEMP_Value_C, "--- [C]");
-                lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0x888888), 0);  // Dim gray
-                cooled_set_once = true;
-            }
-        }
-
-        // Panel background for critical state (covers both P and C labels)
+        // Panel background for critical state
         bool oil_temp_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
         if (oil_temp_critical != g_oil_temp_panel_was_critical) {
             if (ui_OIL_TEMP_Value_Tap_Panel) {
@@ -5948,10 +5879,10 @@ void updateUI() {
         // Just became invalid - update UI once to show "---" with unit
         const char* oilTempUnit = getTempUnitStr(g_oil_temp_unit);
         char buf[32];
-        if (ui_OIL_TEMP_Value_P) {
-            snprintf(buf, sizeof(buf), "---°%s [P]", oilTempUnit);
-            lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
-            lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0xFFFFFF), 0);
+        if (ui_OIL_TEMP_Value) {
+            snprintf(buf, sizeof(buf), "---°%s", oilTempUnit);
+            lv_label_set_text(ui_OIL_TEMP_Value, buf);
+            lv_obj_set_style_text_color(ui_OIL_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
         }
         
         // Reset panel background
@@ -5986,13 +5917,12 @@ void updateUI() {
     if (g_vehicle_data.water_temp_valid) {
         const char* waterTempUnit = getTempUnitStr(g_water_temp_unit);
         float temp_hot_disp = tempToDisplay((float)g_vehicle_data.water_temp_hot_f, g_water_temp_unit);
-        float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.water_temp_cooled_f, g_water_temp_unit);
 
-        if (ui_W_TEMP_Value_H) {
+        if (ui_W_TEMP_Value) {
             int hot_display_val = (int)(temp_hot_disp + 0.5f);
             if (hot_display_val != last_water_temp_hot_display || water_temp_unit_changed) {
-                snprintf(buf, sizeof(buf), "%d°%s [H]", hot_display_val, waterTempUnit);
-                lv_label_set_text(ui_W_TEMP_Value_H, buf);
+                snprintf(buf, sizeof(buf), "%d°%s", hot_display_val, waterTempUnit);
+                lv_label_set_text(ui_W_TEMP_Value, buf);
                 last_water_temp_hot_display = hot_display_val;
             }
 
@@ -6001,33 +5931,12 @@ void updateUI() {
             static bool water_temp_was_value_critical = false;
             if (value_critical != water_temp_was_value_critical) {
                 if (value_critical) {
-                    lv_obj_set_style_text_color(ui_W_TEMP_Value_H, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_text_color(ui_W_TEMP_Value, lv_color_hex(0x000000), 0);
                 }
                 else {
-                    lv_obj_set_style_text_color(ui_W_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_text_color(ui_W_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
                 }
                 water_temp_was_value_critical = value_critical;
-            }
-        }
-        if (ui_W_TEMP_Value_C) {
-            int cooled_display_val = (int)(temp_cooled_disp + 0.5f);
-            if (cooled_display_val != last_water_temp_cooled_display || water_temp_unit_changed) {
-                snprintf(buf, sizeof(buf), "%d°%s [C]", cooled_display_val, waterTempUnit);
-                lv_label_set_text(ui_W_TEMP_Value_C, buf);
-                last_water_temp_cooled_display = cooled_display_val;
-            }
-
-            // Style label text color based on critical
-            bool value_critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
-            static bool water_temp_c_was_value_critical = false;
-            if (value_critical != water_temp_c_was_value_critical) {
-                if (value_critical) {
-                    lv_obj_set_style_text_color(ui_W_TEMP_Value_C, lv_color_hex(0x000000), 0);
-                }
-                else {
-                    lv_obj_set_style_text_color(ui_W_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-                }
-                water_temp_c_was_value_critical = value_critical;
             }
         }
 
@@ -6064,13 +5973,12 @@ void updateUI() {
     if (g_vehicle_data.trans_temp_valid) {
         const char* transTempUnit = getTempUnitStr(g_trans_temp_unit);
         float temp_hot_disp = tempToDisplay((float)g_vehicle_data.trans_temp_hot_f, g_trans_temp_unit);
-        float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.trans_temp_cooled_f, g_trans_temp_unit);
 
-        if (ui_TRAN_TEMP_Value_H) {
+        if (ui_TRAN_TEMP_Value) {
             int hot_display_val = (int)(temp_hot_disp + 0.5f);
             if (hot_display_val != last_trans_temp_hot_display || trans_temp_unit_changed) {
-                snprintf(buf, sizeof(buf), "%d°%s [H]", hot_display_val, transTempUnit);
-                lv_label_set_text(ui_TRAN_TEMP_Value_H, buf);
+                snprintf(buf, sizeof(buf), "%d°%s", hot_display_val, transTempUnit);
+                lv_label_set_text(ui_TRAN_TEMP_Value, buf);
                 last_trans_temp_hot_display = hot_display_val;
             }
 
@@ -6079,33 +5987,12 @@ void updateUI() {
             static bool trans_temp_was_value_critical = false;
             if (value_critical != trans_temp_was_value_critical) {
                 if (value_critical) {
-                    lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_text_color(ui_TRAN_TEMP_Value, lv_color_hex(0x000000), 0);
                 }
                 else {
-                    lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_text_color(ui_TRAN_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
                 }
                 trans_temp_was_value_critical = value_critical;
-            }
-        }
-        if (ui_TRAN_TEMP_Value_C) {
-            int cooled_display_val = (int)(temp_cooled_disp + 0.5f);
-            if (cooled_display_val != last_trans_temp_cooled_display || trans_temp_unit_changed) {
-                snprintf(buf, sizeof(buf), "%d°%s [C]", cooled_display_val, transTempUnit);
-                lv_label_set_text(ui_TRAN_TEMP_Value_C, buf);
-                last_trans_temp_cooled_display = cooled_display_val;
-            }
-
-            // Style label text color based on critical
-            bool value_critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
-            static bool trans_temp_c_was_value_critical = false;
-            if (value_critical != trans_temp_c_was_value_critical) {
-                if (value_critical) {
-                    lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0x000000), 0);
-                }
-                else {
-                    lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-                }
-                trans_temp_c_was_value_critical = value_critical;
             }
         }
 
@@ -6144,15 +6031,10 @@ void updateUI() {
         // Just became invalid - update UI once to show "---" with unit
         const char* transTempUnit = getTempUnitStr(g_trans_temp_unit);
         char buf[32];
-        if (ui_TRAN_TEMP_Value_H) {
-            snprintf(buf, sizeof(buf), "---°%s [H]", transTempUnit);
-            lv_label_set_text(ui_TRAN_TEMP_Value_H, buf);
-            lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
-        }
-        if (ui_TRAN_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "---°%s [C]", transTempUnit);
-            lv_label_set_text(ui_TRAN_TEMP_Value_C, buf);
-            lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+        if (ui_TRAN_TEMP_Value) {
+            snprintf(buf, sizeof(buf), "---°%s", transTempUnit);
+            lv_label_set_text(ui_TRAN_TEMP_Value, buf);
+            lv_obj_set_style_text_color(ui_TRAN_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
         }
         
         // Reset panel background
@@ -6187,13 +6069,12 @@ void updateUI() {
     if (g_vehicle_data.steer_temp_valid) {
         const char* steerTempUnit = getTempUnitStr(g_steer_temp_unit);
         float temp_hot_disp = tempToDisplay((float)g_vehicle_data.steer_temp_hot_f, g_steer_temp_unit);
-        float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.steer_temp_cooled_f, g_steer_temp_unit);
 
-        if (ui_STEER_TEMP_Value_H) {
+        if (ui_STEER_TEMP_Value) {
             int hot_display_val = (int)(temp_hot_disp + 0.5f);
             if (hot_display_val != last_steer_temp_hot_display || steer_temp_unit_changed) {
-                snprintf(buf, sizeof(buf), "%d°%s [H]", hot_display_val, steerTempUnit);
-                lv_label_set_text(ui_STEER_TEMP_Value_H, buf);
+                snprintf(buf, sizeof(buf), "%d°%s", hot_display_val, steerTempUnit);
+                lv_label_set_text(ui_STEER_TEMP_Value, buf);
                 last_steer_temp_hot_display = hot_display_val;
             }
 
@@ -6202,33 +6083,12 @@ void updateUI() {
             static bool steer_temp_was_value_critical = false;
             if (value_critical != steer_temp_was_value_critical) {
                 if (value_critical) {
-                    lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_text_color(ui_STEER_TEMP_Value, lv_color_hex(0x000000), 0);
                 }
                 else {
-                    lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_text_color(ui_STEER_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
                 }
                 steer_temp_was_value_critical = value_critical;
-            }
-        }
-        if (ui_STEER_TEMP_Value_C) {
-            int cooled_display_val = (int)(temp_cooled_disp + 0.5f);
-            if (cooled_display_val != last_steer_temp_cooled_display || steer_temp_unit_changed) {
-                snprintf(buf, sizeof(buf), "%d°%s [C]", cooled_display_val, steerTempUnit);
-                lv_label_set_text(ui_STEER_TEMP_Value_C, buf);
-                last_steer_temp_cooled_display = cooled_display_val;
-            }
-
-            // Style label text color based on critical
-            bool value_critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
-            static bool steer_temp_c_was_value_critical = false;
-            if (value_critical != steer_temp_c_was_value_critical) {
-                if (value_critical) {
-                    lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0x000000), 0);
-                }
-                else {
-                    lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-                }
-                steer_temp_c_was_value_critical = value_critical;
             }
         }
 
@@ -6267,15 +6127,10 @@ void updateUI() {
         // Just became invalid - update UI once to show "---" with unit
         const char* steerTempUnit = getTempUnitStr(g_steer_temp_unit);
         char buf[32];
-        if (ui_STEER_TEMP_Value_H) {
-            snprintf(buf, sizeof(buf), "---°%s [H]", steerTempUnit);
-            lv_label_set_text(ui_STEER_TEMP_Value_H, buf);
-            lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
-        }
-        if (ui_STEER_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "---°%s [C]", steerTempUnit);
-            lv_label_set_text(ui_STEER_TEMP_Value_C, buf);
-            lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+        if (ui_STEER_TEMP_Value) {
+            snprintf(buf, sizeof(buf), "---°%s", steerTempUnit);
+            lv_label_set_text(ui_STEER_TEMP_Value, buf);
+            lv_obj_set_style_text_color(ui_STEER_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
         }
         
         // Reset panel background
@@ -6310,13 +6165,12 @@ void updateUI() {
     if (g_vehicle_data.diff_temp_valid) {
         const char* diffTempUnit = getTempUnitStr(g_diff_temp_unit);
         float temp_hot_disp = tempToDisplay((float)g_vehicle_data.diff_temp_hot_f, g_diff_temp_unit);
-        float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.diff_temp_cooled_f, g_diff_temp_unit);
 
-        if (ui_DIFF_TEMP_Value_H) {
+        if (ui_DIFF_TEMP_Value) {
             int hot_display_val = (int)(temp_hot_disp + 0.5f);
             if (hot_display_val != last_diff_temp_hot_display || diff_temp_unit_changed) {
-                snprintf(buf, sizeof(buf), "%d°%s [H]", hot_display_val, diffTempUnit);
-                lv_label_set_text(ui_DIFF_TEMP_Value_H, buf);
+                snprintf(buf, sizeof(buf), "%d°%s", hot_display_val, diffTempUnit);
+                lv_label_set_text(ui_DIFF_TEMP_Value, buf);
                 last_diff_temp_hot_display = hot_display_val;
             }
 
@@ -6325,33 +6179,12 @@ void updateUI() {
             static bool diff_temp_was_value_critical = false;
             if (value_critical != diff_temp_was_value_critical) {
                 if (value_critical) {
-                    lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_text_color(ui_DIFF_TEMP_Value, lv_color_hex(0x000000), 0);
                 }
                 else {
-                    lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+                    lv_obj_set_style_text_color(ui_DIFF_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
                 }
                 diff_temp_was_value_critical = value_critical;
-            }
-        }
-        if (ui_DIFF_TEMP_Value_C) {
-            int cooled_display_val = (int)(temp_cooled_disp + 0.5f);
-            if (cooled_display_val != last_diff_temp_cooled_display || diff_temp_unit_changed) {
-                snprintf(buf, sizeof(buf), "%d°%s [C]", cooled_display_val, diffTempUnit);
-                lv_label_set_text(ui_DIFF_TEMP_Value_C, buf);
-                last_diff_temp_cooled_display = cooled_display_val;
-            }
-
-            // Style label text color based on critical
-            bool value_critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
-            static bool diff_temp_c_was_value_critical = false;
-            if (value_critical != diff_temp_c_was_value_critical) {
-                if (value_critical) {
-                    lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0x000000), 0);
-                }
-                else {
-                    lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-                }
-                diff_temp_c_was_value_critical = value_critical;
             }
         }
 
@@ -6390,15 +6223,10 @@ void updateUI() {
         // Just became invalid - update UI once to show "---" with unit
         const char* diffTempUnit = getTempUnitStr(g_diff_temp_unit);
         char buf[32];
-        if (ui_DIFF_TEMP_Value_H) {
-            snprintf(buf, sizeof(buf), "---°%s [H]", diffTempUnit);
-            lv_label_set_text(ui_DIFF_TEMP_Value_H, buf);
-            lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
-        }
-        if (ui_DIFF_TEMP_Value_C) {
-            snprintf(buf, sizeof(buf), "---°%s [C]", diffTempUnit);
-            lv_label_set_text(ui_DIFF_TEMP_Value_C, buf);
-            lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+        if (ui_DIFF_TEMP_Value) {
+            snprintf(buf, sizeof(buf), "---°%s", diffTempUnit);
+            lv_label_set_text(ui_DIFF_TEMP_Value, buf);
+            lv_obj_set_style_text_color(ui_DIFF_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
         }
         
         // Reset panel background
@@ -6980,9 +6808,15 @@ void setup() {
         while (1) delay(100);
     }
     
-    // Register callback for when main screen loads (after splash)
-    // This triggers the "All systems checked" toast
-    lv_obj_add_event_cb(ui_Screen1, onMainScreenLoaded, LV_EVENT_SCREEN_LOADED, NULL);
+    // Schedule system check after delay (allows sensors to initialize)
+    // Note: ui_init() already loads Screen1, so we set up timers directly here
+    // rather than using LV_EVENT_SCREEN_LOADED which fires during ui_init()
+    Serial.println("[UI] Scheduling system status check...");
+    if (g_system_check_timer) {
+        lv_timer_delete(g_system_check_timer);
+    }
+    g_system_check_timer = lv_timer_create(system_check_timer_cb, SYSTEM_CHECK_DELAY_MS, NULL);
+    lv_timer_set_repeat_count(g_system_check_timer, 1);
     
     Serial.println("      OK");
 

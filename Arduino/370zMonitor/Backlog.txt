@@ -1,4 +1,3 @@
-add Water pressure sensor
 ======================================
 +Touch
 --
@@ -20,35 +19,15 @@ don't write any code yet
 +UI
 
 ======================================
-+G-Sensor
---
-For I2C connected devices I now have this hub:
-Crowtail- I2C Hub 2.0 (SKU CRT00529H)
-https://www.elecrow.com/crowtail-i2c-hub.html?srsltid=AfmBOooBa4Y1iGZ-kH2GVltxPF1q3H6aFfJPbCT6YgM_RjfxTxf8zcK1
-
-I have these connections:
-*esp32 connected to the hub
-*HW-084 connected to the hub
-*ADA2809 connected to the hub
-
-I want to implement the accelerometer functionality with ADA2809.
-
-let's do a test read first.
-what data does it output?
-======================================
 +Modbus
---
-connect temp sensor
---
-connect second Modbus RTU
---
-add isValueCritical bool parameters for each sensor values in logs
+
 ======================================
 +Func
-*add fuel trust out of OBD values
+
 ======================================
 +Other
-*add time stamp to .log files. Now: "[58766] [STATUS] FPS=1 (FRAMES=1..." - no timestamp
-*add auto diming schedule (the same as on Android Auto Maps)
+*refucktor 370zMonitor.ino into separate files (to reduce how big the file is)
+--
 *if a fan kicks in (engine/trans/diff) show it visualy (animation/trigger) on the monitor display
+*add water pressure sensor
 ======================================

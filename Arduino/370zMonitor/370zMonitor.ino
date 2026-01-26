@@ -5210,13 +5210,26 @@ void autoBrightnessInit() {
                   g_auto_brightness.enabled ? "YES" : "NO");
 }
 
-// Update auto brightness button text
+// Update auto brightness button text (two lines: "DIM:" and mode/time)
 void updateAutoBrightnessButtonText() {
     if (auto_bri_lbl) {
         if (g_auto_brightness.enabled) {
-            lv_label_set_text(auto_bri_lbl, "DIM: AUTO");
+            // Show next toggle time if times are calculated
+            if (g_auto_brightness.last_check_day != -1) {
+                char btn_text[24];
+                if (g_auto_brightness.is_daytime) {
+                    // Daytime - show when it will dim (sunset)
+                    snprintf(btn_text, sizeof(btn_text), "DIM:\nAUTO [%s]", g_auto_brightness.sunset_str);
+                } else {
+                    // Nighttime - show when it will brighten (sunrise)
+                    snprintf(btn_text, sizeof(btn_text), "DIM:\nAUTO [%s]", g_auto_brightness.sunrise_str);
+                }
+                lv_label_set_text(auto_bri_lbl, btn_text);
+            } else {
+                lv_label_set_text(auto_bri_lbl, "DIM:\nAUTO");
+            }
         } else {
-            lv_label_set_text(auto_bri_lbl, "DIM: MANUAL");
+            lv_label_set_text(auto_bri_lbl, "DIM:\nMANUAL");
         }
     }
 }
@@ -5283,6 +5296,9 @@ bool autoBrightnessUpdate() {
         Serial.printf("[AUTO-BRI] Date: %04d-%02d-%02d | Sunrise: %s, Sunset: %s (local)\n",
                       timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
                       g_auto_brightness.sunrise_str, g_auto_brightness.sunset_str);
+        
+        // Update button to show calculated times
+        updateAutoBrightnessButtonText();
     }
     
     // Current time in hours
@@ -5311,6 +5327,9 @@ bool autoBrightnessUpdate() {
                       g_auto_brightness.is_daytime ? "Day" : "Night",
                       (new_brightness * 100) / 255);
         
+        // Update button to show next toggle time
+        updateAutoBrightnessButtonText();
+        
         return true;
     }
     
@@ -5325,6 +5344,9 @@ void autoBrightnessForceUpdate() {
     g_auto_brightness.last_check_day = -1;
     g_auto_brightness.manual_override = false;
     autoBrightnessUpdate();
+    
+    // Ensure button text is updated with calculated times
+    updateAutoBrightnessButtonText();
 }
 
 #pragma region Utility Box Callbacks
@@ -6022,20 +6044,18 @@ static void auto_bri_btn_click_cb(lv_event_t* e) {
     // Toggle auto brightness
     g_auto_brightness.enabled = !g_auto_brightness.enabled;
     
-    // Update button text
-    updateAutoBrightnessButtonText();
-    
     // Save preference
     saveAutoBrightnessPreference();
     
     if (g_auto_brightness.enabled) {
         // Just enabled - clear manual override and apply current time-based setting
         g_auto_brightness.manual_override = false;
-        autoBrightnessForceUpdate();
+        autoBrightnessForceUpdate();  // This calculates times AND updates button text
         Serial.println("[UI] Auto Brightness button tapped - ENABLED");
     } else {
         // Just disabled - set to full brightness
         setBrightness(BRIGHTNESS_DAY);
+        updateAutoBrightnessButtonText();  // Show "DIM: MANUAL"
         Serial.println("[UI] Auto Brightness button tapped - DISABLED (100%)");
     }
 }
@@ -8160,11 +8180,12 @@ void setup() {
         lv_obj_set_style_pad_all(auto_bri_btn, 2, 0);
         lv_obj_remove_flag(auto_bri_btn, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);  // Start disabled
         
-        // Auto Brightness label inside button
+        // Auto Brightness label inside button (two lines, centered)
         auto_bri_lbl = lv_label_create(auto_bri_btn);
-        lv_label_set_text(auto_bri_lbl, g_auto_brightness.enabled ? "DIM: AUTO" : "DIM: MANUAL");
+        lv_label_set_text(auto_bri_lbl, g_auto_brightness.enabled ? "DIM:\nAUTO" : "DIM:\nMANUAL");
         lv_obj_set_style_text_color(auto_bri_lbl, lv_color_hex(0x000000), 0);  // Black text
         lv_obj_set_style_text_font(auto_bri_lbl, &lv_font_unscii_16, 0);
+        lv_obj_set_style_text_align(auto_bri_lbl, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_center(auto_bri_lbl);
         
         // Event callbacks for auto brightness button

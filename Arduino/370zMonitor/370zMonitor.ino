@@ -2538,6 +2538,10 @@ struct SDState {
     bool log_file_open;
     uint32_t log_bytes_written;
     uint32_t last_log_flush_ms;
+    // Health tracking (#3)
+    uint32_t consecutive_write_errors;  // Reset on success, for early warning
+    uint32_t total_write_errors;        // Lifetime errors (never reset)
+    uint32_t last_sync_marker_ms;       // For periodic sync markers (#4)
 };
 static SDState g_sd_state = { 0 };
 
@@ -2789,6 +2793,8 @@ bool sdStartSession() {
     g_sd_state.error_count = 0;
     g_sd_state.bytes_written = 0;
     g_sd_state.last_flush_ms = millis();
+    g_sd_state.consecutive_write_errors = 0;  // Reset health tracking (#3)
+    g_sd_state.last_sync_marker_ms = millis(); // First sync marker in 5min (#4)
 
     const char* header = "datetime,rpm,oil_press_psi,"
         "oil_temp_pan_f,oil_temp_cooled_f,"
@@ -3019,11 +3025,21 @@ void sdWriteTask(void* parameter) {
             
             if (success) {
                 writes_since_debug++;
+                g_sd_state.consecutive_write_errors = 0;  // Reset on success (#3)
             } else {
                 g_sd_state.error_count++;
+                g_sd_state.consecutive_write_errors++;    // Track consecutive (#3)
+                g_sd_state.total_write_errors++;          // Track lifetime (#3)
+                
+                // Early warning at 3 consecutive errors (#3)
+                if (g_sd_state.consecutive_write_errors == 3) {
+                    _RealSerial.println("[SD/CORE0] WARNING: 3 consecutive write failures - card may be failing");
+                }
+                
                 if (g_sd_state.error_count >= 10) {
                     g_sd_state.logging_enabled = false;
-                    _RealSerial.println("[SD/CORE0] Too many errors, logging disabled");
+                    _RealSerial.printf("[SD/CORE0] Too many errors (total=%lu), logging disabled\n", 
+                                       g_sd_state.total_write_errors);
                 }
             }
             
@@ -3032,6 +3048,19 @@ void sdWriteTask(void* parameter) {
             if ((now - g_sd_state.last_flush_ms) >= SD_FLUSH_INTERVAL_MS) {
                 g_sd_state.data_file.flush();
                 g_sd_state.last_flush_ms = now;
+            }
+            
+            // Periodic sync marker every 5 minutes (#4)
+            // Helps identify how much data was valid if power dies mid-session
+            #define SYNC_MARKER_INTERVAL_MS 300000  // 5 minutes
+            if ((now - g_sd_state.last_sync_marker_ms) >= SYNC_MARKER_INTERVAL_MS) {
+                char sync_line[64];
+                snprintf(sync_line, sizeof(sync_line), "# SYNC %lu writes=%lu bytes=%lu\n", 
+                         now, g_sd_state.write_count, g_sd_state.bytes_written);
+                g_sd_state.data_file.print(sync_line);
+                g_sd_state.data_file.flush();
+                g_sd_state.last_sync_marker_ms = now;
+                _RealSerial.printf("[SD/CORE0] Sync marker written at %lu ms\n", now);
             }
         }
         // No data received - just continue waiting
@@ -3283,6 +3312,21 @@ void sdWriteBootCount(uint32_t count) {
     f.close();
     
     Serial.printf("[SD] Boot count written: %lu (checksum=%lu)\n", count, checksum);
+    
+    // Verify write succeeded by reading back (#2)
+    uint32_t verify = 0;
+    if (!validateBootCountFile(BOOT_COUNT_PRIMARY, &verify) || verify != count) {
+        Serial.println("[SD] WARNING: Boot count write verification FAILED!");
+        Serial.printf("[SD]   Expected: %lu, Got: %lu\n", count, verify);
+        // Attempt one retry
+        f = SD.open(BOOT_COUNT_PRIMARY, FILE_WRITE);
+        if (f) {
+            f.print(content);
+            f.flush();
+            f.close();
+            Serial.println("[SD] Boot count retry write attempted");
+        }
+    }
 }
 
 //=================================================================

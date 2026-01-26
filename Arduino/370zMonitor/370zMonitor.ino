@@ -3117,35 +3117,172 @@ bool sdTestWrite() {
 }
 
 //=================================================================
-// BOOT COUNTER MANAGEMENT
-// Persists boot count on SD card for session numbering
+// BOOT COUNTER MANAGEMENT - WITH CORRUPTION PROTECTION
+// Uses dual-file backup with checksum validation to survive power loss
+// Primary: BOOTCNT.DAT  Backup: BOOTCNT.BAK
+// Format: "count\nCHKSUM:sum" where sum = sum of ASCII digit values
 //=================================================================
 
-#define BOOT_COUNT_FILE "/.bootcount"
+#define BOOT_COUNT_PRIMARY  "/BOOTCNT.DAT"
+#define BOOT_COUNT_BACKUP   "/BOOTCNT.BAK"
+
+// Calculate checksum as sum of digit values (simple but effective)
+static uint32_t bootCountChecksum(uint32_t count) {
+    uint32_t sum = 0;
+    if (count == 0) return 0;  // Special case: checksum of 0 is 0
+    while (count > 0) {
+        sum += count % 10;
+        count /= 10;
+    }
+    return sum;
+}
+
+// Validate boot count file format and checksum
+// Returns true if valid, stores count in *out_count
+static bool validateBootCountFile(const char* filename, uint32_t* out_count) {
+    File f = SD.open(filename, FILE_READ);
+    if (!f) {
+        return false;
+    }
+    
+    char buf[64] = { 0 };
+    size_t len = f.readBytes(buf, sizeof(buf) - 1);
+    f.close();
+    
+    if (len == 0) {
+        Serial.printf("[SD] %s: Empty file\n", filename);
+        return false;
+    }
+    
+    // Parse format: "count\nCHKSUM:sum"
+    char* newline = strchr(buf, '\n');
+    if (!newline) {
+        Serial.printf("[SD] %s: Missing checksum line\n", filename);
+        return false;
+    }
+    
+    *newline = '\0';  // Null-terminate the count string
+    uint32_t count = (uint32_t)atol(buf);
+    
+    // Parse checksum
+    char* chksum_line = newline + 1;
+    if (strncmp(chksum_line, "CHKSUM:", 7) != 0) {
+        Serial.printf("[SD] %s: Invalid checksum format\n", filename);
+        return false;
+    }
+    
+    uint32_t stored_checksum = (uint32_t)atol(chksum_line + 7);
+    uint32_t calculated_checksum = bootCountChecksum(count);
+    
+    if (stored_checksum != calculated_checksum) {
+        Serial.printf("[SD] %s: Checksum mismatch (stored=%lu calc=%lu)\n", 
+                      filename, stored_checksum, calculated_checksum);
+        return false;
+    }
+    
+    *out_count = count;
+    return true;
+}
+
+// Scan SD card for highest session number (catastrophic recovery)
+static uint32_t scanSDForHighestSession() {
+    Serial.println("[SD] Scanning for highest session number...");
+    uint32_t max_session = 0;
+    
+    File root = SD.open("/");
+    if (!root) {
+        Serial.println("[SD] Cannot open root for scan");
+        return 0;
+    }
+    
+    uint32_t files_scanned = 0;
+    File entry;
+    while ((entry = root.openNextFile())) {
+        const char* name = entry.name();
+        files_scanned++;
+        
+        // Look for SESS_NNNNNNNN.csv or SESS_NNNNNNNN.log
+        if (strncmp(name, "SESS_", 5) == 0 && strlen(name) >= 13) {
+            // Extract session number (8 digits after SESS_)
+            char numstr[9] = { 0 };
+            strncpy(numstr, name + 5, 8);
+            uint32_t num = (uint32_t)atol(numstr);
+            if (num > max_session) {
+                max_session = num;
+            }
+        }
+        entry.close();
+    }
+    root.close();
+    
+    Serial.printf("[SD] Scanned %lu files, highest session: %lu\n", files_scanned, max_session);
+    return max_session;
+}
 
 uint32_t sdReadBootCount() {
-    File f = SD.open(BOOT_COUNT_FILE, FILE_READ);
-    if (!f) {
-        return 0;  // First boot or file missing
+    uint32_t count = 0;
+    
+    // Try primary file first
+    if (validateBootCountFile(BOOT_COUNT_PRIMARY, &count)) {
+        Serial.printf("[SD] Boot count: %lu (from primary)\n", count);
+        return count;
     }
-
-    char buf[16] = { 0 };
-    f.readBytes(buf, sizeof(buf) - 1);
-    f.close();
-
-    return (uint32_t)atol(buf);
+    
+    // Primary corrupt or missing - try backup
+    Serial.println("[SD] Primary boot count invalid, trying backup...");
+    if (validateBootCountFile(BOOT_COUNT_BACKUP, &count)) {
+        Serial.printf("[SD] Boot count: %lu (recovered from backup!)\n", count);
+        return count;
+    }
+    
+    // Both files corrupt - catastrophic recovery via SD scan
+    Serial.println("[SD] BOTH boot count files corrupt! Scanning SD...");
+    count = scanSDForHighestSession();
+    Serial.printf("[SD] Boot count: %lu (recovered from SD scan!)\n", count);
+    return count;
 }
 
 void sdWriteBootCount(uint32_t count) {
-    File f = SD.open(BOOT_COUNT_FILE, FILE_WRITE);
+    uint32_t checksum = bootCountChecksum(count);
+    char content[32];
+    snprintf(content, sizeof(content), "%lu\nCHKSUM:%lu", count, checksum);
+    
+    // Step 1: Backup current primary to backup file (if primary exists)
+    // This preserves the last known good value before we modify primary
+    if (SD.exists(BOOT_COUNT_PRIMARY)) {
+        SD.remove(BOOT_COUNT_BACKUP);  // Remove old backup
+        
+        // Read primary content
+        File src = SD.open(BOOT_COUNT_PRIMARY, FILE_READ);
+        if (src) {
+            char backup_content[64] = { 0 };
+            size_t len = src.readBytes(backup_content, sizeof(backup_content) - 1);
+            src.close();
+            
+            // Write to backup
+            if (len > 0) {
+                File dst = SD.open(BOOT_COUNT_BACKUP, FILE_WRITE);
+                if (dst) {
+                    dst.write((const uint8_t*)backup_content, len);
+                    dst.flush();
+                    dst.close();
+                }
+            }
+        }
+    }
+    
+    // Step 2: Write new value to primary file
+    File f = SD.open(BOOT_COUNT_PRIMARY, FILE_WRITE);
     if (!f) {
         Serial.println("[SD] Warning: Could not write boot count");
         return;
     }
-
-    f.printf("%lu", count);
+    
+    f.print(content);
     f.flush();
     f.close();
+    
+    Serial.printf("[SD] Boot count written: %lu (checksum=%lu)\n", count, checksum);
 }
 
 //=================================================================

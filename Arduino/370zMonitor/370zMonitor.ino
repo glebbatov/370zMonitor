@@ -421,28 +421,23 @@ struct VehicleData {
     bool oil_pressure_valid;
 
     // Oil Temperature (stored in Fahrenheit internally)
-    int oil_temp_pan_f;
-    int oil_temp_cooled_f;
+    int oil_temp_value_f;
     bool oil_temp_valid;
 
     // Water/Coolant Temperature (stored in Fahrenheit internally)
-    int water_temp_hot_f;
-    int water_temp_cooled_f;
+    int water_temp_value_f;
     bool water_temp_valid;
 
     // Transmission Temperature (stored in Fahrenheit internally)
-    int trans_temp_hot_f;
-    int trans_temp_cooled_f;
+    int trans_temp_value_f;
     bool trans_temp_valid;
 
     // Power Steering Temperature (stored in Fahrenheit internally)
-    int steer_temp_hot_f;
-    int steer_temp_cooled_f;
+    int steer_temp_value_f;
     bool steer_temp_valid;
 
     // Differential Temperature (stored in Fahrenheit internally)
-    int diff_temp_hot_f;
-    int diff_temp_cooled_f;
+    int diff_temp_value_f;
     bool diff_temp_valid;
 
     // Fuel Trust (confidence percentage)
@@ -1116,6 +1111,14 @@ void initModbusSensors() {
 // Updates g_vehicle_data struct which is read by UI update code.
 // Invalid readings cause UI to display "---" instead of stale values.
 //
+// Forward declarations for critical thresholds (defined in Gauges Configuration section)
+extern int OIL_PRESS_ValueCriticalAbsolute;
+extern int OIL_PRESS_ValueCriticalLow;
+extern int OIL_TEMP_ValueCriticalF;
+extern int TRAN_TEMP_ValueCritical_F;
+extern int STEER_TEMP_ValueCritical_F;
+extern int DIFF_TEMP_ValueCritical_F;
+
 void readModbusSensors() {
     if (!g_modbus_initialized) {
         static uint32_t lastRetry = 0;
@@ -1204,8 +1207,7 @@ void readModbusSensors() {
             float oil_temp_f = celsiusToFahrenheit(stable_temp_c);
             
             // Only set pan temperature - cooled gauge will show "---"
-            g_vehicle_data.oil_temp_pan_f = (int)(oil_temp_f + 0.5f);
-            // NOTE: oil_temp_cooled_f intentionally NOT set (single sensor)
+            g_vehicle_data.oil_temp_value_f = (int)(oil_temp_f + 0.5f);
             g_vehicle_data.oil_temp_valid = true;
             g_vehicle_data.has_received_data = true;
         } else {
@@ -1239,7 +1241,7 @@ void readModbusSensors() {
             float stable_temp_c = g_last_trans_temp_c;
             float trans_temp_f = celsiusToFahrenheit(stable_temp_c);
             
-            g_vehicle_data.trans_temp_hot_f = (int)(trans_temp_f + 0.5f);
+            g_vehicle_data.trans_temp_value_f = (int)(trans_temp_f + 0.5f);
             g_vehicle_data.trans_temp_valid = true;
             g_vehicle_data.has_received_data = true;
         } else {
@@ -1272,7 +1274,7 @@ void readModbusSensors() {
             float stable_temp_c = g_last_steer_temp_c;
             float steer_temp_f = celsiusToFahrenheit(stable_temp_c);
             
-            g_vehicle_data.steer_temp_hot_f = (int)(steer_temp_f + 0.5f);
+            g_vehicle_data.steer_temp_value_f = (int)(steer_temp_f + 0.5f);
             g_vehicle_data.steer_temp_valid = true;
             g_vehicle_data.has_received_data = true;
         } else {
@@ -1305,7 +1307,7 @@ void readModbusSensors() {
             float stable_temp_c = g_last_diff_temp_c;
             float diff_temp_f = celsiusToFahrenheit(stable_temp_c);
             
-            g_vehicle_data.diff_temp_hot_f = (int)(diff_temp_f + 0.5f);
+            g_vehicle_data.diff_temp_value_f = (int)(diff_temp_f + 0.5f);
             g_vehicle_data.diff_temp_valid = true;
             g_vehicle_data.has_received_data = true;
         } else {
@@ -1318,50 +1320,53 @@ void readModbusSensors() {
             unifiedLogCounter = 0;
             
             // Build single-line log with all channels
-            char logBuf[256];
+            char logBuf[512];  // Increased for "(VALUE CRITICAL)" indicators
             int pos = 0;
             
             // CH1: Oil Pressure
             if (sensor_connected) {
-                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, "Oil-Press:%.0fPSI", convertToPSI(oil_press_mV));
+                int psi = (int)(convertToPSI(oil_press_mV) + 0.5f);
+                bool crit = (psi < OIL_PRESS_ValueCriticalLow) || (psi > OIL_PRESS_ValueCriticalAbsolute);
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, "Oil-Press:%dPSI%s", 
+                               psi, crit ? " (VALUE CRITICAL)" : "");
             } else {
                 pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, "Oil-Press:n/a");
             }
             
             // CH2: Oil Temp
             if (temp_sensor_connected) {
-                bool crit = (g_vehicle_data.oil_temp_pan_f > 260);
+                bool crit = (g_vehicle_data.oil_temp_value_f > OIL_TEMP_ValueCriticalF);
                 pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Oil-Temp:%.0f°F%s", 
-                               celsiusToFahrenheit(g_last_oil_temp_c), crit ? "!" : "");
+                               celsiusToFahrenheit(g_last_oil_temp_c), crit ? " (VALUE CRITICAL)" : "");
             } else {
                 pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Oil-Temp:n/a");
             }
             
             // CH3: Trans Temp
             if (trans_sensor_connected) {
-                bool crit = (g_vehicle_data.trans_temp_hot_f > 230);
-                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Trans:%.0f°F%s", 
-                               celsiusToFahrenheit(g_last_trans_temp_c), crit ? "!" : "");
+                bool crit = (g_vehicle_data.trans_temp_value_f > TRAN_TEMP_ValueCritical_F);
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Trans-Temp:%.0f°F%s", 
+                               celsiusToFahrenheit(g_last_trans_temp_c), crit ? " (VALUE CRITICAL)" : "");
             } else {
-                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Trans:n/a");
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Trans-Temp:n/a");
             }
             
             // CH4: Steer Temp
             if (steer_sensor_connected) {
-                bool crit = (g_vehicle_data.steer_temp_hot_f > 230);
-                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Steer:%.0f°F%s", 
-                               celsiusToFahrenheit(g_last_steer_temp_c), crit ? "!" : "");
+                bool crit = (g_vehicle_data.steer_temp_value_f > STEER_TEMP_ValueCritical_F);
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Steer-Temp:%.0f°F%s", 
+                               celsiusToFahrenheit(g_last_steer_temp_c), crit ? " (VALUE CRITICAL)" : "");
             } else {
-                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Steer:n/a");
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Steer-Temp:n/a");
             }
             
             // CH5: Diff Temp
             if (diff_sensor_connected) {
-                bool crit = (g_vehicle_data.diff_temp_hot_f > 270);
-                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Diff:%.0f°F%s", 
-                               celsiusToFahrenheit(g_last_diff_temp_c), crit ? "!" : "");
+                bool crit = (g_vehicle_data.diff_temp_value_f > DIFF_TEMP_ValueCritical_F);
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Diff-Temp:%.0f°F%s", 
+                               celsiusToFahrenheit(g_last_diff_temp_c), crit ? " (VALUE CRITICAL)" : "");
             } else {
-                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Diff:n/a");
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Diff-Temp:n/a");
             }
             
             Serial.printf("[MODBUS] %s\n", logBuf);
@@ -2358,33 +2363,23 @@ void updateDemoData() {
     g_vehicle_data.oil_pressure_valid = true;
 
     // ----- Oil Temperature: Simple sine wave 150-300°F -----
-    int oil_temp_main = calcDemoValue(OIL_TEMP_Min_F, OIL_TEMP_Max_F, DEMO_CYCLE_OIL_TEMP_MS);
-    g_vehicle_data.oil_temp_pan_f = oil_temp_main;
-    g_vehicle_data.oil_temp_cooled_f = oil_temp_main - 20;  // Cooled line is ~20°F lower
+    g_vehicle_data.oil_temp_value_f = calcDemoValue(OIL_TEMP_Min_F, OIL_TEMP_Max_F, DEMO_CYCLE_OIL_TEMP_MS);
     g_vehicle_data.oil_temp_valid = true;
 
     // ----- Water Temperature: Simple sine wave 100-260°F -----
-    int water_temp_main = calcDemoValue(W_TEMP_Min_F, W_TEMP_Max_F, DEMO_CYCLE_WATER_TEMP_MS);
-    g_vehicle_data.water_temp_hot_f = water_temp_main;
-    g_vehicle_data.water_temp_cooled_f = water_temp_main - 20;
+    g_vehicle_data.water_temp_value_f = calcDemoValue(W_TEMP_Min_F, W_TEMP_Max_F, DEMO_CYCLE_WATER_TEMP_MS);
     g_vehicle_data.water_temp_valid = true;
 
     // ----- Trans Temperature: Simple sine wave 80-280°F -----
-    int trans_temp_main = calcDemoValue(TRAN_TEMP_Min_F, TRAN_TEMP_Max_F, DEMO_CYCLE_TRANS_TEMP_MS);
-    g_vehicle_data.trans_temp_hot_f = trans_temp_main;
-    g_vehicle_data.trans_temp_cooled_f = trans_temp_main - 25;
+    g_vehicle_data.trans_temp_value_f = calcDemoValue(TRAN_TEMP_Min_F, TRAN_TEMP_Max_F, DEMO_CYCLE_TRANS_TEMP_MS);
     g_vehicle_data.trans_temp_valid = true;
 
     // ----- Steering Temperature: Simple sine wave 60-300°F -----
-    int steer_temp_main = calcDemoValue(STEER_TEMP_Min_F, STEER_TEMP_Max_F, DEMO_CYCLE_STEER_TEMP_MS);
-    g_vehicle_data.steer_temp_hot_f = steer_temp_main;
-    g_vehicle_data.steer_temp_cooled_f = steer_temp_main - 20;
+    g_vehicle_data.steer_temp_value_f = calcDemoValue(STEER_TEMP_Min_F, STEER_TEMP_Max_F, DEMO_CYCLE_STEER_TEMP_MS);
     g_vehicle_data.steer_temp_valid = true;
 
     // ----- Diff Temperature: Simple sine wave 60-320°F -----
-    int diff_temp_main = calcDemoValue(DIFF_TEMP_Min_F, DIFF_TEMP_Max_F, DEMO_CYCLE_DIFF_TEMP_MS);
-    g_vehicle_data.diff_temp_hot_f = diff_temp_main;
-    g_vehicle_data.diff_temp_cooled_f = diff_temp_main - 30;
+    g_vehicle_data.diff_temp_value_f = calcDemoValue(DIFF_TEMP_Min_F, DIFF_TEMP_Max_F, DEMO_CYCLE_DIFF_TEMP_MS);
     g_vehicle_data.diff_temp_valid = true;
 
     // ----- Fuel Trust: Simple sine wave 0-100% -----
@@ -2796,13 +2791,14 @@ bool sdStartSession() {
     g_sd_state.consecutive_write_errors = 0;  // Reset health tracking (#3)
     g_sd_state.last_sync_marker_ms = millis(); // First sync marker in 5min (#4)
 
-    const char* header = "datetime,rpm,oil_press_psi,"
-        "oil_temp_pan_f,oil_temp_cooled_f,"
-        "water_temp_hot_f,water_temp_cooled_f,"
-        "trans_temp_hot_f,trans_temp_cooled_f,"
-        "steer_temp_hot_f,steer_temp_cooled_f,"
-        "diff_temp_hot_f,diff_temp_cooled_f,"
-        "fuel_trust_percent,fuel_trust_valid,"
+    const char* header = "datetime,rpm,"
+        "oil_press_psi,oil_press_is_critical,"
+        "oil_temp_value_f,oil_temp_is_critical,"
+        "water_temp_value_f,water_temp_is_critical,"
+        "trans_temp_value_f,trans_temp_is_critical,"
+        "steer_temp_value_f,steer_temp_is_critical,"
+        "diff_temp_value_f,diff_temp_is_critical,"
+        "fuel_trust_percent,fuel_trust_is_critical,fuel_trust_valid,"
         "rpm_valid,oil_press_valid,oil_temp_valid,"
         "water_temp_valid,trans_temp_valid,steer_temp_valid,diff_temp_valid,"
         "timestamp_ms,elapsed_s,cpu_percent,mode\n";
@@ -2937,10 +2933,18 @@ void sdWriteTask(void* parameter) {
         while (g_serial_log_queue && 
                xQueueReceive(g_serial_log_queue, &logEntry, 0) == pdTRUE) {
             if (g_sd_state.log_file_open) {
-                // Format: [timestamp_ms] message
-                char logLine[SERIAL_LOG_MAX_MSG_LEN + 32];
-                int len = snprintf(logLine, sizeof(logLine), "[%lu] %s\n", 
-                                   logEntry.timestamp_ms, logEntry.message);
+                // Get datetime for timestamp prefix
+                char datetime_str[24] = "N/A";
+                if (g_time_mutex && xSemaphoreTake(g_time_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+                    strncpy(datetime_str, g_time_state.time_string, sizeof(datetime_str) - 1);
+                    datetime_str[sizeof(datetime_str) - 1] = '\0';
+                    xSemaphoreGive(g_time_mutex);
+                }
+                
+                // Format: [datetime] [timestamp_ms] message
+                char logLine[SERIAL_LOG_MAX_MSG_LEN + 64];
+                int len = snprintf(logLine, sizeof(logLine), "[%s] [%lu] %s\n", 
+                                   datetime_str, logEntry.timestamp_ms, logEntry.message);
                 
                 size_t written = g_sd_state.log_file.print(logLine);
                 if (written > 0) {
@@ -2982,8 +2986,18 @@ void sdWriteTask(void* parameter) {
                 strcpy(datetime_copy, "N/A");
             }
             
+            // Calculate critical flags for CSV logging
+            int oil_press_crit = (entry.data.oil_pressure_psi < OIL_PRESS_ValueCriticalLow || 
+                                  entry.data.oil_pressure_psi > OIL_PRESS_ValueCriticalAbsolute) ? 1 : 0;
+            int oil_temp_crit = (entry.data.oil_temp_value_f > OIL_TEMP_ValueCriticalF) ? 1 : 0;
+            int water_temp_crit = (entry.data.water_temp_value_f > W_TEMP_ValueCritical_F) ? 1 : 0;
+            int trans_temp_crit = (entry.data.trans_temp_value_f > TRAN_TEMP_ValueCritical_F) ? 1 : 0;
+            int steer_temp_crit = (entry.data.steer_temp_value_f > STEER_TEMP_ValueCritical_F) ? 1 : 0;
+            int diff_temp_crit = (entry.data.diff_temp_value_f > DIFF_TEMP_ValueCritical_F) ? 1 : 0;
+            int fuel_trust_crit = (entry.data.fuel_trust_percent < FUEL_TRUST_ValueCritical) ? 1 : 0;
+            
             int len = snprintf(line, sizeof(line),
-                "%s,%d,%d,"
+                "%s,%d,"
                 "%d,%d,"
                 "%d,%d,"
                 "%d,%d,"
@@ -2991,18 +3005,18 @@ void sdWriteTask(void* parameter) {
                 "%d,%d,"
                 "%d,%d,"
                 "%d,%d,%d,"
+                "%d,%d,%d,"
                 "%d,%d,%d,%d,"
                 "%lu,%.2f,%.1f,%s\n",
-                datetime_copy,  // datetime
-                entry.data.rpm, entry.data.oil_pressure_psi,  // rpm, oil_press_psi
-                entry.data.oil_temp_pan_f, entry.data.oil_temp_cooled_f,  // oil temps
-                entry.data.water_temp_hot_f, entry.data.water_temp_cooled_f,  // water temps
-                entry.data.trans_temp_hot_f, entry.data.trans_temp_cooled_f,  // trans temps
-                entry.data.steer_temp_hot_f, entry.data.steer_temp_cooled_f,  // steer temps
-                entry.data.diff_temp_hot_f, entry.data.diff_temp_cooled_f,  // diff temps
-                entry.data.fuel_trust_percent, entry.data.fuel_trust_valid ? 1 : 0,  // fuel trust
-                entry.data.rpm_valid ? 1 : 0, entry.data.oil_pressure_valid ? 1 : 0,
-                entry.data.oil_temp_valid ? 1 : 0,  // validity flags part 1
+                datetime_copy, entry.data.rpm,  // datetime, rpm
+                entry.data.oil_pressure_psi, oil_press_crit,  // oil pressure + critical
+                entry.data.oil_temp_value_f, oil_temp_crit,  // oil temp + critical
+                entry.data.water_temp_value_f, water_temp_crit,  // water temp + critical
+                entry.data.trans_temp_value_f, trans_temp_crit,  // trans temp + critical
+                entry.data.steer_temp_value_f, steer_temp_crit,  // steer temp + critical
+                entry.data.diff_temp_value_f, diff_temp_crit,  // diff temp + critical
+                entry.data.fuel_trust_percent, fuel_trust_crit, entry.data.fuel_trust_valid ? 1 : 0,  // fuel trust + critical + valid
+                entry.data.rpm_valid ? 1 : 0, entry.data.oil_pressure_valid ? 1 : 0, entry.data.oil_temp_valid ? 1 : 0,  // validity flags part 1
                 entry.data.water_temp_valid ? 1 : 0, entry.data.trans_temp_valid ? 1 : 0,
                 entry.data.steer_temp_valid ? 1 : 0, entry.data.diff_temp_valid ? 1 : 0,  // validity flags part 2
                 entry.timestamp_ms, entry.elapsed_s, entry.cpu_pct,
@@ -5993,7 +6007,7 @@ void updateUI() {
     // ----- Oil Temperature -----
     if (g_vehicle_data.oil_temp_valid) {
         const char* oilTempUnit = getTempUnitStr(g_oil_temp_unit);
-        float temp_pan_disp = tempToDisplay((float)g_vehicle_data.oil_temp_pan_f, g_oil_temp_unit);
+        float temp_pan_disp = tempToDisplay((float)g_vehicle_data.oil_temp_value_f, g_oil_temp_unit);
         // Single temperature value per gauge
 
         if (smooth_oil_temp_f < 0) {
@@ -6005,15 +6019,15 @@ void updateUI() {
 
 #if ENABLE_BARS
         if (ui_OIL_TEMP_Bar) {
-            lv_bar_set_value(ui_OIL_TEMP_Bar, g_vehicle_data.oil_temp_pan_f, LV_ANIM_OFF);
-            bool critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
+            lv_bar_set_value(ui_OIL_TEMP_Bar, g_vehicle_data.oil_temp_value_f, LV_ANIM_OFF);
+            bool critical = (g_vehicle_data.oil_temp_value_f > OIL_TEMP_ValueCriticalF);
             lv_obj_set_style_bg_color(ui_OIL_TEMP_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
 #endif
 #if ENABLE_LIGHTWEIGHT_BARS
-        if (update_bars_this_frame) updateLightweightBar(1, g_vehicle_data.oil_temp_pan_f);
+        if (update_bars_this_frame) updateLightweightBar(1, g_vehicle_data.oil_temp_value_f);
 #endif
 
         if (ui_OIL_TEMP_Value) {
@@ -6025,7 +6039,7 @@ void updateUI() {
             }
 
             // Style label text color based on critical
-            bool value_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
+            bool value_critical = (g_vehicle_data.oil_temp_value_f > OIL_TEMP_ValueCriticalF);
             static bool oil_temp_was_value_critical = false;
             if (value_critical != oil_temp_was_value_critical) {
                 if (value_critical) {
@@ -6039,7 +6053,7 @@ void updateUI() {
         }
 
         // Panel background for critical state
-        bool oil_temp_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
+        bool oil_temp_critical = (g_vehicle_data.oil_temp_value_f > OIL_TEMP_ValueCriticalF);
         if (oil_temp_critical != g_oil_temp_panel_was_critical) {
             if (ui_OIL_TEMP_Value_Tap_Panel) {
                 lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_Tap_Panel, 
@@ -6049,7 +6063,7 @@ void updateUI() {
         }
 
 #if ENABLE_VALUE_CRITICAL
-        bool critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
+        bool critical = (g_vehicle_data.oil_temp_value_f > OIL_TEMP_ValueCriticalF);
         updateCriticalLabel(ui_OIL_TEMP_VALUE_CRITICAL_Label, critical,
             &oil_temp_was_critical, &oil_temp_visible, &oil_temp_exit_time, &oil_temp_last_blink);
 #endif
@@ -6098,7 +6112,7 @@ void updateUI() {
     // ----- Water Temperature -----
     if (g_vehicle_data.water_temp_valid) {
         const char* waterTempUnit = getTempUnitStr(g_water_temp_unit);
-        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.water_temp_hot_f, g_water_temp_unit);
+        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.water_temp_value_f, g_water_temp_unit);
 
         if (ui_W_TEMP_Value) {
             int hot_display_val = (int)(temp_hot_disp + 0.5f);
@@ -6109,7 +6123,7 @@ void updateUI() {
             }
 
             // Style label text color based on critical
-            bool value_critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
+            bool value_critical = (g_vehicle_data.water_temp_value_f > W_TEMP_ValueCritical_F);
             static bool water_temp_was_value_critical = false;
             if (value_critical != water_temp_was_value_critical) {
                 if (value_critical) {
@@ -6123,7 +6137,7 @@ void updateUI() {
         }
 
         // Panel background for critical state
-        bool water_temp_critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
+        bool water_temp_critical = (g_vehicle_data.water_temp_value_f > W_TEMP_ValueCritical_F);
         if (water_temp_critical != g_water_temp_panel_was_critical) {
             if (ui_W_TEMP_Value_Tap_Panel) {
                 lv_obj_set_style_bg_opa(ui_W_TEMP_Value_Tap_Panel,
@@ -6133,19 +6147,19 @@ void updateUI() {
         }
 #if ENABLE_BARS
         if (ui_W_TEMP_Bar) {
-            lv_bar_set_value(ui_W_TEMP_Bar, g_vehicle_data.water_temp_hot_f, LV_ANIM_OFF);
-            bool critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
+            lv_bar_set_value(ui_W_TEMP_Bar, g_vehicle_data.water_temp_value_f, LV_ANIM_OFF);
+            bool critical = (g_vehicle_data.water_temp_value_f > W_TEMP_ValueCritical_F);
             lv_obj_set_style_bg_color(ui_W_TEMP_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
 #endif
 #if ENABLE_LIGHTWEIGHT_BARS
-        if (update_bars_this_frame) updateLightweightBar(2, g_vehicle_data.water_temp_hot_f);
+        if (update_bars_this_frame) updateLightweightBar(2, g_vehicle_data.water_temp_value_f);
 #endif
 
 #if ENABLE_VALUE_CRITICAL
-        bool critical = (g_vehicle_data.water_temp_hot_f > W_TEMP_ValueCritical_F);
+        bool critical = (g_vehicle_data.water_temp_value_f > W_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_W_TEMP_VALUE_CRITICAL_Label, critical,
             &water_temp_was_critical, &water_temp_visible, &water_temp_exit_time, &water_temp_last_blink);
 #endif
@@ -6154,7 +6168,7 @@ void updateUI() {
     // ----- Trans Temperature -----
     if (g_vehicle_data.trans_temp_valid) {
         const char* transTempUnit = getTempUnitStr(g_trans_temp_unit);
-        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.trans_temp_hot_f, g_trans_temp_unit);
+        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.trans_temp_value_f, g_trans_temp_unit);
 
         if (ui_TRAN_TEMP_Value) {
             int hot_display_val = (int)(temp_hot_disp + 0.5f);
@@ -6165,7 +6179,7 @@ void updateUI() {
             }
 
             // Style label text color based on critical
-            bool value_critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
+            bool value_critical = (g_vehicle_data.trans_temp_value_f > TRAN_TEMP_ValueCritical_F);
             static bool trans_temp_was_value_critical = false;
             if (value_critical != trans_temp_was_value_critical) {
                 if (value_critical) {
@@ -6179,7 +6193,7 @@ void updateUI() {
         }
 
         // Panel background for critical state
-        bool trans_temp_critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
+        bool trans_temp_critical = (g_vehicle_data.trans_temp_value_f > TRAN_TEMP_ValueCritical_F);
         if (trans_temp_critical != g_trans_temp_panel_was_critical) {
             if (ui_TRAN_TEMP_Value_Tap_Panel) {
                 lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_Tap_Panel,
@@ -6189,19 +6203,19 @@ void updateUI() {
         }
 #if ENABLE_BARS
         if (ui_TRAN_TEMP_Bar) {
-            lv_bar_set_value(ui_TRAN_TEMP_Bar, g_vehicle_data.trans_temp_hot_f, LV_ANIM_OFF);
-            bool critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
+            lv_bar_set_value(ui_TRAN_TEMP_Bar, g_vehicle_data.trans_temp_value_f, LV_ANIM_OFF);
+            bool critical = (g_vehicle_data.trans_temp_value_f > TRAN_TEMP_ValueCritical_F);
             lv_obj_set_style_bg_color(ui_TRAN_TEMP_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
 #endif
 #if ENABLE_LIGHTWEIGHT_BARS
-        if (update_bars_this_frame) updateLightweightBar(3, g_vehicle_data.trans_temp_hot_f);
+        if (update_bars_this_frame) updateLightweightBar(3, g_vehicle_data.trans_temp_value_f);
 #endif
 
 #if ENABLE_VALUE_CRITICAL
-        bool critical = (g_vehicle_data.trans_temp_hot_f > TRAN_TEMP_ValueCritical_F);
+        bool critical = (g_vehicle_data.trans_temp_value_f > TRAN_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_TRAN_TEMP_VALUE_CRITICAL_Label, critical,
             &trans_temp_was_critical, &trans_temp_visible, &trans_temp_exit_time, &trans_temp_last_blink);
 #endif
@@ -6250,7 +6264,7 @@ void updateUI() {
     // ----- Steering Temperature -----
     if (g_vehicle_data.steer_temp_valid) {
         const char* steerTempUnit = getTempUnitStr(g_steer_temp_unit);
-        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.steer_temp_hot_f, g_steer_temp_unit);
+        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.steer_temp_value_f, g_steer_temp_unit);
 
         if (ui_STEER_TEMP_Value) {
             int hot_display_val = (int)(temp_hot_disp + 0.5f);
@@ -6261,7 +6275,7 @@ void updateUI() {
             }
 
             // Style label text color based on critical
-            bool value_critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
+            bool value_critical = (g_vehicle_data.steer_temp_value_f > STEER_TEMP_ValueCritical_F);
             static bool steer_temp_was_value_critical = false;
             if (value_critical != steer_temp_was_value_critical) {
                 if (value_critical) {
@@ -6275,7 +6289,7 @@ void updateUI() {
         }
 
         // Panel background for critical state
-        bool steer_temp_critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
+        bool steer_temp_critical = (g_vehicle_data.steer_temp_value_f > STEER_TEMP_ValueCritical_F);
         if (steer_temp_critical != g_steer_temp_panel_was_critical) {
             if (ui_STEER_TEMP_Value_Tap_Panel) {
                 lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_Tap_Panel,
@@ -6285,19 +6299,19 @@ void updateUI() {
         }
 #if ENABLE_BARS
         if (ui_STEER_TEMP_Bar) {
-            lv_bar_set_value(ui_STEER_TEMP_Bar, g_vehicle_data.steer_temp_hot_f, LV_ANIM_OFF);
-            bool critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
+            lv_bar_set_value(ui_STEER_TEMP_Bar, g_vehicle_data.steer_temp_value_f, LV_ANIM_OFF);
+            bool critical = (g_vehicle_data.steer_temp_value_f > STEER_TEMP_ValueCritical_F);
             lv_obj_set_style_bg_color(ui_STEER_TEMP_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
 #endif
 #if ENABLE_LIGHTWEIGHT_BARS
-        if (update_bars_this_frame) updateLightweightBar(4, g_vehicle_data.steer_temp_hot_f);
+        if (update_bars_this_frame) updateLightweightBar(4, g_vehicle_data.steer_temp_value_f);
 #endif
 
 #if ENABLE_VALUE_CRITICAL
-        bool critical = (g_vehicle_data.steer_temp_hot_f > STEER_TEMP_ValueCritical_F);
+        bool critical = (g_vehicle_data.steer_temp_value_f > STEER_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_STEER_TEMP_VALUE_CRITICAL_Label, critical,
             &steer_temp_was_critical, &steer_temp_visible, &steer_temp_exit_time, &steer_temp_last_blink);
 #endif
@@ -6346,7 +6360,7 @@ void updateUI() {
     // ----- Diff Temperature -----
     if (g_vehicle_data.diff_temp_valid) {
         const char* diffTempUnit = getTempUnitStr(g_diff_temp_unit);
-        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.diff_temp_hot_f, g_diff_temp_unit);
+        float temp_hot_disp = tempToDisplay((float)g_vehicle_data.diff_temp_value_f, g_diff_temp_unit);
 
         if (ui_DIFF_TEMP_Value) {
             int hot_display_val = (int)(temp_hot_disp + 0.5f);
@@ -6357,7 +6371,7 @@ void updateUI() {
             }
 
             // Style label text color based on critical
-            bool value_critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
+            bool value_critical = (g_vehicle_data.diff_temp_value_f > DIFF_TEMP_ValueCritical_F);
             static bool diff_temp_was_value_critical = false;
             if (value_critical != diff_temp_was_value_critical) {
                 if (value_critical) {
@@ -6371,7 +6385,7 @@ void updateUI() {
         }
 
         // Panel background for critical state
-        bool diff_temp_critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
+        bool diff_temp_critical = (g_vehicle_data.diff_temp_value_f > DIFF_TEMP_ValueCritical_F);
         if (diff_temp_critical != g_diff_temp_panel_was_critical) {
             if (ui_DIFF_TEMP_Value_Tap_Panel) {
                 lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_Tap_Panel,
@@ -6381,19 +6395,19 @@ void updateUI() {
         }
 #if ENABLE_BARS
         if (ui_DIFF_TEMP_Bar) {
-            lv_bar_set_value(ui_DIFF_TEMP_Bar, g_vehicle_data.diff_temp_hot_f, LV_ANIM_OFF);
-            bool critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
+            lv_bar_set_value(ui_DIFF_TEMP_Bar, g_vehicle_data.diff_temp_value_f, LV_ANIM_OFF);
+            bool critical = (g_vehicle_data.diff_temp_value_f > DIFF_TEMP_ValueCritical_F);
             lv_obj_set_style_bg_color(ui_DIFF_TEMP_Bar,
                 critical ? lv_color_hex(hexRed) : lv_color_hex(hexOrange),
                 LV_PART_INDICATOR);
         }
 #endif
 #if ENABLE_LIGHTWEIGHT_BARS
-        if (update_bars_this_frame) updateLightweightBar(5, g_vehicle_data.diff_temp_hot_f);
+        if (update_bars_this_frame) updateLightweightBar(5, g_vehicle_data.diff_temp_value_f);
 #endif
 
 #if ENABLE_VALUE_CRITICAL
-        bool critical = (g_vehicle_data.diff_temp_hot_f > DIFF_TEMP_ValueCritical_F);
+        bool critical = (g_vehicle_data.diff_temp_value_f > DIFF_TEMP_ValueCritical_F);
         updateCriticalLabel(ui_DIFF_TEMP_VALUE_CRITICAL_Label, critical,
             &diff_temp_was_critical, &diff_temp_visible, &diff_temp_exit_time, &diff_temp_last_blink);
 #endif
@@ -6517,23 +6531,23 @@ void updateCharts() {
         oil_pressure_samples++;
     }
     if (g_vehicle_data.oil_temp_valid) {
-        oil_temp_sum += g_vehicle_data.oil_temp_pan_f;
+        oil_temp_sum += g_vehicle_data.oil_temp_value_f;
         oil_temp_samples++;
     }
     if (g_vehicle_data.water_temp_valid) {
-        water_temp_sum += g_vehicle_data.water_temp_hot_f;
+        water_temp_sum += g_vehicle_data.water_temp_value_f;
         water_temp_samples++;
     }
     if (g_vehicle_data.trans_temp_valid) {
-        transmission_temp_sum += g_vehicle_data.trans_temp_hot_f;
+        transmission_temp_sum += g_vehicle_data.trans_temp_value_f;
         transmission_temp_samples++;
     }
     if (g_vehicle_data.steer_temp_valid) {
-        steering_temp_sum += g_vehicle_data.steer_temp_hot_f;
+        steering_temp_sum += g_vehicle_data.steer_temp_value_f;
         steering_temp_samples++;
     }
     if (g_vehicle_data.diff_temp_valid) {
-        differencial_temp_sum += g_vehicle_data.diff_temp_hot_f;
+        differencial_temp_sum += g_vehicle_data.diff_temp_value_f;
         differencial_temp_samples++;
     }
     if (g_vehicle_data.fuel_trust_valid) {

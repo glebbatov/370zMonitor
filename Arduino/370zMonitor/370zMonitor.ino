@@ -5499,7 +5499,8 @@ void touchTask(void* parameter) {
     // Wait for GT911 to fully stabilize after startup reset
     // This delay prevents false "stuck" detection during initialization
     // and allows Core 0 startup I2C traffic (RTC, WiFi) to complete
-    vTaskDelay(pdMS_TO_TICKS(1500));
+    // Note: 3000ms needed for reliable cold-boot initialization
+    vTaskDelay(pdMS_TO_TICKS(10000));
     
     // Verify GT911 is ready before starting polling
     int startup_retries = 0;

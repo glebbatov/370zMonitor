@@ -1,9 +1,16 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v5.7
+ * 370zMonitor v5.8
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v5.8 Changes:
+ * - ADDED: LIS3DH accelerometer support via I2C (ADA2809 breakout)
+ * - G-sensor logs X/Y/Z in g-forces to CSV and .log files
+ * - Toast system monitors accelerometer connection status
+ * - Demo mode simulates accelerometer values (gentle sway pattern)
+ * - Accelerometer connected via I2C hub with RTC and touch controller
  *
  * v5.7 Changes:
  * - ADDED: OBD-II via CAN bus (TWAI) for Water/Coolant Temperature (ECT)
@@ -162,8 +169,15 @@ extern "C" void lv_draw_sw_rgb565_swap(void * buf, uint32_t buf_size_px);
 #include <vector>                   // For file browser
 #include "driver/twai.h"            // ESP32 CAN (TWAI) controller for OBD-II
 #include <math.h>                   // For fabsf, fminf in Fuel Trust calculation
+#include <Adafruit_LIS3DH.h>         // LIS3DH accelerometer (ADA2809)
+#include <Adafruit_Sensor.h>         // Required by Adafruit LIS3DH
 
 //-----------------------------------------------------------------
+
+//=================================================================
+// FEATURE FLAG - G-SENSOR (LIS3DH Accelerometer)
+//=================================================================
+#define ENABLE_GSENSOR              1   // Enable LIS3DH accelerometer logging
 
 //=================================================================
 // AUTO BRIGHTNESS - Sunrise/Sunset based screen dimming
@@ -535,6 +549,12 @@ struct VehicleData {
     // OBD Data
     int rpm;
     bool rpm_valid;
+
+    // Accelerometer (LIS3DH) - values in g-forces
+    float accel_x_g;        // X-axis acceleration in g (lateral, positive = right)
+    float accel_y_g;        // Y-axis acceleration in g (longitudinal, positive = forward)
+    float accel_z_g;        // Z-axis acceleration in g (vertical, positive = up)
+    bool accel_valid;       // Accelerometer data validity flag
 
     // Flag to track if ANY valid data has ever been received
     // Used to determine if UI should show "---" or actual values
@@ -1203,9 +1223,11 @@ void initModbusSensors() {
 extern int OIL_PRESS_ValueCriticalAbsolute;
 extern int OIL_PRESS_ValueCriticalLow;
 extern int OIL_TEMP_ValueCriticalF;
+extern int W_TEMP_ValueCritical_F;
 extern int TRAN_TEMP_ValueCritical_F;
 extern int STEER_TEMP_ValueCritical_F;
 extern int DIFF_TEMP_ValueCritical_F;
+extern int FUEL_TRUST_ValueCritical;
 
 void readModbusSensors() {
     if (!g_modbus_initialized) {
@@ -1508,6 +1530,111 @@ void readModbusSensors() {
 }
 
 #endif // ENABLE_MODBUS_SENSORS
+
+//-----------------------------------------------------------------
+
+//=================================================================
+// LIS3DH ACCELEROMETER (G-SENSOR)
+// Connected via I2C hub (Crowtail I2C Hub 2.0)
+// ADA2809 breakout board (Adafruit LIS3DH)
+//=================================================================
+
+#if ENABLE_GSENSOR
+
+#define LIS3DH_I2C_ADDR     0x18    // Default address (SA0 to GND)
+#define LIS3DH_I2C_ADDR_ALT 0x19    // Alternate address (SA0 to VCC)
+
+// Global accelerometer object
+static Adafruit_LIS3DH g_accel = Adafruit_LIS3DH();
+static bool g_accel_initialized = false;
+static bool g_accel_connected = false;
+
+// Initialize accelerometer - called during setup
+bool initAccelerometer() {
+    Serial.println("[G-SENSOR] Initializing LIS3DH accelerometer...");
+    
+    // Try default address first
+    if (g_accel.begin(LIS3DH_I2C_ADDR)) {
+        Serial.printf("[G-SENSOR] Found LIS3DH at 0x%02X\n", LIS3DH_I2C_ADDR);
+        g_accel_initialized = true;
+    } 
+    // Try alternate address
+    else if (g_accel.begin(LIS3DH_I2C_ADDR_ALT)) {
+        Serial.printf("[G-SENSOR] Found LIS3DH at 0x%02X\n", LIS3DH_I2C_ADDR_ALT);
+        g_accel_initialized = true;
+    }
+    else {
+        Serial.println("[G-SENSOR] LIS3DH not found!");
+        g_accel_initialized = false;
+        g_accel_connected = false;
+        return false;
+    }
+    
+    // Configure accelerometer for track use
+    // +/- 4G range is good for street/track driving
+    g_accel.setRange(LIS3DH_RANGE_4_G);
+    
+    // Set data rate to 100 Hz (good balance of responsiveness vs power)
+    g_accel.setDataRate(LIS3DH_DATARATE_100_HZ);
+    
+    // High-resolution mode for better precision
+    g_accel.setPerformanceMode(LIS3DH_MODE_HIGH_RESOLUTION);
+    
+    g_accel_connected = true;
+    Serial.printf("[G-SENSOR] LIS3DH configured: Range=+/-%dG, Rate=100Hz\n",
+                  (g_accel.getRange() == LIS3DH_RANGE_2_G) ? 2 :
+                  (g_accel.getRange() == LIS3DH_RANGE_4_G) ? 4 :
+                  (g_accel.getRange() == LIS3DH_RANGE_8_G) ? 8 : 16);
+    
+    return true;
+}
+
+// Read accelerometer values - updates g_vehicle_data
+void readAccelerometer() {
+    if (!g_accel_initialized) {
+        g_vehicle_data.accel_valid = false;
+        return;
+    }
+    
+    // Get new sensor event
+    sensors_event_t event;
+    if (!g_accel.getEvent(&event)) {
+        // Read failed - sensor may be disconnected
+        static uint32_t last_fail_log = 0;
+        if (millis() - last_fail_log > 5000) {
+            Serial.println("[G-SENSOR] Read failed - sensor may be disconnected");
+            last_fail_log = millis();
+        }
+        g_accel_connected = false;
+        g_vehicle_data.accel_valid = false;
+        return;
+    }
+    
+    g_accel_connected = true;
+    
+    // Convert from m/s² to g (divide by 9.80665)
+    // The Adafruit library returns acceleration in m/s²
+    const float GRAVITY = 9.80665f;
+    g_vehicle_data.accel_x_g = event.acceleration.x / GRAVITY;
+    g_vehicle_data.accel_y_g = event.acceleration.y / GRAVITY;
+    g_vehicle_data.accel_z_g = event.acceleration.z / GRAVITY;
+    g_vehicle_data.accel_valid = true;
+    g_vehicle_data.has_received_data = true;
+}
+
+// Check if accelerometer is connected via I2C probe
+bool isAccelerometerConnected() {
+    if (!g_accel_initialized) return false;
+    
+    // Quick I2C probe
+    Wire.beginTransmission(LIS3DH_I2C_ADDR);
+    if (Wire.endTransmission() == 0) return true;
+    
+    Wire.beginTransmission(LIS3DH_I2C_ADDR_ALT);
+    return (Wire.endTransmission() == 0);
+}
+
+#endif // ENABLE_GSENSOR
 
 //-----------------------------------------------------------------
 
@@ -1909,8 +2036,9 @@ static struct {
     bool trans_temp_sensor_ok;
     bool steer_temp_sensor_ok;
     bool diff_temp_sensor_ok;
+    bool accel_ok;            // LIS3DH accelerometer
     bool initialized;  // Set true after first check
-} g_prev_system_status = {true, true, true, true, true, true, true, true, true, true, false};
+} g_prev_system_status = {true, true, true, true, true, true, true, true, true, true, true, false};
 
 // Chart series
 static lv_chart_series_t* chart_series_oil_press = NULL;
@@ -2497,6 +2625,17 @@ void updateDemoData() {
     // ----- RPM: Simple sine wave 700-6500 -----
     g_vehicle_data.rpm = calcDemoValue(700, 6500, DEMO_CYCLE_RPM_MS);
     g_vehicle_data.rpm_valid = true;
+
+    // ----- Accelerometer: Gentle sway pattern simulating cornering -----
+    // Use different cycle periods for each axis to create natural-looking motion
+    uint32_t elapsed = millis() - g_demo_state.start_time;
+    // X (lateral): ±0.8g with 4 second period (cornering)
+    g_vehicle_data.accel_x_g = 0.8f * sinf((float)elapsed * 2.0f * M_PI / 4000.0f);
+    // Y (longitudinal): ±0.5g with 3 second period (accel/brake)
+    g_vehicle_data.accel_y_g = 0.5f * sinf((float)elapsed * 2.0f * M_PI / 3000.0f);
+    // Z (vertical): 1.0g base ±0.2g with 2.5 second period (bumps)
+    g_vehicle_data.accel_z_g = 1.0f + 0.2f * sinf((float)elapsed * 2.0f * M_PI / 2500.0f);
+    g_vehicle_data.accel_valid = true;
 }
 
 #pragma endregion Demo Data Provider
@@ -2534,6 +2673,13 @@ void updateSensorData() {
     g_vehicle_data.steer_temp_valid = false;
     g_vehicle_data.diff_temp_valid = false;
     // Note: Water temp and Fuel trust are handled by updateOBDData() (via CAN bus)
+#endif
+
+#if ENABLE_GSENSOR
+    // Read accelerometer (LIS3DH via I2C hub)
+    readAccelerometer();
+#else
+    g_vehicle_data.accel_valid = false;
 #endif
 }
 
@@ -3333,9 +3479,11 @@ bool sdStartSession() {
         "trans_temp_value_f,trans_temp_is_critical,"
         "steer_temp_value_f,steer_temp_is_critical,"
         "diff_temp_value_f,diff_temp_is_critical,"
-        "fuel_trust_percent,fuel_trust_is_critical,fuel_trust_valid,"
+        "fuel_trust_percent,fuel_trust_is_critical,"
+        "accel_x_g,accel_y_g,accel_z_g,"
         "rpm_valid,oil_press_valid,oil_temp_valid,"
         "water_temp_valid,trans_temp_valid,steer_temp_valid,diff_temp_valid,"
+        "fuel_trust_valid,accel_valid,"
         "timestamp_ms,elapsed_s,cpu_percent,mode\n";
 
     size_t written = g_sd_state.data_file.print(header);
@@ -3539,9 +3687,11 @@ void sdWriteTask(void* parameter) {
                 "%d,%d,"
                 "%d,%d,"
                 "%d,%d,"
-                "%d,%d,%d,"
+                "%d,%d,"
+                "%.3f,%.3f,%.3f,"
                 "%d,%d,%d,"
                 "%d,%d,%d,%d,"
+                "%d,%d,"
                 "%lu,%.2f,%.1f,%s\n",
                 datetime_copy, entry.data.rpm,  // datetime, rpm
                 entry.data.oil_pressure_psi, oil_press_crit,  // oil pressure + critical
@@ -3550,10 +3700,12 @@ void sdWriteTask(void* parameter) {
                 entry.data.trans_temp_value_f, trans_temp_crit,  // trans temp + critical
                 entry.data.steer_temp_value_f, steer_temp_crit,  // steer temp + critical
                 entry.data.diff_temp_value_f, diff_temp_crit,  // diff temp + critical
-                entry.data.fuel_trust_percent, fuel_trust_crit, entry.data.fuel_trust_valid ? 1 : 0,  // fuel trust + critical + valid
+                entry.data.fuel_trust_percent, fuel_trust_crit,  // fuel trust + critical
+                entry.data.accel_x_g, entry.data.accel_y_g, entry.data.accel_z_g,  // accelerometer X/Y/Z
                 entry.data.rpm_valid ? 1 : 0, entry.data.oil_pressure_valid ? 1 : 0, entry.data.oil_temp_valid ? 1 : 0,  // validity flags part 1
                 entry.data.water_temp_valid ? 1 : 0, entry.data.trans_temp_valid ? 1 : 0,
                 entry.data.steer_temp_valid ? 1 : 0, entry.data.diff_temp_valid ? 1 : 0,  // validity flags part 2
+                entry.data.fuel_trust_valid ? 1 : 0, entry.data.accel_valid ? 1 : 0,  // fuel_trust_valid, accel_valid
                 entry.timestamp_ms, entry.elapsed_s, entry.cpu_pct,
                 entry.demo_mode ? "DEMO" : "LIVE"  // metadata at end
             );
@@ -5281,6 +5433,7 @@ static void checkSystemsAndShowToast() {
     bool trans_temp_sensor_ok = true;
     bool steer_temp_sensor_ok = true;
     bool diff_temp_sensor_ok = true;
+    bool accel_ok = true;
     
     // Build list of failures
     char error_msg[256] = "";
@@ -5411,6 +5564,20 @@ static void checkSystemsAndShowToast() {
 #else
     Serial.println("[SYSTEM CHECK] Modbus disabled - skipping sensor checks");
 #endif
+
+#if ENABLE_GSENSOR
+    // Check Accelerometer (LIS3DH)
+    accel_ok = g_accel_initialized && g_accel_connected;
+    Serial.printf("[SYSTEM CHECK] G-Sensor (LIS3DH): %s (init=%d, conn=%d)\n", 
+                  accel_ok ? "OK" : "FAIL", g_accel_initialized, g_accel_connected);
+    if (!accel_ok) {
+        if (error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "G-Sensor offline");
+        error_count++;
+    }
+#else
+    Serial.println("[SYSTEM CHECK] G-Sensor disabled - skipping accelerometer check");
+#endif
     
     Serial.println("[SYSTEM CHECK] ========== System Check Complete ==========");
     Serial.printf("[SYSTEM CHECK] Result: %d error(s)\n\n", error_count);
@@ -5426,6 +5593,7 @@ static void checkSystemsAndShowToast() {
     g_prev_system_status.trans_temp_sensor_ok = trans_temp_sensor_ok;
     g_prev_system_status.steer_temp_sensor_ok = steer_temp_sensor_ok;
     g_prev_system_status.diff_temp_sensor_ok = diff_temp_sensor_ok;
+    g_prev_system_status.accel_ok = accel_ok;
     g_prev_system_status.initialized = true;
     
     // Show appropriate toast
@@ -5451,6 +5619,7 @@ static void backgroundSystemMonitor() {
     bool trans_temp_sensor_ok = true;
     bool steer_temp_sensor_ok = true;
     bool diff_temp_sensor_ok = true;
+    bool accel_ok = true;
     
     // Build list of NEW failures (things that just went offline)
     char error_msg[256] = "";
@@ -5631,6 +5800,24 @@ static void backgroundSystemMonitor() {
         diff_temp_sensor_ok = false;
     }
 #endif
+
+#if ENABLE_GSENSOR
+    // Accelerometer runtime probe
+    accel_ok = isAccelerometerConnected();
+    g_accel_connected = accel_ok;  // Update global state
+    
+    if (!accel_ok && g_prev_system_status.accel_ok) {
+        if (new_error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "G-Sensor offline");
+        new_error_count++;
+        Serial.println("[MONITOR] G-Sensor went OFFLINE");
+    } else if (accel_ok && !g_prev_system_status.accel_ok) {
+        if (recovery_count > 0) strcat(recovery_msg, "\n");
+        strcat(recovery_msg, "G-Sensor back online");
+        recovery_count++;
+        Serial.println("[MONITOR] G-Sensor RECOVERED");
+    }
+#endif
     
     // Update previous status
     g_prev_system_status.sd_card_ok = sd_card_ok;
@@ -5643,6 +5830,7 @@ static void backgroundSystemMonitor() {
     g_prev_system_status.trans_temp_sensor_ok = trans_temp_sensor_ok;
     g_prev_system_status.steer_temp_sensor_ok = steer_temp_sensor_ok;
     g_prev_system_status.diff_temp_sensor_ok = diff_temp_sensor_ok;
+    g_prev_system_status.accel_ok = accel_ok;
     
     // Handle toast display
     if (new_error_count > 0) {
@@ -7712,7 +7900,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v5.7 - Dual-Core + OBD-II");
+    Serial.println("   370zMonitor v5.8 - Dual-Core + G-Sensor");
     Serial.println("========================================");
 
     if (psramFound()) {
@@ -7845,6 +8033,13 @@ void setup() {
     Serial.println("[7/8] Data providers...");
     initSensors();
     initOBD();
+#if ENABLE_GSENSOR
+    if (initAccelerometer()) {
+        Serial.println("      G-Sensor: OK");
+    } else {
+        Serial.println("      G-Sensor: NOT FOUND");
+    }
+#endif
     Serial.println("      OK");
 
 #if ENABLE_SD_LOGGING

@@ -1,29 +1,32 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v5.1 - Dual-Core Architecture
+ * 370zMonitor v5.2 - Dual-Core Architecture
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
  *
+ * v5.2 Changes:
+ * - FIXED: Waveshare mode register address (0x0001 → 0x1001 per wiki)
+ * - CH2 now correctly configured to Mode 3 (4-20mA current input)
+ * - Module returns µA directly - no mV→mA conversion needed!
+ * - Simplified convertToTempC(): direct µA → °C linear conversion
+ * - Updated debug logging to show µA values
+ *
  * v5.1 Changes:
- * - FIXED: PRTXI temperature conversion now uses correct voltage-mode formula
- * - Waveshare CH2 returns mV (voltage mode + 475Ω shunt), not µA
- * - convertToTempC(): mV → mA (via shunt) → °C (linear 4-20mA)
+ * - Attempted voltage-mode fix (incorrect - wrong register address)
  * - Oil temp [C] gauge shows "---" (single sensor measures pan only)
- * - Enhanced debug logging shows both mV and calculated mA values
  *
  * v5.0 Changes:
- * - Replaced PT100+uxcell with PRTXI-1/2N-1/4-4-IO RTD transmitter on Modbus CH2
+ * - PRTXI-1/2N-1/4-4-IO RTD transmitter on Modbus CH2
  * - PRTXI outputs 4-20mA for -50°C to +200°C (loop-powered, 2-wire)
- * - Waveshare CH2 jumper ON enables 475Ω internal shunt (voltage mode)
- * - Updated sensor disconnect threshold for mV readings
+ * - CH2 jumper ON (connected) for current mode input
  *
  * v4.9 Changes (historical):
- * - Added PT100 oil temperature sensor via uxcell 24V transmitter on Modbus CH2
+ * - Added oil temperature sensor on Modbus CH2
  * - Now reading 2 channels from Waveshare 8-Ch module (pressure + temp)
- * - Added convertToTempC() for PT100 linear 0-10V to -50/+200°C conversion
+ * - Added convertToTempC() for linear current to temperature conversion
  * - Oil temperature displayed via existing gauge with F/C unit toggle
- * - Toast system monitors PT100 sensor connection status
+ * - Toast system monitors oil temp sensor connection status
  *
  * v4.8 Changes:
  * - Added system status toast notification on startup
@@ -574,13 +577,15 @@ void resetUIElements();
 #define MODBUS_NUM_CHANNELS     2   // Oil pressure + Oil temperature
 
 // Waveshare Channel Mode Configuration (Holding Registers)
-// Write to holding register 0x00XX to set channel XX mode
-#define WAVESHARE_MODE_0_5V     0x00  // Mode 0: 0-5V
-#define WAVESHARE_MODE_0_10V    0x01  // Mode 1: 0-10V (default)
-#define WAVESHARE_MODE_0_20MA   0x02  // Mode 2: 0-20mA
-#define WAVESHARE_MODE_4_20MA   0x03  // Mode 3: 4-20mA  <-- We need this for PRTXI
-#define WAVESHARE_CH1_MODE_REG  0x0000  // Holding register for CH1 mode
-#define WAVESHARE_CH2_MODE_REG  0x0001  // Holding register for CH2 mode
+// Per wiki: Register 4x1000-4x1007 = Channels 1-8 data types
+// Mode values: 0=0-10V, 1=2-10V, 2=0-20mA, 3=4-20mA, 4=raw ADC
+#define WAVESHARE_MODE_0_10V    0x00  // Mode 0: 0-10V voltage (B version default)
+#define WAVESHARE_MODE_2_10V    0x01  // Mode 1: 2-10V voltage
+#define WAVESHARE_MODE_0_20MA   0x02  // Mode 2: 0-20mA current
+#define WAVESHARE_MODE_4_20MA   0x03  // Mode 3: 4-20mA current <-- We need this for PRTXI
+#define WAVESHARE_MODE_RAW_ADC  0x04  // Mode 4: Raw 4096-scale ADC code
+#define WAVESHARE_CH1_MODE_REG  0x1000  // Holding register for CH1 mode
+#define WAVESHARE_CH2_MODE_REG  0x1001  // Holding register for CH2 mode
 
 // Pressure Sensor Calibration (PX3AN2BH150PSAAX with voltage divider)
 // Your voltage divider: 10kΩ / 22kΩ = ratio of 0.6875
@@ -591,24 +596,24 @@ void resetUIElements();
 // PRTXI Temperature Sensor Calibration (4-20mA output, loop-powered)
 // PRTXI-1/2N-1/4-4-IO outputs 4-20mA linear for -50°C to +200°C (250°C range)
 //
-// IMPORTANT: Waveshare module is in VOLTAGE mode (Mode 1) with 475Ω shunt resistor.
-// The jumper ON enables the internal 475Ω shunt that converts current to voltage.
-// The module returns millivolts (mV), NOT microamps!
+// CONFIGURATION: Waveshare module set to Mode 3 (4-20mA) via register 0x1001
+// With CH2 jumper ON (connected), module returns microamps (µA) directly!
+// No voltage-to-current conversion needed.
 //
-// Conversion chain: mV → mA → °C
-//   current_mA = raw_mV / 475
-//   temp_C = ((current_mA - 4) / 16) * 250 - 50
+// Conversion: µA → °C (simple linear)
+//   temp_C = ((µA - 4000) / 16000) * 250 - 50
 //
 // Expected readings at known temperatures:
-//   25°C (room temp): 8.8 mA × 475Ω = 4180 mV
-//   54°C (hot water): 10.66 mA × 475Ω = 5063 mV
+//   -50°C: 4000 µA (4.00 mA)
+//   25°C:  8800 µA (8.80 mA)  - room temp
+//   54°C: 10656 µA (10.66 mA) - hot water test
+//   200°C: 20000 µA (20.00 mA)
 //
-#define PRTXI_SHUNT_OHM         475.0f    // Internal shunt resistor (Waveshare spec)
-#define PRTXI_MIN_CURRENT_MA    4.0f      // 4mA = -50°C (sensor baseline)
-#define PRTXI_CURRENT_SPAN_MA   16.0f     // 20mA - 4mA = 16mA span
+#define PRTXI_MIN_CURRENT_UA    4000      // 4000 µA (4mA) = -50°C
+#define PRTXI_CURRENT_SPAN_UA   16000     // 20000 - 4000 = 16000 µA span
 #define PRTXI_TEMP_SPAN_C       250.0f    // +200°C - (-50°C) = 250°C span
 #define PRTXI_OFFSET_C          -50.0f    // 4mA = -50°C
-#define PRTXI_MIN_VALID_MV      1500      // Below this = sensor disconnected (~3.2mA)
+#define PRTXI_MIN_VALID_UA      3000      // Below this = sensor disconnected (~3mA)
 
 // Sensor Health Detection
 // When sensor is disconnected, modbus reads 0 mV
@@ -627,7 +632,7 @@ static uint16_t g_modbus_channel_values[8] = {0};
 // Sensor and communication state tracking for logging
 static bool g_modbus_comm_ok = false;           // Is modbus communication working?
 static bool g_sensor_ch1_connected = false;     // Is CH1 (oil pressure) sensor connected?
-static bool g_sensor_ch2_connected = false;     // Is CH2 (oil temp PT100) sensor connected?
+static bool g_sensor_ch2_connected = false;     // Is CH2 (oil temp PRTXI) sensor connected?
 
 //-----------------------------------------------------------------------------
 // modbusCRC16() - Calculate CRC-16 checksum for Modbus RTU
@@ -916,34 +921,28 @@ static float convertToPSI(uint16_t modbus_mV) {
 }
 
 //-----------------------------------------------------------------------------
-// convertToTempC() - Convert Modbus mV reading to Temperature (Celsius)
+// convertToTempC() - Convert Modbus µA reading to Temperature (Celsius)
 //-----------------------------------------------------------------------------
 // Sensor: PRTXI-1/2N-1/4-4-IO RTD Temperature Transmitter (4-20mA output)
 //
-// IMPORTANT: Waveshare module is in VOLTAGE mode (Mode 1) with 475Ω internal
-// shunt resistor. The jumper ON enables the shunt that converts current to
-// voltage. The module returns millivolts (mV), NOT microamps!
+// Waveshare module configured to Mode 3 (4-20mA) via register 0x1001.
+// With CH2 jumper ON, module returns microamps (µA) directly!
 //
-// Conversion chain: mV → mA → °C
-//   current_mA = raw_mV / 475Ω
-//   temp_C = ((current_mA - 4mA) / 16mA) * 250°C + (-50°C)
+// Simple linear conversion: µA → °C
+//   temp_C = ((µA - 4000) / 16000) * 250 + (-50)
 //
 // Expected readings at known temperatures:
-//   1900 mV  (4.0 mA)  = -50°C  (sensor min)
-//   4180 mV  (8.8 mA)  =  25°C  (room temp)
-//   5700 mV  (12.0 mA) =  75°C  (midpoint)
-//   9500 mV  (20.0 mA) = +200°C (sensor max)
+//   4000 µA  (4.00 mA)  = -50°C  (sensor min)
+//   8800 µA  (8.80 mA)  =  25°C  (room temp)
+//   12000 µA (12.00 mA) =  75°C  (midpoint)
+//   20000 µA (20.00 mA) = +200°C (sensor max)
 //
-// Example: At room temp 25°C, expect ~4180 mV
-//          4180 mV / 475Ω = 8.8 mA
-//          ((8.8 - 4) / 16) * 250 - 50 = 25°C ✓
+// Example: At room temp 25°C, expect ~8800 µA
+//          ((8800 - 4000) / 16000) * 250 - 50 = 25°C ✓
 //
-static float convertToTempC(uint16_t modbus_mV) {
-    // Step 1: Convert mV to mA using shunt resistance
-    float current_mA = (float)modbus_mV / PRTXI_SHUNT_OHM;
-    
-    // Step 2: Convert mA to temperature using linear 4-20mA → -50 to +200°C
-    float temp_c = ((current_mA - PRTXI_MIN_CURRENT_MA) / PRTXI_CURRENT_SPAN_MA) 
+static float convertToTempC(uint16_t modbus_uA) {
+    // Direct linear conversion: µA → °C
+    float temp_c = ((float)(modbus_uA - PRTXI_MIN_CURRENT_UA) / (float)PRTXI_CURRENT_SPAN_UA) 
                    * PRTXI_TEMP_SPAN_C + PRTXI_OFFSET_C;
     
     // Clamp to valid sensor range
@@ -1131,36 +1130,34 @@ void readModbusSensors() {
             g_vehicle_data.oil_pressure_valid = false;
         }
         
-        // Channel 2: Oil Temperature (PRTXI 4-20mA transmitter via 475Ω shunt)
-        // NOTE: Waveshare returns mV, not µA (voltage mode with internal shunt)
-        uint16_t oil_temp_mV = g_modbus_channel_values[MODBUS_CH_OIL_TEMP];
-        bool temp_sensor_connected = (oil_temp_mV >= PRTXI_MIN_VALID_MV);
+        // Channel 2: Oil Temperature (PRTXI 4-20mA transmitter)
+        // Waveshare configured to Mode 3 (4-20mA) - returns µA directly
+        uint16_t oil_temp_uA = g_modbus_channel_values[MODBUS_CH_OIL_TEMP];
+        bool temp_sensor_connected = (oil_temp_uA >= PRTXI_MIN_VALID_UA);
         
         // DEBUG: Always log CH2 raw value for troubleshooting
         static uint32_t ch2DebugCounter = 0;
         if (++ch2DebugCounter >= 20) {  // Every ~2 sec
             ch2DebugCounter = 0;
-            float debug_mA = (float)oil_temp_mV / PRTXI_SHUNT_OHM;
-            Serial.printf("[MODBUS] CH2 DEBUG: raw=%d mV (%.2f mA, threshold=%d mV)\n", 
-                         oil_temp_mV, debug_mA, PRTXI_MIN_VALID_MV);
+            Serial.printf("[MODBUS] CH2 DEBUG: raw=%d uA (%.2f mA, threshold=%d uA)\n", 
+                         oil_temp_uA, oil_temp_uA / 1000.0f, PRTXI_MIN_VALID_UA);
         }
         
         // Log sensor state changes
         if (temp_sensor_connected != g_sensor_ch2_connected) {
             if (temp_sensor_connected) {
-                float conn_mA = (float)oil_temp_mV / PRTXI_SHUNT_OHM;
-                Serial.printf("[MODBUS] CH2: PRTXI Sensor CONNECTED (%d mV = %.2f mA)\n", 
-                             oil_temp_mV, conn_mA);
+                Serial.printf("[MODBUS] CH2: PRTXI Sensor CONNECTED (%d uA = %.2f mA)\n", 
+                             oil_temp_uA, oil_temp_uA / 1000.0f);
             } else {
-                Serial.printf("[MODBUS] CH2: PRTXI Sensor DISCONNECTED (%d mV < %d mV threshold)\n", 
-                             oil_temp_mV, PRTXI_MIN_VALID_MV);
+                Serial.printf("[MODBUS] CH2: PRTXI Sensor DISCONNECTED (%d uA < %d uA threshold)\n", 
+                             oil_temp_uA, PRTXI_MIN_VALID_UA);
             }
             g_sensor_ch2_connected = temp_sensor_connected;
         }
         
         if (temp_sensor_connected) {
             // Sensor connected and reading valid
-            float oil_temp_c = convertToTempC(oil_temp_mV);
+            float oil_temp_c = convertToTempC(oil_temp_uA);
             float oil_temp_f = celsiusToFahrenheit(oil_temp_c);
             
             // Only set pan temperature - cooled gauge will show "---"
@@ -1173,9 +1170,8 @@ void readModbusSensors() {
             static uint32_t tempLogCounter = 20;
             if (++tempLogCounter >= 40) {
                 tempLogCounter = 0;
-                float log_mA = (float)oil_temp_mV / PRTXI_SHUNT_OHM;
-                Serial.printf("[MODBUS] CH2: %d mV (%.2f mA) -> %.1f C (%.1f F)\n", 
-                             oil_temp_mV, log_mA, oil_temp_c, oil_temp_f);
+                Serial.printf("[MODBUS] CH2: %d uA (%.2f mA) -> %.1f C (%.1f F)\n", 
+                             oil_temp_uA, oil_temp_uA / 1000.0f, oil_temp_c, oil_temp_f);
             }
         } else {
             // Sensor disconnected

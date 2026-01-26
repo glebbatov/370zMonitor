@@ -445,8 +445,8 @@ TOAST_COLOR_ERROR    0xB71C1C  // Dark red
 
 | Version | Key Changes |
 |---------|-------------|
-| v5.0 | PRTXI-1/2N-1/4-4-IO RTD transmitter on CH2 (4-20mA mode), replaced PT100+uxcell |
-| v4.9 | PT100 oil temperature sensor via uxcell transmitter on Modbus CH2 |
+| v5.0 | PRTXI-1/2N-1/4-4-IO RTD transmitter on CH2 (4-20mA mode) |
+| v4.9 | Oil temperature sensor on Modbus CH2 |
 | v4.8 | Toast notification system with runtime monitoring, error/recovery detection |
 | v4.7 | File browser optimization, 8-digit sessions |
 | v4.6 | SD card file browser, CSV/text viewers |

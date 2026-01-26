@@ -1,9 +1,17 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v5.6
+ * 370zMonitor v5.7
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v5.7 Changes:
+ * - ADDED: OBD-II via CAN bus (TWAI) for Water/Coolant Temperature (ECT)
+ * - ADDED: Fuel Trust calculation from OBD fuel trims and timing advance
+ * - Fuel Trust: Penalizes high STFT/LTFT, bank imbalance, and timing pulls
+ * - Fuel Trust only displayed when engine warmed up (ECT >= 80°C)
+ * - OBD polling: Round-robin 8 PIDs at 5Hz each (~1.6s full cycle)
+ * - CAN pins configurable (default GPIO17/18) for SN65HVD230 transceiver
  *
  * v5.6 Changes:
  * - ADDED: Auto Brightness feature (sunrise/sunset based screen dimming)
@@ -152,6 +160,8 @@ extern "C" void lv_draw_sw_rgb565_swap(void * buf, uint32_t buf_size_px);
 #include <time.h>                   // Time functions
 #include <stdarg.h>                 // For va_list in SerialLogf
 #include <vector>                   // For file browser
+#include "driver/twai.h"            // ESP32 CAN (TWAI) controller for OBD-II
+#include <math.h>                   // For fabsf, fminf in Fuel Trust calculation
 
 //-----------------------------------------------------------------
 
@@ -339,6 +349,7 @@ __attribute__((constructor)) void configurePSRAM() {
 // ENABLE_SD_LOGGING defined at top of file (before TeeSerial)
 #define ENABLE_USB_MSC                  1       // Enable USB Mass Storage mode (hold BOOT at startup)
 #define ENABLE_MODBUS_SENSORS           1       // Enable Modbus RS485 sensor reading (8-Ch Analog Module)
+#define ENABLE_OBD_CAN                  1       // Enable OBD-II via CAN bus (TWAI)
 #define UPDATE_INTERVAL_MS              25      // default 250ms
 
 // USB MSC Configuration
@@ -2493,21 +2504,18 @@ void initSensors() {
 void updateSensorData() {
 #if ENABLE_MODBUS_SENSORS
     // Read from Modbus 8-Ch Analog Module
+    // Handles: Oil Pressure (CH1), Oil Temp (CH2), Trans Temp (CH3), Steer Temp (CH4), Diff Temp (CH5)
     readModbusSensors();
     
-    // Note: All Modbus sensors (CH1-CH5) are now handled by readModbusSensors()
-    // Only mark non-Modbus sensors as invalid
-    g_vehicle_data.water_temp_valid = false;   // Water temp not yet on Modbus
-    g_vehicle_data.fuel_trust_valid = false;   // Fuel trust not yet on Modbus
+    // Note: Water temp and Fuel trust are handled by updateOBDData() (via CAN bus)
 #else
-    // No sensors configured - show "---" on all gauges
+    // No Modbus sensors configured - show "---" on Modbus gauges
     g_vehicle_data.oil_pressure_valid = false;
     g_vehicle_data.oil_temp_valid = false;
-    g_vehicle_data.water_temp_valid = false;
     g_vehicle_data.trans_temp_valid = false;
     g_vehicle_data.steer_temp_valid = false;
     g_vehicle_data.diff_temp_valid = false;
-    g_vehicle_data.fuel_trust_valid = false;
+    // Note: Water temp and Fuel trust are handled by updateOBDData() (via CAN bus)
 #endif
 }
 
@@ -2515,34 +2523,464 @@ void updateSensorData() {
 
 //=================================================================
 // OBD DATA PROVIDER
-// Reads from OBD-II via CAN bus or Bluetooth ELM327
-// TODO: Implement actual OBD reading code
+// Reads from OBD-II via CAN bus using ESP32 TWAI controller
+// Provides: Water/Coolant Temperature (ECT) and Fuel Trust calculation
 //=================================================================
 
 #pragma region OBD Data Provider
 
-void initOBD() {
-    // TODO: Initialize CAN bus or Bluetooth connection
-    // Example for CAN:
-    // - Configure MCP2515 or ESP32's built-in CAN controller
-    // - Set baud rate (typically 500kbps for OBD-II)
-    // - Set up message filters for relevant PIDs
+#if ENABLE_OBD_CAN
 
-    Serial.println("[OBD] OBD initialization - NOT IMPLEMENTED");
+//-----------------------------------------------------------------------------
+// CAN BUS CONFIGURATION (Waveshare ESP32-S3-Touch-LCD-7)
+//-----------------------------------------------------------------------------
+// The Waveshare board has an ONBOARD TJA1051T CAN transceiver (U7).
+// No external transceiver needed!
+//
+// DIRECTLY ACTIVE CONNECTIONS (active at boot):
+//   GPIO19 (CANTX) -> TJA1051T TXD (directly routed on PCB)
+//   GPIO20 (CANRX) -> TJA1051T RXD (directly routed on PCB)
+//   TJA1051T CANH/CANL -> J6 connector (directly accessible on PCB)
+//
+// WIRING TO OBD-II PORT (directly to J6 on PCB):
+//   J6 Pin 1 (CANL) -> OBD-II Pin 14
+//   J6 Pin 2 (CANH) -> OBD-II Pin 6
+//   GND (any board GND) -> OBD-II Pin 4 or 5 (signal ground reference)
+//
+// NOTE: No termination resistor needed - car's ECU provides termination.
+//-----------------------------------------------------------------------------
+
+#define CAN_TX_PIN  GPIO_NUM_19     // ESP32 TX to onboard TJA1051T transceiver
+#define CAN_RX_PIN  GPIO_NUM_20     // ESP32 RX from onboard TJA1051T transceiver
+
+// OBD-II addressing (ISO 15765-4, 11-bit CAN)
+#define OBD_FUNCTIONAL_REQ_ID  0x7DF    // Broadcast request address
+#define OBD_MIN_RESP_ID        0x7E8    // ECU response range start
+#define OBD_MAX_RESP_ID        0x7EF    // ECU response range end
+
+//-----------------------------------------------------------------------------
+// OBD PID POLLING CONFIGURATION
+//-----------------------------------------------------------------------------
+// Round-robin polling: one PID every OBD_PID_REQUEST_PERIOD_MS
+// For 10 PIDs at 200ms each = 2 seconds full cycle (~0.5 Hz per PID)
+//-----------------------------------------------------------------------------
+
+#define OBD_PID_REQUEST_PERIOD_MS  200   // Poll one PID every 200ms
+#define OBD_PID_STALE_THRESHOLD_MS 3000  // Mark data invalid if no update
+#define OBD_WARMUP_TEMP_C          80    // ECT threshold before showing Fuel Trust
+
+// PIDs to poll (Mode 01 - Current Data)
+static const uint8_t OBD_PID_LIST[] = {
+    0x05,  // Engine Coolant Temperature (ECT): A - 40 [°C]
+    0x0C,  // Engine RPM: ((A*256)+B)/4 [rpm]
+    0x0D,  // Vehicle Speed: A [km/h]
+    0x0E,  // Timing Advance: (A - 64) / 2 [degrees BTDC]
+    0x06,  // Short Term Fuel Trim Bank 1: (A-128)*100/128 [%]
+    0x07,  // Long Term Fuel Trim Bank 1: (A-128)*100/128 [%]
+    0x08,  // Short Term Fuel Trim Bank 2: (A-128)*100/128 [%]
+    0x09,  // Long Term Fuel Trim Bank 2: (A-128)*100/128 [%]
+};
+#define OBD_NUM_PIDS (sizeof(OBD_PID_LIST) / sizeof(OBD_PID_LIST[0]))
+
+//-----------------------------------------------------------------------------
+// OBD STATE VARIABLES
+//-----------------------------------------------------------------------------
+
+static bool g_obd_initialized = false;
+static int g_obd_pid_index = 0;                  // Round-robin index
+static uint32_t g_obd_last_request_ms = 0;       // Last PID request time
+static uint32_t g_obd_success_count = 0;
+static uint32_t g_obd_error_count = 0;
+
+// Live OBD values with timestamps for staleness detection
+static struct {
+    // Engine Coolant Temperature
+    int coolant_c;                    // [°C]
+    uint32_t coolant_timestamp;
+    bool coolant_valid;
+    
+    // RPM
+    float rpm;                        // [rpm]
+    uint32_t rpm_timestamp;
+    bool rpm_valid;
+    
+    // Vehicle Speed
+    int speed_kph;                    // [km/h]
+    uint32_t speed_timestamp;
+    bool speed_valid;
+    
+    // Timing Advance
+    float timing_deg;                 // [degrees BTDC]
+    uint32_t timing_timestamp;
+    bool timing_valid;
+    
+    // Fuel Trims
+    float stft_b1;                    // Short Term Fuel Trim Bank 1 [%]
+    float ltft_b1;                    // Long Term Fuel Trim Bank 1 [%]
+    float stft_b2;                    // Short Term Fuel Trim Bank 2 [%]
+    float ltft_b2;                    // Long Term Fuel Trim Bank 2 [%]
+    uint32_t fuel_trim_timestamp;
+    bool fuel_trim_valid;
+} g_obd_data = {0};
+
+// Fuel Trust calculation state
+static float g_obd_last_timing_deg = NAN;        // For timing pull detection
+static unsigned g_obd_timing_pull_count = 0;     // Timing pull event counter
+static uint32_t g_obd_timing_pull_reset_ms = 0;  // Reset counter periodically
+#define FUEL_TRUST_TIMING_RESET_INTERVAL_MS 10000 // Reset timing pulls every 10s
+
+//-----------------------------------------------------------------------------
+// startCAN() - Initialize ESP32 TWAI driver
+//-----------------------------------------------------------------------------
+static bool startCAN() {
+    twai_general_config_t general = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
+    general.rx_queue_len = 32;
+    general.tx_queue_len = 8;
+    
+    twai_timing_config_t timing = TWAI_TIMING_CONFIG_500KBITS();  // 500 kbit/s for OBD-II
+    twai_filter_config_t filter = TWAI_FILTER_CONFIG_ACCEPT_ALL(); // Accept all frames
+    
+    esp_err_t err = twai_driver_install(&general, &timing, &filter);
+    if (err != ESP_OK) {
+        Serial.printf("[OBD] TWAI driver install failed: 0x%X\n", err);
+        return false;
+    }
+    
+    err = twai_start();
+    if (err != ESP_OK) {
+        Serial.printf("[OBD] TWAI start failed: 0x%X\n", err);
+        twai_driver_uninstall();
+        return false;
+    }
+    
+    return true;
 }
 
-void updateOBDData() {
-    // TODO: Read from OBD-II and populate g_vehicle_data
-    //
-    // Example implementation:
-    // sendOBDRequest(PID_RPM);
-    // if (receiveOBDResponse(&rpm_data)) {
-    //     g_vehicle_data.rpm = parseRPM(rpm_data);
-    //     g_vehicle_data.rpm_valid = true;
-    // }
+//-----------------------------------------------------------------------------
+// sendOBD_Mode01() - Send Mode 01 PID request
+//-----------------------------------------------------------------------------
+static void sendOBD_Mode01(uint8_t pid) {
+    twai_message_t tx = {};
+    tx.identifier = OBD_FUNCTIONAL_REQ_ID;
+    tx.extd = 0;              // 11-bit ID
+    tx.rtr = 0;               // Data frame
+    tx.data_length_code = 8;
+    tx.data[0] = 0x02;        // 2 data bytes follow
+    tx.data[1] = 0x01;        // Mode 01 (current data)
+    tx.data[2] = pid;         // Requested PID
+    tx.data[3] = 0x00;
+    tx.data[4] = 0x00;
+    tx.data[5] = 0x00;
+    tx.data[6] = 0x00;
+    tx.data[7] = 0x00;
+    
+    esp_err_t err = twai_transmit(&tx, pdMS_TO_TICKS(10));
+    if (err != ESP_OK) {
+        // TX queue full or error - will retry next cycle
+    }
+}
 
-    // For now, mark OBD data as invalid
+//-----------------------------------------------------------------------------
+// decodeOBD_Mode01Reply() - Parse Mode 01 response and update values
+//-----------------------------------------------------------------------------
+static void decodeOBD_Mode01Reply(const twai_message_t& rx) {
+    if (rx.data_length_code < 3) return;
+    if (rx.data[1] != 0x41) return;  // 0x41 = Mode 01 response
+    
+    uint8_t pid = rx.data[2];
+    uint32_t now = millis();
+    
+    switch (pid) {
+        case 0x05: {  // Engine Coolant Temperature: A - 40 [°C]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.coolant_c = (int)rx.data[3] - 40;
+                g_obd_data.coolant_timestamp = now;
+                g_obd_data.coolant_valid = true;
+                g_obd_success_count++;
+            }
+        } break;
+        
+        case 0x0C: {  // Engine RPM: ((A*256)+B)/4 [rpm]
+            if (rx.data_length_code >= 5) {
+                uint16_t A = rx.data[3];
+                uint16_t B = rx.data[4];
+                g_obd_data.rpm = ((A << 8) | B) / 4.0f;
+                g_obd_data.rpm_timestamp = now;
+                g_obd_data.rpm_valid = true;
+            }
+        } break;
+        
+        case 0x0D: {  // Vehicle Speed: A [km/h]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.speed_kph = (int)rx.data[3];
+                g_obd_data.speed_timestamp = now;
+                g_obd_data.speed_valid = true;
+            }
+        } break;
+        
+        case 0x0E: {  // Timing Advance: (A - 64) / 2 [degrees BTDC]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.timing_deg = ((float)rx.data[3] - 64.0f) / 2.0f;
+                g_obd_data.timing_timestamp = now;
+                g_obd_data.timing_valid = true;
+            }
+        } break;
+        
+        case 0x06: {  // STFT Bank 1: (A-128)*100/128 [%]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.stft_b1 = ((float)rx.data[3] - 128.0f) * 100.0f / 128.0f;
+                g_obd_data.fuel_trim_timestamp = now;
+                g_obd_data.fuel_trim_valid = true;
+            }
+        } break;
+        
+        case 0x07: {  // LTFT Bank 1: (A-128)*100/128 [%]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.ltft_b1 = ((float)rx.data[3] - 128.0f) * 100.0f / 128.0f;
+            }
+        } break;
+        
+        case 0x08: {  // STFT Bank 2: (A-128)*100/128 [%]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.stft_b2 = ((float)rx.data[3] - 128.0f) * 100.0f / 128.0f;
+            }
+        } break;
+        
+        case 0x09: {  // LTFT Bank 2: (A-128)*100/128 [%]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.ltft_b2 = ((float)rx.data[3] - 128.0f) * 100.0f / 128.0f;
+            }
+        } break;
+        
+        default:
+            break;
+    }
+}
+
+//-----------------------------------------------------------------------------
+// computeFuelTrust() - Calculate Fuel Trust score (0-100%)
+//-----------------------------------------------------------------------------
+// Penalizes:
+//   - Large fuel trim magnitudes (STFT/LTFT > 5%)
+//   - Bank-to-bank imbalance (difference > 5%)
+//   - Timing pulls under load (drops > 3° when speed>30 km/h & rpm>2000)
+//
+// Returns: 0-100 score (higher = more confidence in fuel quality/tune)
+//-----------------------------------------------------------------------------
+static float computeFuelTrust() {
+    // Get fuel trim values (default to 0 if not available)
+    float st1 = g_obd_data.fuel_trim_valid ? g_obd_data.stft_b1 : 0.0f;
+    float st2 = g_obd_data.fuel_trim_valid ? g_obd_data.stft_b2 : 0.0f;
+    float lt1 = g_obd_data.fuel_trim_valid ? g_obd_data.ltft_b1 : 0.0f;
+    float lt2 = g_obd_data.fuel_trim_valid ? g_obd_data.ltft_b2 : 0.0f;
+    
+    // Calculate averages and deltas
+    float avgAbsST = 0.5f * (fabsf(st1) + fabsf(st2));
+    float avgAbsLT = 0.5f * (fabsf(lt1) + fabsf(lt2));
+    float deltaBanksST = fabsf(st1 - st2);
+    float deltaBanksLT = fabsf(lt1 - lt2);
+    
+    // Penalties for trim magnitudes (tuned gently)
+    // STFT > 5%: 0-10 point penalty
+    float pST = (avgAbsST <= 5.0f) ? 0.0f : 
+                (avgAbsST <= 8.0f) ? (avgAbsST - 5.0f) * 1.0f : 10.0f;
+    
+    // LTFT > 5%: 0-20 point penalty (more severe - indicates persistent issue)
+    float pLT = (avgAbsLT <= 5.0f) ? 0.0f : 
+                (avgAbsLT <= 10.0f) ? (avgAbsLT - 5.0f) * 1.5f : 20.0f;
+    
+    // Bank imbalance > 5%: 5 point penalty
+    float pDelta = (deltaBanksST > 5.0f || deltaBanksLT > 5.0f) ? 5.0f : 0.0f;
+    
+    // Timing pull detection: count drops > 3° when under load
+    if (g_obd_data.timing_valid && g_obd_data.speed_valid && g_obd_data.rpm_valid) {
+        if (g_obd_data.speed_kph > 30 && g_obd_data.rpm > 2000.0f) {
+            if (!isnan(g_obd_last_timing_deg)) {
+                float drop = g_obd_data.timing_deg - g_obd_last_timing_deg;
+                if (drop < -3.0f) {
+                    g_obd_timing_pull_count++;
+                }
+            }
+        }
+    }
+    g_obd_last_timing_deg = g_obd_data.timing_valid ? g_obd_data.timing_deg : NAN;
+    
+    // Timing pull penalty: 1.5 points per pull, max 30 points
+    float pTiming = fminf(30.0f, g_obd_timing_pull_count * 1.5f);
+    
+    // Calculate final score
+    float score = 100.0f - (pST + pLT + pDelta + pTiming);
+    if (score < 0.0f) score = 0.0f;
+    if (score > 100.0f) score = 100.0f;
+    
+    // Periodic reset of timing pull counter (keeps display responsive)
+    uint32_t now = millis();
+    if (now - g_obd_timing_pull_reset_ms > FUEL_TRUST_TIMING_RESET_INTERVAL_MS) {
+        g_obd_timing_pull_count = 0;
+        g_obd_timing_pull_reset_ms = now;
+    }
+    
+    return score;
+}
+
+//-----------------------------------------------------------------------------
+// checkOBDDataStaleness() - Mark data invalid if not updated recently
+//-----------------------------------------------------------------------------
+static void checkOBDDataStaleness() {
+    uint32_t now = millis();
+    
+    if (g_obd_data.coolant_valid && 
+        (now - g_obd_data.coolant_timestamp > OBD_PID_STALE_THRESHOLD_MS)) {
+        g_obd_data.coolant_valid = false;
+    }
+    
+    if (g_obd_data.rpm_valid && 
+        (now - g_obd_data.rpm_timestamp > OBD_PID_STALE_THRESHOLD_MS)) {
+        g_obd_data.rpm_valid = false;
+    }
+    
+    if (g_obd_data.speed_valid && 
+        (now - g_obd_data.speed_timestamp > OBD_PID_STALE_THRESHOLD_MS)) {
+        g_obd_data.speed_valid = false;
+    }
+    
+    if (g_obd_data.timing_valid && 
+        (now - g_obd_data.timing_timestamp > OBD_PID_STALE_THRESHOLD_MS)) {
+        g_obd_data.timing_valid = false;
+    }
+    
+    if (g_obd_data.fuel_trim_valid && 
+        (now - g_obd_data.fuel_trim_timestamp > OBD_PID_STALE_THRESHOLD_MS)) {
+        g_obd_data.fuel_trim_valid = false;
+    }
+}
+
+#endif // ENABLE_OBD_CAN
+
+//-----------------------------------------------------------------------------
+// initOBD() - Initialize OBD-II CAN communication
+//-----------------------------------------------------------------------------
+void initOBD() {
+#if ENABLE_OBD_CAN
+    Serial.println("[OBD] Initializing CAN bus...");
+    Serial.printf("[OBD] Config: TX=GPIO%d, RX=GPIO%d, 500kbps\n", CAN_TX_PIN, CAN_RX_PIN);
+    
+    if (startCAN()) {
+        g_obd_initialized = true;
+        g_obd_last_request_ms = millis();
+        Serial.println("[OBD] CAN bus initialized successfully");
+        Serial.println("[OBD] Polling: ECT, RPM, Speed, Timing, STFT/LTFT B1/B2");
+    } else {
+        g_obd_initialized = false;
+        Serial.println("[OBD] CAN bus initialization FAILED!");
+        Serial.println("[OBD] Check: TX/RX wiring, transceiver power, OBD-II connection");
+    }
+#else
+    Serial.println("[OBD] OBD-II CAN disabled (ENABLE_OBD_CAN=0)");
+#endif
+}
+
+//-----------------------------------------------------------------------------
+// updateOBDData() - Poll PIDs and update vehicle data
+//-----------------------------------------------------------------------------
+// Called from main loop. Performs:
+//   1. Round-robin PID requests (one per OBD_PID_REQUEST_PERIOD_MS)
+//   2. Receives and decodes any pending CAN frames
+//   3. Updates g_vehicle_data with water temp and fuel trust
+//   4. Marks stale data as invalid
+//-----------------------------------------------------------------------------
+void updateOBDData() {
+#if ENABLE_OBD_CAN
+    if (!g_obd_initialized) {
+        // Try to reinitialize periodically
+        static uint32_t lastRetry = 0;
+        if (millis() - lastRetry > 5000) {
+            lastRetry = millis();
+            initOBD();
+        }
+        g_vehicle_data.water_temp_valid = false;
+        g_vehicle_data.fuel_trust_valid = false;
+        g_vehicle_data.rpm_valid = false;
+        return;
+    }
+    
+    uint32_t now = millis();
+    
+    // 1. Send next PID request (round-robin)
+    if (now - g_obd_last_request_ms >= OBD_PID_REQUEST_PERIOD_MS) {
+        g_obd_last_request_ms = now;
+        sendOBD_Mode01(OBD_PID_LIST[g_obd_pid_index]);
+        g_obd_pid_index = (g_obd_pid_index + 1) % OBD_NUM_PIDS;
+    }
+    
+    // 2. Receive any pending CAN frames (non-blocking)
+    twai_message_t rx;
+    while (twai_receive(&rx, pdMS_TO_TICKS(1)) == ESP_OK) {
+        // Filter for OBD-II responses (0x7E8-0x7EF)
+        if (!rx.extd && rx.identifier >= OBD_MIN_RESP_ID && rx.identifier <= OBD_MAX_RESP_ID) {
+            decodeOBD_Mode01Reply(rx);
+        }
+    }
+    
+    // 3. Check for stale data
+    checkOBDDataStaleness();
+    
+    // 4. Update Water Temperature from ECT
+    if (g_obd_data.coolant_valid) {
+        // Convert Celsius to Fahrenheit for internal storage
+        float water_temp_f = celsiusToFahrenheit((float)g_obd_data.coolant_c);
+        g_vehicle_data.water_temp_value_f = (int)(water_temp_f + 0.5f);
+        g_vehicle_data.water_temp_valid = true;
+        g_vehicle_data.has_received_data = true;
+    } else {
+        g_vehicle_data.water_temp_valid = false;
+    }
+    
+    // 5. Update RPM
+    if (g_obd_data.rpm_valid) {
+        g_vehicle_data.rpm = (int)(g_obd_data.rpm + 0.5f);
+        g_vehicle_data.rpm_valid = true;
+    } else {
+        g_vehicle_data.rpm_valid = false;
+    }
+    
+    // 6. Calculate and update Fuel Trust
+    // Only show Fuel Trust when engine is warmed up (ECT >= 80°C)
+    bool show_fuel_trust = g_obd_data.coolant_valid && 
+                           g_obd_data.coolant_c >= OBD_WARMUP_TEMP_C;
+    
+    if (show_fuel_trust && g_obd_data.fuel_trim_valid) {
+        float trust = computeFuelTrust();
+        g_vehicle_data.fuel_trust_percent = (int)(trust + 0.5f);
+        g_vehicle_data.fuel_trust_valid = true;
+        g_vehicle_data.has_received_data = true;
+    } else {
+        g_vehicle_data.fuel_trust_valid = false;
+    }
+    
+    // 7. Periodic logging
+    static uint32_t lastOBDLog = 0;
+    if (now - lastOBDLog > 2000) {  // Log every 2 seconds
+        lastOBDLog = now;
+        
+        if (g_obd_data.coolant_valid || g_obd_data.rpm_valid || g_obd_data.fuel_trim_valid) {
+            Serial.printf("[OBD] ECT:%d°C RPM:%.0f Spd:%dkph Tim:%.1f° ST1:%.1f%% LT1:%.1f%% Trust:%d%%\n",
+                g_obd_data.coolant_valid ? g_obd_data.coolant_c : -99,
+                g_obd_data.rpm_valid ? g_obd_data.rpm : 0,
+                g_obd_data.speed_valid ? g_obd_data.speed_kph : -1,
+                g_obd_data.timing_valid ? g_obd_data.timing_deg : 0,
+                g_obd_data.fuel_trim_valid ? g_obd_data.stft_b1 : 0,
+                g_obd_data.fuel_trim_valid ? g_obd_data.ltft_b1 : 0,
+                g_vehicle_data.fuel_trust_valid ? g_vehicle_data.fuel_trust_percent : -1);
+        }
+    }
+    
+#else
+    // OBD disabled - mark data invalid
+    g_vehicle_data.water_temp_valid = false;
+    g_vehicle_data.fuel_trust_valid = false;
     g_vehicle_data.rpm_valid = false;
+#endif
 }
 
 #pragma endregion OBD Data Provider
@@ -7256,7 +7694,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v5.6 - Dual-Core");
+    Serial.println("   370zMonitor v5.7 - Dual-Core + OBD-II");
     Serial.println("========================================");
 
     if (psramFound()) {

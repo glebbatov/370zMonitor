@@ -1,16 +1,22 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v5.0 - Dual-Core Architecture
+ * 370zMonitor v5.1 - Dual-Core Architecture
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v5.1 Changes:
+ * - FIXED: PRTXI temperature conversion now uses correct voltage-mode formula
+ * - Waveshare CH2 returns mV (voltage mode + 475Ω shunt), not µA
+ * - convertToTempC(): mV → mA (via shunt) → °C (linear 4-20mA)
+ * - Oil temp [C] gauge shows "---" (single sensor measures pan only)
+ * - Enhanced debug logging shows both mV and calculated mA values
  *
  * v5.0 Changes:
  * - Replaced PT100+uxcell with PRTXI-1/2N-1/4-4-IO RTD transmitter on Modbus CH2
  * - PRTXI outputs 4-20mA for -50°C to +200°C (loop-powered, 2-wire)
- * - Waveshare CH2 configured for 4-20mA mode (Mode 3, jumper ON)
- * - Updated convertToTempC() for 4-20mA to temperature conversion
- * - Updated sensor disconnect threshold for current mode
+ * - Waveshare CH2 jumper ON enables 475Ω internal shunt (voltage mode)
+ * - Updated sensor disconnect threshold for mV readings
  *
  * v4.9 Changes (historical):
  * - Added PT100 oil temperature sensor via uxcell 24V transmitter on Modbus CH2
@@ -584,12 +590,25 @@ void resetUIElements();
 
 // PRTXI Temperature Sensor Calibration (4-20mA output, loop-powered)
 // PRTXI-1/2N-1/4-4-IO outputs 4-20mA linear for -50°C to +200°C (250°C range)
-// Waveshare CH2 in 4-20mA mode (Mode 3) returns microamps (µA)
-// 4000 µA (4mA) = -50°C, 20000 µA (20mA) = +200°C
+//
+// IMPORTANT: Waveshare module is in VOLTAGE mode (Mode 1) with 475Ω shunt resistor.
+// The jumper ON enables the internal 475Ω shunt that converts current to voltage.
+// The module returns millivolts (mV), NOT microamps!
+//
+// Conversion chain: mV → mA → °C
+//   current_mA = raw_mV / 475
+//   temp_C = ((current_mA - 4) / 16) * 250 - 50
+//
+// Expected readings at known temperatures:
+//   25°C (room temp): 8.8 mA × 475Ω = 4180 mV
+//   54°C (hot water): 10.66 mA × 475Ω = 5063 mV
+//
+#define PRTXI_SHUNT_OHM         475.0f    // Internal shunt resistor (Waveshare spec)
+#define PRTXI_MIN_CURRENT_MA    4.0f      // 4mA = -50°C (sensor baseline)
+#define PRTXI_CURRENT_SPAN_MA   16.0f     // 20mA - 4mA = 16mA span
+#define PRTXI_TEMP_SPAN_C       250.0f    // +200°C - (-50°C) = 250°C span
 #define PRTXI_OFFSET_C          -50.0f    // 4mA = -50°C
-#define PRTXI_SCALE_C_PER_UA    0.015625f // 250°C / 16000 µA = 0.015625°C per µA
-#define PRTXI_ZERO_CURRENT_UA   4000      // 4mA baseline (0% of range)
-#define PRTXI_MIN_VALID_UA      3500      // Below this = sensor disconnected (under 4mA)
+#define PRTXI_MIN_VALID_MV      1500      // Below this = sensor disconnected (~3.2mA)
 
 // Sensor Health Detection
 // When sensor is disconnected, modbus reads 0 mV
@@ -897,26 +916,36 @@ static float convertToPSI(uint16_t modbus_mV) {
 }
 
 //-----------------------------------------------------------------------------
-// convertToTempC() - Convert Modbus µA reading to Temperature (Celsius)
+// convertToTempC() - Convert Modbus mV reading to Temperature (Celsius)
 //-----------------------------------------------------------------------------
 // Sensor: PRTXI-1/2N-1/4-4-IO RTD Temperature Transmitter (4-20mA output)
 //
-// The PRTXI outputs 4-20mA linearly for -50°C to +200°C.
-// Waveshare CH2 in 4-20mA mode (Mode 3) returns current in microamps.
+// IMPORTANT: Waveshare module is in VOLTAGE mode (Mode 1) with 475Ω internal
+// shunt resistor. The jumper ON enables the shunt that converts current to
+// voltage. The module returns millivolts (mV), NOT microamps!
 //
-//   4000 µA  (4mA)  = -50°C
-//   8800 µA  (8.8mA)=  25°C  (room temp)
-//   12000 µA (12mA) =  75°C  (midpoint)
-//   20000 µA (20mA) = +200°C
+// Conversion chain: mV → mA → °C
+//   current_mA = raw_mV / 475Ω
+//   temp_C = ((current_mA - 4mA) / 16mA) * 250°C + (-50°C)
 //
-// Conversion: temp_C = ((µA - 4000) * 0.015625) - 50
-//           = (µA - 4000) / 16000 * 250 - 50
+// Expected readings at known temperatures:
+//   1900 mV  (4.0 mA)  = -50°C  (sensor min)
+//   4180 mV  (8.8 mA)  =  25°C  (room temp)
+//   5700 mV  (12.0 mA) =  75°C  (midpoint)
+//   9500 mV  (20.0 mA) = +200°C (sensor max)
 //
-// Example: At room temp 25°C, expect ~8800 µA (8.8 mA)
-//          ((8800 - 4000) * 0.015625) - 50 = 25°C
+// Example: At room temp 25°C, expect ~4180 mV
+//          4180 mV / 475Ω = 8.8 mA
+//          ((8.8 - 4) / 16) * 250 - 50 = 25°C ✓
 //
-static float convertToTempC(uint16_t modbus_uA) {
-    float temp_c = ((float)modbus_uA - PRTXI_ZERO_CURRENT_UA) * PRTXI_SCALE_C_PER_UA + PRTXI_OFFSET_C;
+static float convertToTempC(uint16_t modbus_mV) {
+    // Step 1: Convert mV to mA using shunt resistance
+    float current_mA = (float)modbus_mV / PRTXI_SHUNT_OHM;
+    
+    // Step 2: Convert mA to temperature using linear 4-20mA → -50 to +200°C
+    float temp_c = ((current_mA - PRTXI_MIN_CURRENT_MA) / PRTXI_CURRENT_SPAN_MA) 
+                   * PRTXI_TEMP_SPAN_C + PRTXI_OFFSET_C;
+    
     // Clamp to valid sensor range
     if (temp_c < -50.0f) temp_c = -50.0f;
     if (temp_c > 200.0f) temp_c = 200.0f;
@@ -1102,34 +1131,41 @@ void readModbusSensors() {
             g_vehicle_data.oil_pressure_valid = false;
         }
         
-        // Channel 2: Oil Temperature (PRTXI 4-20mA transmitter)
-        uint16_t oil_temp_uA = g_modbus_channel_values[MODBUS_CH_OIL_TEMP];
-        bool temp_sensor_connected = (oil_temp_uA >= PRTXI_MIN_VALID_UA);
+        // Channel 2: Oil Temperature (PRTXI 4-20mA transmitter via 475Ω shunt)
+        // NOTE: Waveshare returns mV, not µA (voltage mode with internal shunt)
+        uint16_t oil_temp_mV = g_modbus_channel_values[MODBUS_CH_OIL_TEMP];
+        bool temp_sensor_connected = (oil_temp_mV >= PRTXI_MIN_VALID_MV);
         
         // DEBUG: Always log CH2 raw value for troubleshooting
         static uint32_t ch2DebugCounter = 0;
         if (++ch2DebugCounter >= 20) {  // Every ~2 sec
             ch2DebugCounter = 0;
-            Serial.printf("[MODBUS] CH2 DEBUG: raw=%d uA (threshold=%d)\n", oil_temp_uA, PRTXI_MIN_VALID_UA);
+            float debug_mA = (float)oil_temp_mV / PRTXI_SHUNT_OHM;
+            Serial.printf("[MODBUS] CH2 DEBUG: raw=%d mV (%.2f mA, threshold=%d mV)\n", 
+                         oil_temp_mV, debug_mA, PRTXI_MIN_VALID_MV);
         }
         
         // Log sensor state changes
         if (temp_sensor_connected != g_sensor_ch2_connected) {
             if (temp_sensor_connected) {
-                Serial.printf("[MODBUS] CH2: PRTXI Sensor CONNECTED (%d uA)\n", oil_temp_uA);
+                float conn_mA = (float)oil_temp_mV / PRTXI_SHUNT_OHM;
+                Serial.printf("[MODBUS] CH2: PRTXI Sensor CONNECTED (%d mV = %.2f mA)\n", 
+                             oil_temp_mV, conn_mA);
             } else {
-                Serial.printf("[MODBUS] CH2: PRTXI Sensor DISCONNECTED (%d uA < %d uA threshold)\n", 
-                             oil_temp_uA, PRTXI_MIN_VALID_UA);
+                Serial.printf("[MODBUS] CH2: PRTXI Sensor DISCONNECTED (%d mV < %d mV threshold)\n", 
+                             oil_temp_mV, PRTXI_MIN_VALID_MV);
             }
             g_sensor_ch2_connected = temp_sensor_connected;
         }
         
         if (temp_sensor_connected) {
             // Sensor connected and reading valid
-            float oil_temp_c = convertToTempC(oil_temp_uA);
+            float oil_temp_c = convertToTempC(oil_temp_mV);
             float oil_temp_f = celsiusToFahrenheit(oil_temp_c);
             
+            // Only set pan temperature - cooled gauge will show "---"
             g_vehicle_data.oil_temp_pan_f = (int)(oil_temp_f + 0.5f);
+            // NOTE: oil_temp_cooled_f intentionally NOT set (single sensor)
             g_vehicle_data.oil_temp_valid = true;
             g_vehicle_data.has_received_data = true;
             
@@ -1137,7 +1173,9 @@ void readModbusSensors() {
             static uint32_t tempLogCounter = 20;
             if (++tempLogCounter >= 40) {
                 tempLogCounter = 0;
-                Serial.printf("[MODBUS] CH2: %d uA -> %.1f C (%.1f F)\n", oil_temp_uA, oil_temp_c, oil_temp_f);
+                float log_mA = (float)oil_temp_mV / PRTXI_SHUNT_OHM;
+                Serial.printf("[MODBUS] CH2: %d mV (%.2f mA) -> %.1f C (%.1f F)\n", 
+                             oil_temp_mV, log_mA, oil_temp_c, oil_temp_f);
             }
         } else {
             // Sensor disconnected
@@ -5554,7 +5592,7 @@ void updateUI() {
     if (g_vehicle_data.oil_temp_valid) {
         const char* oilTempUnit = getTempUnitStr(g_oil_temp_unit);
         float temp_pan_disp = tempToDisplay((float)g_vehicle_data.oil_temp_pan_f, g_oil_temp_unit);
-        float temp_cooled_disp = tempToDisplay((float)g_vehicle_data.oil_temp_cooled_f, g_oil_temp_unit);
+        // NOTE: temp_cooled_disp removed - single PRTXI sensor, [C] gauge shows "---"
 
         if (smooth_oil_temp_f < 0) {
             smooth_oil_temp_f = temp_pan_disp;
@@ -5598,25 +5636,14 @@ void updateUI() {
             }
         }
 
+        // NOTE: [C] gauge always shows "---" - single PRTXI sensor measures pan temp only
+        // When a second sensor is added for cooled line, remove this override
         if (ui_OIL_TEMP_Value_C) {
-            int cooled_display_val = (int)(temp_cooled_disp + 0.5f);
-            if (cooled_display_val != last_oil_temp_cooled_display || oil_temp_unit_changed) {
-                snprintf(buf, sizeof(buf), "%d°%s [C]", cooled_display_val, oilTempUnit);
-                lv_label_set_text(ui_OIL_TEMP_Value_C, buf);
-                last_oil_temp_cooled_display = cooled_display_val;
-            }
-
-            // Style label text color based on critical
-            bool value_critical = (g_vehicle_data.oil_temp_pan_f > OIL_TEMP_ValueCriticalF);
-            static bool oil_temp_c_was_value_critical = false;
-            if (value_critical != oil_temp_c_was_value_critical) {
-                if (value_critical) {
-                    lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0x000000), 0);
-                }
-                else {
-                    lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
-                }
-                oil_temp_c_was_value_critical = value_critical;
+            static bool cooled_set_once = false;
+            if (!cooled_set_once) {
+                lv_label_set_text(ui_OIL_TEMP_Value_C, "--- [C]");
+                lv_obj_set_style_text_color(ui_OIL_TEMP_Value_C, lv_color_hex(0x888888), 0);  // Dim gray
+                cooled_set_once = true;
             }
         }
 

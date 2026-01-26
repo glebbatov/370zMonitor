@@ -122,7 +122,7 @@ void ui_ScreenSplash_screen_init(void) {
     
     // ========== Version info (bottom right) ==========
     lv_obj_t * version_label = lv_label_create(ui_ScreenSplash);
-    lv_label_set_text(version_label, "v5.0");
+    lv_label_set_text(version_label, "v5.1");
     lv_obj_set_style_text_font(version_label, &ui_font_OrbitronRegular12, LV_PART_MAIN);
     lv_obj_set_style_text_color(version_label, ACCENT_GRAY, LV_PART_MAIN);
     lv_obj_align(version_label, LV_ALIGN_BOTTOM_RIGHT, -15, -15);

@@ -44,6 +44,9 @@ connect second Modbus RTU
 --
 add isValueCritical bool parameters for each sensor values in logs
 ======================================
++Func
+*add fuel trust out of OBD values
+======================================
 +Other
 *add time stamp to .log files. Now: "[58766] [STATUS] FPS=1 (FRAMES=1..." - no timestamp
 *add auto diming schedule (the same as on Android Auto Maps)

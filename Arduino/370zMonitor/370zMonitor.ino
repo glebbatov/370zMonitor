@@ -10,6 +10,7 @@
  * - Ice water test confirmed PRTXI accuracy (0°C in 0°C ice water)
  * - Offset provides conservative margin for metal surface measurements
  * - Updated clamp range to -45°C to 205°C (accounts for offset)
+ * - Added temperature hysteresis (0.3°C) to prevent display jumping
  *
  * v5.2 Changes:
  * - FIXED: Waveshare mode register address (0x0001 → 0x1001 per wiki)
@@ -640,6 +641,10 @@ static bool g_modbus_comm_ok = false;           // Is modbus communication worki
 static bool g_sensor_ch1_connected = false;     // Is CH1 (oil pressure) sensor connected?
 static bool g_sensor_ch2_connected = false;     // Is CH2 (oil temp PRTXI) sensor connected?
 
+// Hysteresis for stable display (prevents jumping between adjacent values)
+static float g_last_oil_temp_c = -999.0f;       // Last stable temperature reading
+#define TEMP_HYSTERESIS_C   0.3f                // Only update if change > 0.3°C
+
 //-----------------------------------------------------------------------------
 // modbusCRC16() - Calculate CRC-16 checksum for Modbus RTU
 //-----------------------------------------------------------------------------
@@ -1166,7 +1171,15 @@ void readModbusSensors() {
         if (temp_sensor_connected) {
             // Sensor connected and reading valid
             float oil_temp_c = convertToTempC(oil_temp_uA);
-            float oil_temp_f = celsiusToFahrenheit(oil_temp_c);
+            
+            // Apply hysteresis to prevent display jumping between adjacent values
+            // Only update if this is first reading OR change exceeds threshold
+            if (g_last_oil_temp_c < -900.0f || fabsf(oil_temp_c - g_last_oil_temp_c) >= TEMP_HYSTERESIS_C) {
+                g_last_oil_temp_c = oil_temp_c;  // Update stable reading
+            }
+            // Use the stable (hysteresis-filtered) value for display
+            float stable_temp_c = g_last_oil_temp_c;
+            float oil_temp_f = celsiusToFahrenheit(stable_temp_c);
             
             // Only set pan temperature - cooled gauge will show "---"
             g_vehicle_data.oil_temp_pan_f = (int)(oil_temp_f + 0.5f);
@@ -1179,7 +1192,7 @@ void readModbusSensors() {
             if (++tempLogCounter >= 40) {
                 tempLogCounter = 0;
                 Serial.printf("[MODBUS] CH2: %d uA (%.2f mA) -> %.1f C (%.1f F)\n", 
-                             oil_temp_uA, oil_temp_uA / 1000.0f, oil_temp_c, oil_temp_f);
+                             oil_temp_uA, oil_temp_uA / 1000.0f, stable_temp_c, oil_temp_f);
             }
         } else {
             // Sensor disconnected

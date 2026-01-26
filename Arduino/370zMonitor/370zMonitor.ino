@@ -1,9 +1,26 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v5.3 - Dual-Core Architecture
+ * 370zMonitor v5.5
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v5.5 Changes:
+ * - FIXED: UI shows stale values when Modbus disconnects (now shows "---" with unit)
+ * - FIXED: Oil, Trans, Steer, Diff temps reset to "---°F" on sensor disconnect
+ * - FIXED: Lightweight bars reset to 0 on sensor disconnect
+ * - FIXED: Critical labels hidden immediately on sensor disconnect
+ * - IMPROVED: Modbus logging consolidated to single line per second
+ * - IMPROVED: Compact log format: P:0 OilT:80F Trans:--- Steer:--- Diff:---
+ * - ADDED: "!" indicator in logs for temps exceeding critical thresholds
+ *
+ * v5.4 Changes:
+ * - Expanded Modbus to 5 channels: Oil Press, Oil Temp, Trans Temp, Steer Temp, Diff Temp
+ * - All temperature channels use PRTXI 4-20mA sensors with hysteresis
+ * - Auto-configure CH2-CH5 for 4-20mA mode at startup
+ * - Individual sensor connect/disconnect logging per channel
+ * - Added periodic value logging for CH3-CH5 (every ~2 sec when connected)
+ * - Toast system monitors all 5 sensors for online/offline status
  *
  * v5.3 Changes:
  * - Added +5°C calibration offset to PRTXI temperature reading
@@ -576,12 +593,14 @@ void resetUIElements();
 #define MODBUS_READ_INTERVAL_MS 100 // How often to poll sensors (ms)
 
 // Sensor Channel Mapping on 8-Ch Module
-#define MODBUS_CH_OIL_PRESSURE  0   // Channel 1 (AI1) - PX3 pressure sensor
+#define MODBUS_CH_OIL_PRESSURE  0   // Channel 1 (AI1) - PX3 pressure sensor (0-10V)
 #define MODBUS_CH_OIL_TEMP      1   // Channel 2 (AI2) - PRTXI RTD transmitter (4-20mA)
-#define MODBUS_CH_WATER_TEMP    2   // Channel 3 (AI3) - future
+#define MODBUS_CH_TRANS_TEMP    2   // Channel 3 (AI3) - PRTXI RTD transmitter (4-20mA)
+#define MODBUS_CH_STEER_TEMP    3   // Channel 4 (AI4) - PRTXI RTD transmitter (4-20mA)
+#define MODBUS_CH_DIFF_TEMP     4   // Channel 5 (AI5) - PRTXI RTD transmitter (4-20mA)
 
 // Number of channels to read
-#define MODBUS_NUM_CHANNELS     2   // Oil pressure + Oil temperature
+#define MODBUS_NUM_CHANNELS     5   // Oil pressure + 4 temperature sensors
 
 // Waveshare Channel Mode Configuration (Holding Registers)
 // Per wiki: Register 4x1000-4x1007 = Channels 1-8 data types
@@ -593,6 +612,9 @@ void resetUIElements();
 #define WAVESHARE_MODE_RAW_ADC  0x04  // Mode 4: Raw 4096-scale ADC code
 #define WAVESHARE_CH1_MODE_REG  0x1000  // Holding register for CH1 mode
 #define WAVESHARE_CH2_MODE_REG  0x1001  // Holding register for CH2 mode
+#define WAVESHARE_CH3_MODE_REG  0x1002  // Holding register for CH3 mode
+#define WAVESHARE_CH4_MODE_REG  0x1003  // Holding register for CH4 mode
+#define WAVESHARE_CH5_MODE_REG  0x1004  // Holding register for CH5 mode
 
 // Pressure Sensor Calibration (PX3AN2BH150PSAAX with voltage divider)
 // Your voltage divider: 10kΩ / 22kΩ = ratio of 0.6875
@@ -640,10 +662,16 @@ static uint16_t g_modbus_channel_values[8] = {0};
 static bool g_modbus_comm_ok = false;           // Is modbus communication working?
 static bool g_sensor_ch1_connected = false;     // Is CH1 (oil pressure) sensor connected?
 static bool g_sensor_ch2_connected = false;     // Is CH2 (oil temp PRTXI) sensor connected?
+static bool g_sensor_ch3_connected = false;     // Is CH3 (trans temp PRTXI) sensor connected?
+static bool g_sensor_ch4_connected = false;     // Is CH4 (steer temp PRTXI) sensor connected?
+static bool g_sensor_ch5_connected = false;     // Is CH5 (diff temp PRTXI) sensor connected?
 
 // Hysteresis for stable display (prevents jumping between adjacent values)
-static float g_last_oil_temp_c = -999.0f;       // Last stable temperature reading
 #define TEMP_HYSTERESIS_C   0.3f                // Only update if change > 0.3°C
+static float g_last_oil_temp_c = -999.0f;       // Last stable oil temp reading
+static float g_last_trans_temp_c = -999.0f;     // Last stable trans temp reading
+static float g_last_steer_temp_c = -999.0f;     // Last stable steer temp reading
+static float g_last_diff_temp_c = -999.0f;      // Last stable diff temp reading
 
 //-----------------------------------------------------------------------------
 // modbusCRC16() - Calculate CRC-16 checksum for Modbus RTU
@@ -1029,29 +1057,38 @@ void initModbusSensors() {
                 Serial.printf("[MODBUS] CH1: Sensor not connected at startup (%d mV)\n", value);
             }
             
-            // ========== THE MONEY LINE ==========
-            // Configure CH2 for 4-20mA mode (PRTXI temperature sensor)
-            // This writes to Waveshare holding register 0x0001 with value 0x03
-            Serial.println("[MODBUS] Configuring CH2 for 4-20mA mode...");
+            // ========== CONFIGURE TEMPERATURE CHANNELS FOR 4-20mA ==========
+            // CH2-CH5 all use PRTXI temperature sensors (4-20mA output)
+            // This writes Mode 3 (4-20mA) to each channel's mode register
+            Serial.println("[MODBUS] Configuring temperature channels for 4-20mA mode...");
             
-            // First, try to READ current CH2 mode configuration
-            uint16_t currentMode = 0;
-            if (modbusReadHoldingRegister(MODBUS_SLAVE_ADDR, WAVESHARE_CH2_MODE_REG, &currentMode)) {
-                Serial.printf("[MODBUS] CH2 current mode: %d (0=0-5V, 1=0-10V, 2=0-20mA, 3=4-20mA)\n", currentMode);
-            } else {
-                Serial.println("[MODBUS] Could not read CH2 mode register");
-                Serial.println("[MODBUS] NOTE: Check hardware jumper on Waveshare module!");
-                Serial.println("[MODBUS]       CH2 jumper must be in 'I' or 'mA' position for current input");
-            }
+            // Channel configuration array: {register, name}
+            struct ChannelConfig {
+                uint16_t reg;
+                const char* name;
+            };
+            ChannelConfig tempChannels[] = {
+                {WAVESHARE_CH2_MODE_REG, "CH2 (Oil Temp)"},
+                {WAVESHARE_CH3_MODE_REG, "CH3 (Trans Temp)"},
+                {WAVESHARE_CH4_MODE_REG, "CH4 (Steer Temp)"},
+                {WAVESHARE_CH5_MODE_REG, "CH5 (Diff Temp)"}
+            };
             
-            if (modbusWriteHoldingRegister(MODBUS_SLAVE_ADDR, WAVESHARE_CH2_MODE_REG, WAVESHARE_MODE_4_20MA)) {
-                Serial.println("[MODBUS] CH2 configured for 4-20mA mode (Mode 3)");
-            } else {
-                Serial.println("[MODBUS] WARNING: Failed to configure CH2 mode!");
-                Serial.println("[MODBUS] This module may require HARDWARE JUMPER for current mode");
-                Serial.println("[MODBUS] Check: Is CH2 jumper set to 'I' or 'mA' position?");
+            for (int i = 0; i < 4; i++) {
+                uint16_t currentMode = 0;
+                if (modbusReadHoldingRegister(MODBUS_SLAVE_ADDR, tempChannels[i].reg, &currentMode)) {
+                    Serial.printf("[MODBUS] %s current mode: %d\n", tempChannels[i].name, currentMode);
+                }
+                
+                if (modbusWriteHoldingRegister(MODBUS_SLAVE_ADDR, tempChannels[i].reg, WAVESHARE_MODE_4_20MA)) {
+                    Serial.printf("[MODBUS] %s configured for 4-20mA (Mode 3)\n", tempChannels[i].name);
+                } else {
+                    Serial.printf("[MODBUS] WARNING: Failed to configure %s!\n", tempChannels[i].name);
+                    Serial.println("[MODBUS]   Check: Is jumper set to 'I' or 'mA' position?");
+                }
+                delay(10);  // Small delay between writes
             }
-            // =====================================
+            // ==============================================================
         } else {
             Serial.println("[MODBUS] Got data but unexpected format");
             g_modbus_initialized = false;
@@ -1131,13 +1168,6 @@ void readModbusSensors() {
             g_vehicle_data.oil_pressure_psi = (int)(oil_press_psi + 0.5f);
             g_vehicle_data.oil_pressure_valid = true;
             g_vehicle_data.has_received_data = true;
-            
-            // Log every ~2 seconds
-            static uint32_t logCounter = 0;
-            if (++logCounter >= 40) {
-                logCounter = 0;
-                Serial.printf("[MODBUS] CH1: %d mV -> %.1f PSI\n", oil_press_mV, oil_press_psi);
-            }
         } else {
             // Sensor disconnected
             g_vehicle_data.oil_pressure_valid = false;
@@ -1147,14 +1177,6 @@ void readModbusSensors() {
         // Waveshare configured to Mode 3 (4-20mA) - returns µA directly
         uint16_t oil_temp_uA = g_modbus_channel_values[MODBUS_CH_OIL_TEMP];
         bool temp_sensor_connected = (oil_temp_uA >= PRTXI_MIN_VALID_UA);
-        
-        // DEBUG: Always log CH2 raw value for troubleshooting
-        static uint32_t ch2DebugCounter = 0;
-        if (++ch2DebugCounter >= 20) {  // Every ~2 sec
-            ch2DebugCounter = 0;
-            Serial.printf("[MODBUS] CH2 DEBUG: raw=%d uA (%.2f mA, threshold=%d uA)\n", 
-                         oil_temp_uA, oil_temp_uA / 1000.0f, PRTXI_MIN_VALID_UA);
-        }
         
         // Log sensor state changes
         if (temp_sensor_connected != g_sensor_ch2_connected) {
@@ -1186,17 +1208,163 @@ void readModbusSensors() {
             // NOTE: oil_temp_cooled_f intentionally NOT set (single sensor)
             g_vehicle_data.oil_temp_valid = true;
             g_vehicle_data.has_received_data = true;
-            
-            // Log every ~2 seconds (offset from pressure to reduce log spam)
-            static uint32_t tempLogCounter = 20;
-            if (++tempLogCounter >= 40) {
-                tempLogCounter = 0;
-                Serial.printf("[MODBUS] CH2: %d uA (%.2f mA) -> %.1f C (%.1f F)\n", 
-                             oil_temp_uA, oil_temp_uA / 1000.0f, stable_temp_c, oil_temp_f);
-            }
         } else {
             // Sensor disconnected
             g_vehicle_data.oil_temp_valid = false;
+        }
+        
+        // Channel 3: Transmission Temperature (PRTXI 4-20mA transmitter)
+        uint16_t trans_temp_uA = g_modbus_channel_values[MODBUS_CH_TRANS_TEMP];
+        bool trans_sensor_connected = (trans_temp_uA >= PRTXI_MIN_VALID_UA);
+        
+        // Log sensor state changes
+        if (trans_sensor_connected != g_sensor_ch3_connected) {
+            if (trans_sensor_connected) {
+                Serial.printf("[MODBUS] CH3: Trans Temp Sensor CONNECTED (%d uA = %.2f mA)\n", 
+                             trans_temp_uA, trans_temp_uA / 1000.0f);
+            } else {
+                Serial.printf("[MODBUS] CH3: Trans Temp Sensor DISCONNECTED (%d uA < %d uA)\n", 
+                             trans_temp_uA, PRTXI_MIN_VALID_UA);
+            }
+            g_sensor_ch3_connected = trans_sensor_connected;
+        }
+        
+        if (trans_sensor_connected) {
+            float trans_temp_c = convertToTempC(trans_temp_uA);
+            
+            // Apply hysteresis
+            if (g_last_trans_temp_c < -900.0f || fabsf(trans_temp_c - g_last_trans_temp_c) >= TEMP_HYSTERESIS_C) {
+                g_last_trans_temp_c = trans_temp_c;
+            }
+            float stable_temp_c = g_last_trans_temp_c;
+            float trans_temp_f = celsiusToFahrenheit(stable_temp_c);
+            
+            g_vehicle_data.trans_temp_hot_f = (int)(trans_temp_f + 0.5f);
+            g_vehicle_data.trans_temp_valid = true;
+            g_vehicle_data.has_received_data = true;
+        } else {
+            g_vehicle_data.trans_temp_valid = false;
+        }
+        
+        // Channel 4: Power Steering Temperature (PRTXI 4-20mA transmitter)
+        uint16_t steer_temp_uA = g_modbus_channel_values[MODBUS_CH_STEER_TEMP];
+        bool steer_sensor_connected = (steer_temp_uA >= PRTXI_MIN_VALID_UA);
+        
+        // Log sensor state changes
+        if (steer_sensor_connected != g_sensor_ch4_connected) {
+            if (steer_sensor_connected) {
+                Serial.printf("[MODBUS] CH4: Steer Temp Sensor CONNECTED (%d uA = %.2f mA)\n", 
+                             steer_temp_uA, steer_temp_uA / 1000.0f);
+            } else {
+                Serial.printf("[MODBUS] CH4: Steer Temp Sensor DISCONNECTED (%d uA < %d uA)\n", 
+                             steer_temp_uA, PRTXI_MIN_VALID_UA);
+            }
+            g_sensor_ch4_connected = steer_sensor_connected;
+        }
+        
+        if (steer_sensor_connected) {
+            float steer_temp_c = convertToTempC(steer_temp_uA);
+            
+            // Apply hysteresis
+            if (g_last_steer_temp_c < -900.0f || fabsf(steer_temp_c - g_last_steer_temp_c) >= TEMP_HYSTERESIS_C) {
+                g_last_steer_temp_c = steer_temp_c;
+            }
+            float stable_temp_c = g_last_steer_temp_c;
+            float steer_temp_f = celsiusToFahrenheit(stable_temp_c);
+            
+            g_vehicle_data.steer_temp_hot_f = (int)(steer_temp_f + 0.5f);
+            g_vehicle_data.steer_temp_valid = true;
+            g_vehicle_data.has_received_data = true;
+        } else {
+            g_vehicle_data.steer_temp_valid = false;
+        }
+        
+        // Channel 5: Differential Temperature (PRTXI 4-20mA transmitter)
+        uint16_t diff_temp_uA = g_modbus_channel_values[MODBUS_CH_DIFF_TEMP];
+        bool diff_sensor_connected = (diff_temp_uA >= PRTXI_MIN_VALID_UA);
+        
+        // Log sensor state changes
+        if (diff_sensor_connected != g_sensor_ch5_connected) {
+            if (diff_sensor_connected) {
+                Serial.printf("[MODBUS] CH5: Diff Temp Sensor CONNECTED (%d uA = %.2f mA)\n", 
+                             diff_temp_uA, diff_temp_uA / 1000.0f);
+            } else {
+                Serial.printf("[MODBUS] CH5: Diff Temp Sensor DISCONNECTED (%d uA < %d uA)\n", 
+                             diff_temp_uA, PRTXI_MIN_VALID_UA);
+            }
+            g_sensor_ch5_connected = diff_sensor_connected;
+        }
+        
+        if (diff_sensor_connected) {
+            float diff_temp_c = convertToTempC(diff_temp_uA);
+            
+            // Apply hysteresis
+            if (g_last_diff_temp_c < -900.0f || fabsf(diff_temp_c - g_last_diff_temp_c) >= TEMP_HYSTERESIS_C) {
+                g_last_diff_temp_c = diff_temp_c;
+            }
+            float stable_temp_c = g_last_diff_temp_c;
+            float diff_temp_f = celsiusToFahrenheit(stable_temp_c);
+            
+            g_vehicle_data.diff_temp_hot_f = (int)(diff_temp_f + 0.5f);
+            g_vehicle_data.diff_temp_valid = true;
+            g_vehicle_data.has_received_data = true;
+        } else {
+            g_vehicle_data.diff_temp_valid = false;
+        }
+        
+        // ========== UNIFIED MODBUS LOGGING (all channels on one line, every 1 second) ==========
+        static uint32_t unifiedLogCounter = 0;
+        if (++unifiedLogCounter >= 10) {  // Every ~1 second (10 × 100ms polling)
+            unifiedLogCounter = 0;
+            
+            // Build single-line log with all channels
+            char logBuf[256];
+            int pos = 0;
+            
+            // CH1: Oil Pressure
+            if (sensor_connected) {
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, "Oil-Press:%.0fPSI", convertToPSI(oil_press_mV));
+            } else {
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, "Oil-Press:n/a");
+            }
+            
+            // CH2: Oil Temp
+            if (temp_sensor_connected) {
+                bool crit = (g_vehicle_data.oil_temp_pan_f > 260);
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Oil-Temp:%.0f°F%s", 
+                               celsiusToFahrenheit(g_last_oil_temp_c), crit ? "!" : "");
+            } else {
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Oil-Temp:n/a");
+            }
+            
+            // CH3: Trans Temp
+            if (trans_sensor_connected) {
+                bool crit = (g_vehicle_data.trans_temp_hot_f > 230);
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Trans:%.0f°F%s", 
+                               celsiusToFahrenheit(g_last_trans_temp_c), crit ? "!" : "");
+            } else {
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Trans:n/a");
+            }
+            
+            // CH4: Steer Temp
+            if (steer_sensor_connected) {
+                bool crit = (g_vehicle_data.steer_temp_hot_f > 230);
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Steer:%.0f°F%s", 
+                               celsiusToFahrenheit(g_last_steer_temp_c), crit ? "!" : "");
+            } else {
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Steer:n/a");
+            }
+            
+            // CH5: Diff Temp
+            if (diff_sensor_connected) {
+                bool crit = (g_vehicle_data.diff_temp_hot_f > 270);
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Diff:%.0f°F%s", 
+                               celsiusToFahrenheit(g_last_diff_temp_c), crit ? "!" : "");
+            } else {
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Diff:n/a");
+            }
+            
+            Serial.printf("[MODBUS] %s\n", logBuf);
         }
         
         // Reset error count if we got here (communication succeeded)
@@ -1210,11 +1378,14 @@ void readModbusSensors() {
         if (g_modbus_error_count >= MODBUS_ERROR_THRESHOLD) {
             // Log communication loss once
             if (g_modbus_comm_ok) {
-                Serial.println("[MODBUS] Communication LOST - marking sensors invalid");
+                Serial.println("[MODBUS] Communication LOST - marking all sensors invalid");
                 g_modbus_comm_ok = false;
             }
             g_vehicle_data.oil_pressure_valid = false;
             g_vehicle_data.oil_temp_valid = false;
+            g_vehicle_data.trans_temp_valid = false;
+            g_vehicle_data.steer_temp_valid = false;
+            g_vehicle_data.diff_temp_valid = false;
         }
         
         static uint32_t lastErrorLog = 0;
@@ -1627,8 +1798,11 @@ static struct {
     bool modbus_ok;
     bool oil_pressure_sensor_ok;
     bool oil_temp_sensor_ok;
+    bool trans_temp_sensor_ok;
+    bool steer_temp_sensor_ok;
+    bool diff_temp_sensor_ok;
     bool initialized;  // Set true after first check
-} g_prev_system_status = {true, true, true, true, true, true, true, false};
+} g_prev_system_status = {true, true, true, true, true, true, true, true, true, true, false};
 
 // Chart series
 static lv_chart_series_t* chart_series_oil_press = NULL;
@@ -2287,13 +2461,10 @@ void updateSensorData() {
     // Read from Modbus 8-Ch Analog Module
     readModbusSensors();
     
-    // Mark other sensors as invalid for now (until you add them to Modbus channels)
-    // Note: oil_pressure and oil_temp are handled by readModbusSensors() - don't override here
-    g_vehicle_data.water_temp_valid = false;
-    g_vehicle_data.trans_temp_valid = false;
-    g_vehicle_data.steer_temp_valid = false;
-    g_vehicle_data.diff_temp_valid = false;
-    g_vehicle_data.fuel_trust_valid = false;
+    // Note: All Modbus sensors (CH1-CH5) are now handled by readModbusSensors()
+    // Only mark non-Modbus sensors as invalid
+    g_vehicle_data.water_temp_valid = false;   // Water temp not yet on Modbus
+    g_vehicle_data.fuel_trust_valid = false;   // Fuel trust not yet on Modbus
 #else
     // No sensors configured - show "---" on all gauges
     g_vehicle_data.oil_pressure_valid = false;
@@ -4174,6 +4345,9 @@ static void checkSystemsAndShowToast() {
     bool modbus_ok = true;
     bool oil_pressure_sensor_ok = true;
     bool oil_temp_sensor_ok = true;
+    bool trans_temp_sensor_ok = true;
+    bool steer_temp_sensor_ok = true;
+    bool diff_temp_sensor_ok = true;
     
     // Build list of failures
     char error_msg[256] = "";
@@ -4263,9 +4437,42 @@ static void checkSystemsAndShowToast() {
             strcat(error_msg, "Sensor Oil Temp offline");
             error_count++;
         }
+        
+        // Check Trans Temperature Sensor (PRTXI 4-20mA transmitter)
+        trans_temp_sensor_ok = g_sensor_ch3_connected;
+        Serial.printf("[SYSTEM CHECK] Trans Temp Sensor (PRTXI): %s\n", 
+                      trans_temp_sensor_ok ? "OK" : "FAIL");
+        if (!trans_temp_sensor_ok) {
+            if (error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Sensor Trans Temp offline");
+            error_count++;
+        }
+        
+        // Check Steer Temperature Sensor (PRTXI 4-20mA transmitter)
+        steer_temp_sensor_ok = g_sensor_ch4_connected;
+        Serial.printf("[SYSTEM CHECK] Steer Temp Sensor (PRTXI): %s\n", 
+                      steer_temp_sensor_ok ? "OK" : "FAIL");
+        if (!steer_temp_sensor_ok) {
+            if (error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Sensor Steer Temp offline");
+            error_count++;
+        }
+        
+        // Check Diff Temperature Sensor (PRTXI 4-20mA transmitter)
+        diff_temp_sensor_ok = g_sensor_ch5_connected;
+        Serial.printf("[SYSTEM CHECK] Diff Temp Sensor (PRTXI): %s\n", 
+                      diff_temp_sensor_ok ? "OK" : "FAIL");
+        if (!diff_temp_sensor_ok) {
+            if (error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Sensor Diff Temp offline");
+            error_count++;
+        }
     } else {
         oil_pressure_sensor_ok = false;
         oil_temp_sensor_ok = false;
+        trans_temp_sensor_ok = false;
+        steer_temp_sensor_ok = false;
+        diff_temp_sensor_ok = false;
         Serial.println("[SYSTEM CHECK] Sensors: SKIP (no Modbus)");
     }
 #else
@@ -4283,6 +4490,9 @@ static void checkSystemsAndShowToast() {
     g_prev_system_status.modbus_ok = modbus_ok;
     g_prev_system_status.oil_pressure_sensor_ok = oil_pressure_sensor_ok;
     g_prev_system_status.oil_temp_sensor_ok = oil_temp_sensor_ok;
+    g_prev_system_status.trans_temp_sensor_ok = trans_temp_sensor_ok;
+    g_prev_system_status.steer_temp_sensor_ok = steer_temp_sensor_ok;
+    g_prev_system_status.diff_temp_sensor_ok = diff_temp_sensor_ok;
     g_prev_system_status.initialized = true;
     
     // Show appropriate toast
@@ -4305,6 +4515,9 @@ static void backgroundSystemMonitor() {
     bool modbus_ok = true;
     bool oil_pressure_sensor_ok = true;
     bool oil_temp_sensor_ok = true;
+    bool trans_temp_sensor_ok = true;
+    bool steer_temp_sensor_ok = true;
+    bool diff_temp_sensor_ok = true;
     
     // Build list of NEW failures (things that just went offline)
     char error_msg[256] = "";
@@ -4435,9 +4648,54 @@ static void backgroundSystemMonitor() {
             recovery_count++;
             Serial.println("[MONITOR] Oil Temp Sensor (PRTXI) RECOVERED");
         }
+        
+        // Trans Temperature Sensor (CH3 - PRTXI 4-20mA)
+        trans_temp_sensor_ok = g_sensor_ch3_connected;
+        if (!trans_temp_sensor_ok && g_prev_system_status.trans_temp_sensor_ok) {
+            if (new_error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Sensor Trans Temp offline");
+            new_error_count++;
+            Serial.println("[MONITOR] Trans Temp Sensor (PRTXI) went OFFLINE");
+        } else if (trans_temp_sensor_ok && !g_prev_system_status.trans_temp_sensor_ok) {
+            if (recovery_count > 0) strcat(recovery_msg, "\n");
+            strcat(recovery_msg, "Sensor Trans Temp back online");
+            recovery_count++;
+            Serial.println("[MONITOR] Trans Temp Sensor (PRTXI) RECOVERED");
+        }
+        
+        // Steer Temperature Sensor (CH4 - PRTXI 4-20mA)
+        steer_temp_sensor_ok = g_sensor_ch4_connected;
+        if (!steer_temp_sensor_ok && g_prev_system_status.steer_temp_sensor_ok) {
+            if (new_error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Sensor Steer Temp offline");
+            new_error_count++;
+            Serial.println("[MONITOR] Steer Temp Sensor (PRTXI) went OFFLINE");
+        } else if (steer_temp_sensor_ok && !g_prev_system_status.steer_temp_sensor_ok) {
+            if (recovery_count > 0) strcat(recovery_msg, "\n");
+            strcat(recovery_msg, "Sensor Steer Temp back online");
+            recovery_count++;
+            Serial.println("[MONITOR] Steer Temp Sensor (PRTXI) RECOVERED");
+        }
+        
+        // Diff Temperature Sensor (CH5 - PRTXI 4-20mA)
+        diff_temp_sensor_ok = g_sensor_ch5_connected;
+        if (!diff_temp_sensor_ok && g_prev_system_status.diff_temp_sensor_ok) {
+            if (new_error_count > 0) strcat(error_msg, "\n");
+            strcat(error_msg, "Sensor Diff Temp offline");
+            new_error_count++;
+            Serial.println("[MONITOR] Diff Temp Sensor (PRTXI) went OFFLINE");
+        } else if (diff_temp_sensor_ok && !g_prev_system_status.diff_temp_sensor_ok) {
+            if (recovery_count > 0) strcat(recovery_msg, "\n");
+            strcat(recovery_msg, "Sensor Diff Temp back online");
+            recovery_count++;
+            Serial.println("[MONITOR] Diff Temp Sensor (PRTXI) RECOVERED");
+        }
     } else {
         oil_pressure_sensor_ok = false;
         oil_temp_sensor_ok = false;
+        trans_temp_sensor_ok = false;
+        steer_temp_sensor_ok = false;
+        diff_temp_sensor_ok = false;
     }
 #endif
     
@@ -4449,6 +4707,9 @@ static void backgroundSystemMonitor() {
     g_prev_system_status.modbus_ok = modbus_ok;
     g_prev_system_status.oil_pressure_sensor_ok = oil_pressure_sensor_ok;
     g_prev_system_status.oil_temp_sensor_ok = oil_temp_sensor_ok;
+    g_prev_system_status.trans_temp_sensor_ok = trans_temp_sensor_ok;
+    g_prev_system_status.steer_temp_sensor_ok = steer_temp_sensor_ok;
+    g_prev_system_status.diff_temp_sensor_ok = diff_temp_sensor_ok;
     
     // Handle toast display
     if (new_error_count > 0) {
@@ -5680,6 +5941,46 @@ void updateUI() {
             &oil_temp_was_critical, &oil_temp_visible, &oil_temp_exit_time, &oil_temp_last_blink);
 #endif
     }
+    
+    // Handle transition to invalid state for oil temperature
+    static bool oil_temp_was_data_valid = true;
+    if (!g_vehicle_data.oil_temp_valid && oil_temp_was_data_valid) {
+        // Just became invalid - update UI once to show "---" with unit
+        const char* oilTempUnit = getTempUnitStr(g_oil_temp_unit);
+        char buf[32];
+        if (ui_OIL_TEMP_Value_P) {
+            snprintf(buf, sizeof(buf), "---°%s [P]", oilTempUnit);
+            lv_label_set_text(ui_OIL_TEMP_Value_P, buf);
+            lv_obj_set_style_text_color(ui_OIL_TEMP_Value_P, lv_color_hex(0xFFFFFF), 0);
+        }
+        
+        // Reset panel background
+        if (ui_OIL_TEMP_Value_Tap_Panel) {
+            lv_obj_set_style_bg_opa(ui_OIL_TEMP_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        }
+        g_oil_temp_panel_was_critical = false;
+        
+        // Hide critical label immediately
+#if ENABLE_VALUE_CRITICAL
+        if (ui_OIL_TEMP_VALUE_CRITICAL_Label) {
+            lv_obj_set_style_text_opa(ui_OIL_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(ui_OIL_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+        }
+        oil_temp_was_critical = false;
+        oil_temp_visible = false;
+        oil_temp_exit_time = 0;
+#endif
+        
+#if ENABLE_LIGHTWEIGHT_BARS
+        // Reset bar to 0
+        updateLightweightBar(1, 0);
+#endif
+        
+        // Reset smoothing and last display value
+        last_oil_temp_pan_display = -9999;
+        smooth_oil_temp_f = -1.0f;
+    }
+    oil_temp_was_data_valid = g_vehicle_data.oil_temp_valid;
 
     // ----- Water Temperature -----
     if (g_vehicle_data.water_temp_valid) {
@@ -5836,6 +6137,51 @@ void updateUI() {
             &trans_temp_was_critical, &trans_temp_visible, &trans_temp_exit_time, &trans_temp_last_blink);
 #endif
     }
+    
+    // Handle transition to invalid state for trans temperature
+    static bool trans_temp_was_data_valid = true;
+    if (!g_vehicle_data.trans_temp_valid && trans_temp_was_data_valid) {
+        // Just became invalid - update UI once to show "---" with unit
+        const char* transTempUnit = getTempUnitStr(g_trans_temp_unit);
+        char buf[32];
+        if (ui_TRAN_TEMP_Value_H) {
+            snprintf(buf, sizeof(buf), "---°%s [H]", transTempUnit);
+            lv_label_set_text(ui_TRAN_TEMP_Value_H, buf);
+            lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+        }
+        if (ui_TRAN_TEMP_Value_C) {
+            snprintf(buf, sizeof(buf), "---°%s [C]", transTempUnit);
+            lv_label_set_text(ui_TRAN_TEMP_Value_C, buf);
+            lv_obj_set_style_text_color(ui_TRAN_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+        }
+        
+        // Reset panel background
+        if (ui_TRAN_TEMP_Value_Tap_Panel) {
+            lv_obj_set_style_bg_opa(ui_TRAN_TEMP_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        }
+        g_trans_temp_panel_was_critical = false;
+        
+        // Hide critical label immediately
+#if ENABLE_VALUE_CRITICAL
+        if (ui_TRAN_TEMP_VALUE_CRITICAL_Label) {
+            lv_obj_set_style_text_opa(ui_TRAN_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(ui_TRAN_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+        }
+        trans_temp_was_critical = false;
+        trans_temp_visible = false;
+        trans_temp_exit_time = 0;
+#endif
+        
+#if ENABLE_LIGHTWEIGHT_BARS
+        // Reset bar to 0
+        updateLightweightBar(3, 0);
+#endif
+        
+        // Reset last display values
+        last_trans_temp_hot_display = -9999;
+        last_trans_temp_cooled_display = -9999;
+    }
+    trans_temp_was_data_valid = g_vehicle_data.trans_temp_valid;
 
     // ----- Steering Temperature -----
     if (g_vehicle_data.steer_temp_valid) {
@@ -5914,6 +6260,51 @@ void updateUI() {
             &steer_temp_was_critical, &steer_temp_visible, &steer_temp_exit_time, &steer_temp_last_blink);
 #endif
     }
+    
+    // Handle transition to invalid state for steer temperature
+    static bool steer_temp_was_data_valid = true;
+    if (!g_vehicle_data.steer_temp_valid && steer_temp_was_data_valid) {
+        // Just became invalid - update UI once to show "---" with unit
+        const char* steerTempUnit = getTempUnitStr(g_steer_temp_unit);
+        char buf[32];
+        if (ui_STEER_TEMP_Value_H) {
+            snprintf(buf, sizeof(buf), "---°%s [H]", steerTempUnit);
+            lv_label_set_text(ui_STEER_TEMP_Value_H, buf);
+            lv_obj_set_style_text_color(ui_STEER_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+        }
+        if (ui_STEER_TEMP_Value_C) {
+            snprintf(buf, sizeof(buf), "---°%s [C]", steerTempUnit);
+            lv_label_set_text(ui_STEER_TEMP_Value_C, buf);
+            lv_obj_set_style_text_color(ui_STEER_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+        }
+        
+        // Reset panel background
+        if (ui_STEER_TEMP_Value_Tap_Panel) {
+            lv_obj_set_style_bg_opa(ui_STEER_TEMP_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        }
+        g_steer_temp_panel_was_critical = false;
+        
+        // Hide critical label immediately
+#if ENABLE_VALUE_CRITICAL
+        if (ui_STEER_TEMP_VALUE_CRITICAL_Label) {
+            lv_obj_set_style_text_opa(ui_STEER_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(ui_STEER_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+        }
+        steer_temp_was_critical = false;
+        steer_temp_visible = false;
+        steer_temp_exit_time = 0;
+#endif
+        
+#if ENABLE_LIGHTWEIGHT_BARS
+        // Reset bar to 0
+        updateLightweightBar(4, 0);
+#endif
+        
+        // Reset last display values
+        last_steer_temp_hot_display = -9999;
+        last_steer_temp_cooled_display = -9999;
+    }
+    steer_temp_was_data_valid = g_vehicle_data.steer_temp_valid;
 
     // ----- Diff Temperature -----
     if (g_vehicle_data.diff_temp_valid) {
@@ -5992,6 +6383,51 @@ void updateUI() {
             &diff_temp_was_critical, &diff_temp_visible, &diff_temp_exit_time, &diff_temp_last_blink);
 #endif
     }
+    
+    // Handle transition to invalid state for diff temperature
+    static bool diff_temp_was_data_valid = true;
+    if (!g_vehicle_data.diff_temp_valid && diff_temp_was_data_valid) {
+        // Just became invalid - update UI once to show "---" with unit
+        const char* diffTempUnit = getTempUnitStr(g_diff_temp_unit);
+        char buf[32];
+        if (ui_DIFF_TEMP_Value_H) {
+            snprintf(buf, sizeof(buf), "---°%s [H]", diffTempUnit);
+            lv_label_set_text(ui_DIFF_TEMP_Value_H, buf);
+            lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_H, lv_color_hex(0xFFFFFF), 0);
+        }
+        if (ui_DIFF_TEMP_Value_C) {
+            snprintf(buf, sizeof(buf), "---°%s [C]", diffTempUnit);
+            lv_label_set_text(ui_DIFF_TEMP_Value_C, buf);
+            lv_obj_set_style_text_color(ui_DIFF_TEMP_Value_C, lv_color_hex(0xFFFFFF), 0);
+        }
+        
+        // Reset panel background
+        if (ui_DIFF_TEMP_Value_Tap_Panel) {
+            lv_obj_set_style_bg_opa(ui_DIFF_TEMP_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        }
+        g_diff_temp_panel_was_critical = false;
+        
+        // Hide critical label immediately
+#if ENABLE_VALUE_CRITICAL
+        if (ui_DIFF_TEMP_VALUE_CRITICAL_Label) {
+            lv_obj_set_style_text_opa(ui_DIFF_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(ui_DIFF_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+        }
+        diff_temp_was_critical = false;
+        diff_temp_visible = false;
+        diff_temp_exit_time = 0;
+#endif
+        
+#if ENABLE_LIGHTWEIGHT_BARS
+        // Reset bar to 0
+        updateLightweightBar(5, 0);
+#endif
+        
+        // Reset last display values
+        last_diff_temp_hot_display = -9999;
+        last_diff_temp_cooled_display = -9999;
+    }
+    diff_temp_was_data_valid = g_vehicle_data.diff_temp_valid;
 
     // ----- Fuel Trust -----
     if (g_vehicle_data.fuel_trust_valid) {

@@ -1457,6 +1457,24 @@ void readModbusSensors() {
                 pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Diff-Temp:n/a");
             }
             
+            // OBD: Water/Coolant Temp
+            if (g_vehicle_data.water_temp_valid) {
+                bool crit = (g_vehicle_data.water_temp_value_f > W_TEMP_ValueCritical_F);
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | W-Temp:%d°F%s", 
+                               g_vehicle_data.water_temp_value_f, crit ? " (VALUE CRITICAL)" : "");
+            } else {
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | W-Temp:n/a");
+            }
+            
+            // OBD: Fuel Trust
+            if (g_vehicle_data.fuel_trust_valid) {
+                bool crit = (g_vehicle_data.fuel_trust_percent < FUEL_TRUST_ValueCritical);
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Fuel-Trust:%d%%%s", 
+                               g_vehicle_data.fuel_trust_percent, crit ? " (VALUE CRITICAL)" : "");
+            } else {
+                pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, " | Fuel-Trust:n/a");
+            }
+            
             Serial.printf("[MODBUS] %s\n", logBuf);
         }
         

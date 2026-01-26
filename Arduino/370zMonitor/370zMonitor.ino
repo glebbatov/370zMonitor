@@ -1,9 +1,18 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v5.5
+ * 370zMonitor v5.6
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v5.6 Changes:
+ * - ADDED: Auto Brightness feature (sunrise/sunset based screen dimming)
+ * - Uses NOAA Solar Calculator algorithm (same as Google Maps)
+ * - Location: Schaumburg, IL (configurable via LOCATION_LATITUDE/LONGITUDE)
+ * - Day: 100% brightness, Night: 35% brightness, 20-min twilight buffer
+ * - New "Auto Brightness: ON/OFF" button in utility box
+ * - Single-tap on utility box now toggles manual override (opposite brightness)
+ * - Auto brightness preference saved to flash (persists across reboots)
  *
  * v5.5 Changes:
  * - FIXED: UI shows stale values when Modbus disconnects (now shows "---" with unit)
@@ -143,6 +152,59 @@ extern "C" void lv_draw_sw_rgb565_swap(void * buf, uint32_t buf_size_px);
 #include <time.h>                   // Time functions
 #include <stdarg.h>                 // For va_list in SerialLogf
 #include <vector>                   // For file browser
+
+//-----------------------------------------------------------------
+
+//=================================================================
+// AUTO BRIGHTNESS - Sunrise/Sunset based screen dimming
+// Uses NOAA Solar Calculator algorithm (same as Google Maps)
+//=================================================================
+
+// Location: Schaumburg, IL
+// Find your coordinates at: https://www.latlong.net/
+#define LOCATION_LATITUDE   42.03   // Degrees North (negative for South)
+#define LOCATION_LONGITUDE -88.08   // Degrees West (negative for West)
+
+// Brightness levels (0-255)
+#define BRIGHTNESS_DAY      255     // 100% - full brightness during daytime
+#define BRIGHTNESS_NIGHT    90      // ~35% - dimmed at night
+
+// Twilight offset (minutes before sunrise / after sunset to start transition)
+#define TWILIGHT_OFFSET_MINUTES  20
+
+// How often to check time (sunrise/sunset times cached daily)
+#define AUTO_BRIGHTNESS_CHECK_INTERVAL_MS  30000  // Check every 30 seconds
+
+// Auto brightness state
+static struct {
+    bool enabled;               // User preference (saved to flash)
+    bool initialized;
+    int last_check_day;         // Day of year when times were last calculated
+    float sunrise_hours;        // Sunrise time in hours (e.g., 6.5 = 6:30 AM)
+    float sunset_hours;         // Sunset time in hours (e.g., 19.5 = 7:30 PM)
+    bool is_daytime;            // Current calculated state
+    bool manual_override;       // True if user manually changed brightness
+    uint32_t last_check_ms;     // Last time we checked
+    char sunrise_str[8];        // "HH:MM" format for display
+    char sunset_str[8];         // "HH:MM" format for display
+} g_auto_brightness = {
+    .enabled = true,            // ON by default
+    .initialized = false,
+    .last_check_day = -1,
+    .sunrise_hours = 6.0f,
+    .sunset_hours = 18.0f,
+    .is_daytime = true,
+    .manual_override = false,
+    .last_check_ms = 0
+};
+
+// Forward declarations for auto brightness
+void autoBrightnessInit();
+bool autoBrightnessUpdate();
+void autoBrightnessForceUpdate();
+void saveAutoBrightnessPreference();
+void loadAutoBrightnessPreference();
+void updateAutoBrightnessButtonText();
 
 //-----------------------------------------------------------------
 
@@ -405,6 +467,21 @@ void loadUnitPreferences() {
         getTempUnitStr(g_oil_temp_unit), getTempUnitStr(g_water_temp_unit),
         getTempUnitStr(g_trans_temp_unit), getTempUnitStr(g_steer_temp_unit),
         getTempUnitStr(g_diff_temp_unit));
+}
+
+// Save/Load auto brightness preference
+void saveAutoBrightnessPreference() {
+    g_prefs.begin("display", false);
+    g_prefs.putBool("auto_bri", g_auto_brightness.enabled);
+    g_prefs.end();
+    Serial.printf("[PREFS] Auto brightness saved: %s\n", g_auto_brightness.enabled ? "ON" : "OFF");
+}
+
+void loadAutoBrightnessPreference() {
+    g_prefs.begin("display", true);
+    g_auto_brightness.enabled = g_prefs.getBool("auto_bri", true);  // Default ON
+    g_prefs.end();
+    Serial.printf("[PREFS] Auto brightness loaded: %s\n", g_auto_brightness.enabled ? "ON" : "OFF");
 }
 
 //-----------------------------------------------------------------
@@ -1756,6 +1833,8 @@ static lv_obj_t* files_btn = NULL;         // FILES button at top of utility box
 #define UTIL_LABEL_COUNT 6
 #endif
 static lv_obj_t* mode_indicator = NULL;  // Shows "DEMO" or "LIVE"
+static lv_obj_t* auto_bri_btn = NULL;      // Auto Brightness toggle button
+static lv_obj_t* auto_bri_lbl = NULL;      // Label inside auto brightness button
 static bool utilities_visible = false;  // Start hidden, double-tap to reveal
 
 // Per-core CPU measurement using idle hooks
@@ -4407,6 +4486,239 @@ static void fuel_trust_chart_draw_cb(lv_event_t* e) {
 
 //-----------------------------------------------------------------
 
+//=================================================================
+// AUTO BRIGHTNESS - Sunrise/Sunset Calculation (NOAA Algorithm)
+//=================================================================
+
+// Helper: Convert degrees to radians
+static inline float degToRad(float deg) {
+    return deg * M_PI / 180.0f;
+}
+
+// Helper: Convert radians to degrees
+static inline float radToDeg(float rad) {
+    return rad * 180.0f / M_PI;
+}
+
+// Calculate day of year (1-365/366)
+static int getDayOfYear(int year, int month, int day) {
+    static const int days_before_month[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+    int doy = days_before_month[month - 1] + day;
+    
+    // Add 1 for leap year if after February
+    if (month > 2) {
+        bool is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        if (is_leap) doy++;
+    }
+    
+    return doy;
+}
+
+// Calculate sunrise and sunset times for a given date and location
+// Returns times in hours (e.g., 6.5 = 6:30 AM) in UTC
+static void calculateSunriseSunset(int year, int month, int day, 
+                                    float latitude, float longitude,
+                                    float* sunrise_out, float* sunset_out) {
+    
+    // Day of year
+    int N = getDayOfYear(year, month, day);
+    
+    // Fractional year (gamma) in radians
+    float gamma = (2.0f * M_PI / 365.0f) * (N - 1);
+    
+    // Equation of time (in minutes)
+    float eqtime = 229.18f * (0.000075f 
+                   + 0.001868f * cos(gamma) 
+                   - 0.032077f * sin(gamma)
+                   - 0.014615f * cos(2.0f * gamma) 
+                   - 0.040849f * sin(2.0f * gamma));
+    
+    // Solar declination (in radians)
+    float decl = 0.006918f 
+               - 0.399912f * cos(gamma) 
+               + 0.070257f * sin(gamma)
+               - 0.006758f * cos(2.0f * gamma) 
+               + 0.000907f * sin(2.0f * gamma)
+               - 0.002697f * cos(3.0f * gamma) 
+               + 0.001480f * sin(3.0f * gamma);
+    
+    // Hour angle at sunrise/sunset
+    float lat_rad = degToRad(latitude);
+    float cos_ha = (cos(degToRad(90.833f)) / (cos(lat_rad) * cos(decl))) 
+                   - tan(lat_rad) * tan(decl);
+    
+    // Clamp to valid range (handles polar day/night)
+    if (cos_ha > 1.0f) cos_ha = 1.0f;
+    if (cos_ha < -1.0f) cos_ha = -1.0f;
+    
+    float ha = radToDeg(acos(cos_ha));  // Hour angle in degrees
+    
+    // Solar noon (in minutes from midnight, UTC)
+    float solar_noon = 720.0f - 4.0f * longitude - eqtime;
+    
+    // Sunrise and sunset times (in minutes from midnight, UTC)
+    float sunrise_min = solar_noon - ha * 4.0f;
+    float sunset_min = solar_noon + ha * 4.0f;
+    
+    // Convert to hours
+    *sunrise_out = sunrise_min / 60.0f;
+    *sunset_out = sunset_min / 60.0f;
+}
+
+// Apply timezone offset to UTC hours
+static float applyTimezoneOffset(float utc_hours, float tz_offset_hours) {
+    float local = utc_hours + tz_offset_hours;
+    
+    // Wrap around midnight
+    while (local < 0) local += 24.0f;
+    while (local >= 24.0f) local -= 24.0f;
+    
+    return local;
+}
+
+// Convert hours to "HH:MM" string
+static void hoursToTimeString(float hours, char* buf, size_t buf_size) {
+    int h = (int)hours;
+    int m = (int)((hours - h) * 60.0f + 0.5f);
+    
+    if (m >= 60) { m -= 60; h++; }
+    if (h >= 24) h -= 24;
+    
+    snprintf(buf, buf_size, "%02d:%02d", h, m);
+}
+
+// Initialize auto brightness
+void autoBrightnessInit() {
+    g_auto_brightness.initialized = true;
+    g_auto_brightness.last_check_day = -1;  // Force recalculation
+    g_auto_brightness.last_check_ms = 0;
+    g_auto_brightness.manual_override = false;
+    
+    Serial.println("[AUTO-BRI] Initialized - sunrise/sunset auto-dimming");
+    Serial.printf("[AUTO-BRI] Location: %.2f°N, %.2f°W (Schaumburg, IL)\n", 
+                  LOCATION_LATITUDE, fabs(LOCATION_LONGITUDE));
+    Serial.printf("[AUTO-BRI] Day: %d%%, Night: %d%%, Enabled: %s\n",
+                  (BRIGHTNESS_DAY * 100) / 255, (BRIGHTNESS_NIGHT * 100) / 255,
+                  g_auto_brightness.enabled ? "YES" : "NO");
+}
+
+// Update auto brightness button text
+void updateAutoBrightnessButtonText() {
+    if (auto_bri_lbl) {
+        if (g_auto_brightness.enabled) {
+            lv_label_set_text(auto_bri_lbl, "DIM: AUTO");
+        } else {
+            lv_label_set_text(auto_bri_lbl, "DIM: MANUAL");
+        }
+    }
+}
+
+// Main update function - call periodically
+// Returns true if brightness was changed
+bool autoBrightnessUpdate() {
+    if (!g_auto_brightness.enabled || !g_auto_brightness.initialized) {
+        return false;
+    }
+    
+    // Skip if manual override is active
+    if (g_auto_brightness.manual_override) {
+        return false;
+    }
+    
+    // Rate limit checks
+    uint32_t now = millis();
+    if (now - g_auto_brightness.last_check_ms < AUTO_BRIGHTNESS_CHECK_INTERVAL_MS) {
+        return false;
+    }
+    g_auto_brightness.last_check_ms = now;
+    
+    // Get current time
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo, 100)) {
+        return false;
+    }
+    
+    // Calculate day of year for cache check
+    int day_of_year = getDayOfYear(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+    
+    // Recalculate sunrise/sunset if date changed
+    if (day_of_year != g_auto_brightness.last_check_day) {
+        float sunrise_utc, sunset_utc;
+        
+        calculateSunriseSunset(
+            timeinfo.tm_year + 1900,
+            timeinfo.tm_mon + 1,
+            timeinfo.tm_mday,
+            LOCATION_LATITUDE,
+            LOCATION_LONGITUDE,
+            &sunrise_utc,
+            &sunset_utc
+        );
+        
+        // Apply timezone offset (CST = UTC-6)
+        float tz_hours = (float)GMT_OFFSET_SEC / 3600.0f;
+        
+        g_auto_brightness.sunrise_hours = applyTimezoneOffset(sunrise_utc, tz_hours);
+        g_auto_brightness.sunset_hours = applyTimezoneOffset(sunset_utc, tz_hours);
+        
+        // Apply twilight offset
+        float twilight_hours = TWILIGHT_OFFSET_MINUTES / 60.0f;
+        g_auto_brightness.sunrise_hours -= twilight_hours;
+        g_auto_brightness.sunset_hours += twilight_hours;
+        
+        // Generate display strings
+        hoursToTimeString(g_auto_brightness.sunrise_hours, g_auto_brightness.sunrise_str, sizeof(g_auto_brightness.sunrise_str));
+        hoursToTimeString(g_auto_brightness.sunset_hours, g_auto_brightness.sunset_str, sizeof(g_auto_brightness.sunset_str));
+        
+        g_auto_brightness.last_check_day = day_of_year;
+        
+        Serial.printf("[AUTO-BRI] Date: %04d-%02d-%02d | Sunrise: %s, Sunset: %s (local)\n",
+                      timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                      g_auto_brightness.sunrise_str, g_auto_brightness.sunset_str);
+    }
+    
+    // Current time in hours
+    float current_hours = timeinfo.tm_hour + timeinfo.tm_min / 60.0f + timeinfo.tm_sec / 3600.0f;
+    
+    // Determine if it's daytime
+    bool was_daytime = g_auto_brightness.is_daytime;
+    
+    if (g_auto_brightness.sunrise_hours < g_auto_brightness.sunset_hours) {
+        // Normal case: sunrise before sunset (same day)
+        g_auto_brightness.is_daytime = (current_hours >= g_auto_brightness.sunrise_hours && 
+                                         current_hours < g_auto_brightness.sunset_hours);
+    } else {
+        // Edge case: polar regions
+        g_auto_brightness.is_daytime = (current_hours >= g_auto_brightness.sunrise_hours || 
+                                         current_hours < g_auto_brightness.sunset_hours);
+    }
+    
+    // Change brightness if state changed
+    if (g_auto_brightness.is_daytime != was_daytime) {
+        uint8_t new_brightness = g_auto_brightness.is_daytime ? BRIGHTNESS_DAY : BRIGHTNESS_NIGHT;
+        setBrightness(new_brightness);
+        
+        Serial.printf("[AUTO-BRI] %s -> %s (brightness: %d%%)\n",
+                      was_daytime ? "Day" : "Night",
+                      g_auto_brightness.is_daytime ? "Day" : "Night",
+                      (new_brightness * 100) / 255);
+        
+        return true;
+    }
+    
+    return false;
+}
+
+// Force immediate brightness update
+void autoBrightnessForceUpdate() {
+    if (!g_auto_brightness.enabled || !g_auto_brightness.initialized) return;
+    
+    g_auto_brightness.last_check_ms = 0;
+    g_auto_brightness.last_check_day = -1;
+    g_auto_brightness.manual_override = false;
+    autoBrightnessUpdate();
+}
+
 #pragma region Utility Box Callbacks
 
 #define DOUBLE_TAP_TIMEOUT_MS 400  // 400ms window for double-tap detection
@@ -4915,14 +5227,20 @@ static void utility_box_single_tap_cb(lv_timer_t* t) {
     LV_UNUSED(t);
     g_util_single_tap_timer = NULL;
 
-    if (g_brightness_level == 255) {
-        setBrightness(90);
+    // Manual brightness toggle - switches to opposite of current state
+    // Also sets manual_override flag to prevent auto-brightness from changing it
+    if (g_brightness_level >= 200) {
+        // Currently bright -> go dim
+        setBrightness(BRIGHTNESS_NIGHT);
+        g_auto_brightness.manual_override = true;
+        Serial.printf("[UI] Single-tap: Manual override -> Night (%d%%)\n", (BRIGHTNESS_NIGHT * 100) / 255);
     }
     else {
-        setBrightness(255);
+        // Currently dim -> go bright
+        setBrightness(BRIGHTNESS_DAY);
+        g_auto_brightness.manual_override = true;
+        Serial.printf("[UI] Single-tap: Manual override -> Day (%d%%)\n", (BRIGHTNESS_DAY * 100) / 255);
     }
-
-    Serial.printf("[UI] Single-tap: Brightness -> %d%%\n", (g_brightness_level * 100) / 255);
 }
 
 static void utility_box_tap_cb(lv_event_t* e) {
@@ -4949,16 +5267,22 @@ static void utility_box_tap_cb(lv_event_t* e) {
         if (utility_box) {
             if (utilities_visible) {
                 lv_obj_set_style_opa(utility_box, LV_OPA_COVER, 0);
-                // Re-enable files button when utility box is visible
+                // Re-enable buttons when utility box is visible
                 if (files_btn) {
                     lv_obj_add_flag(files_btn, LV_OBJ_FLAG_CLICKABLE);
+                }
+                if (auto_bri_btn) {
+                    lv_obj_add_flag(auto_bri_btn, LV_OBJ_FLAG_CLICKABLE);
                 }
             }
             else {
                 lv_obj_set_style_opa(utility_box, LV_OPA_TRANSP, 0);
-                // Disable files button when utility box is hidden
+                // Disable buttons when utility box is hidden
                 if (files_btn) {
                     lv_obj_remove_flag(files_btn, LV_OBJ_FLAG_CLICKABLE);
+                }
+                if (auto_bri_btn) {
+                    lv_obj_remove_flag(auto_bri_btn, LV_OBJ_FLAG_CLICKABLE);
                 }
             }
         }
@@ -5028,6 +5352,49 @@ static void files_btn_click_cb(lv_event_t* e) {
     fb_enter();
 }
 #endif
+
+//=================================================================
+// AUTO BRIGHTNESS BUTTON CALLBACKS
+//=================================================================
+static void auto_bri_btn_press_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    // Visual feedback: change to darker gray on press
+    if (auto_bri_btn) {
+        lv_obj_set_style_bg_color(auto_bri_btn, lv_color_hex(0x8B9A9A), 0);
+    }
+}
+
+static void auto_bri_btn_release_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    // Visual feedback: restore original gray
+    if (auto_bri_btn) {
+        lv_obj_set_style_bg_color(auto_bri_btn, lv_color_hex(0xC1CDCD), 0);
+    }
+}
+
+static void auto_bri_btn_click_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    
+    // Toggle auto brightness
+    g_auto_brightness.enabled = !g_auto_brightness.enabled;
+    
+    // Update button text
+    updateAutoBrightnessButtonText();
+    
+    // Save preference
+    saveAutoBrightnessPreference();
+    
+    if (g_auto_brightness.enabled) {
+        // Just enabled - clear manual override and apply current time-based setting
+        g_auto_brightness.manual_override = false;
+        autoBrightnessForceUpdate();
+        Serial.println("[UI] Auto Brightness button tapped - ENABLED");
+    } else {
+        // Just disabled - set to full brightness
+        setBrightness(BRIGHTNESS_DAY);
+        Serial.println("[UI] Auto Brightness button tapped - DISABLED (100%)");
+    }
+}
 
 // Called periodically to check for long press
 static void checkUtilityLongPress() {
@@ -6889,7 +7256,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v5.0 - Dual-Core");
+    Serial.println("   370zMonitor v5.6 - Dual-Core");
     Serial.println("========================================");
 
     if (psramFound()) {
@@ -6901,6 +7268,9 @@ void setup() {
 
     // Load unit preferences from flash
     loadUnitPreferences();
+    
+    // Load auto brightness preference from flash
+    loadAutoBrightnessPreference();
 
     // Initialize Modbus RS485 sensors
 #if ENABLE_MODBUS_SENSORS
@@ -7068,15 +7438,15 @@ void setup() {
         utility_box = lv_obj_create(ui_Screen1);
 #if ENABLE_SD_LOGGING
 #if ENABLE_FILE_BROWSER
-        lv_obj_set_size(utility_box, 250, 240);
+        lv_obj_set_size(utility_box, 250, 288);  // Added 48px for Auto Brightness button
 #else
-        lv_obj_set_size(utility_box, 250, 192);  // Height for 9 lines: FPS, CPU0, CPU1, SRAM, PSRAM, BRI, SD, TIME, DATE
+        lv_obj_set_size(utility_box, 250, 240);  // Height for 9 lines + Auto Brightness button
 #endif
 #else
 #if ENABLE_FILE_BROWSER
-        lv_obj_set_size(utility_box, 250, 240);
+        lv_obj_set_size(utility_box, 250, 288);  // Added 48px for Auto Brightness button
 #else
-        lv_obj_set_size(utility_box, 250, 138);  // Height for 6 lines: FPS, CPU0, CPU1, SRAM, PSRAM, BRI
+        lv_obj_set_size(utility_box, 250, 186);  // Height for 6 lines + Auto Brightness button
 #endif
 #endif
         lv_obj_align(utility_box, LV_ALIGN_TOP_LEFT, 5, 5);
@@ -7124,6 +7494,33 @@ void setup() {
         lv_obj_add_event_cb(files_btn, files_btn_click_cb, LV_EVENT_CLICKED, NULL);
 #endif
 
+        // AUTO BRIGHTNESS button (below FILES button or at top if no file browser)
+        auto_bri_btn = lv_obj_create(utility_box);
+        lv_obj_set_size(auto_bri_btn, 235, 44);
+#if ENABLE_FILE_BROWSER
+        lv_obj_align(auto_bri_btn, LV_ALIGN_TOP_LEFT, 0, 46);  // Below FILES button
+#else
+        lv_obj_align(auto_bri_btn, LV_ALIGN_TOP_LEFT, 0, 0);   // At top if no file browser
+#endif
+        lv_obj_set_style_bg_color(auto_bri_btn, lv_color_hex(0xC1CDCD), 0);  // Same gray as FILES
+        lv_obj_set_style_bg_opa(auto_bri_btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(auto_bri_btn, 0, 0);
+        lv_obj_set_style_border_width(auto_bri_btn, 0, 0);
+        lv_obj_set_style_pad_all(auto_bri_btn, 2, 0);
+        lv_obj_remove_flag(auto_bri_btn, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);  // Start disabled
+        
+        // Auto Brightness label inside button
+        auto_bri_lbl = lv_label_create(auto_bri_btn);
+        lv_label_set_text(auto_bri_lbl, g_auto_brightness.enabled ? "DIM: AUTO" : "DIM: MANUAL");
+        lv_obj_set_style_text_color(auto_bri_lbl, lv_color_hex(0x000000), 0);  // Black text
+        lv_obj_set_style_text_font(auto_bri_lbl, &lv_font_unscii_16, 0);
+        lv_obj_center(auto_bri_lbl);
+        
+        // Event callbacks for auto brightness button
+        lv_obj_add_event_cb(auto_bri_btn, auto_bri_btn_press_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(auto_bri_btn, auto_bri_btn_release_cb, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(auto_bri_btn, auto_bri_btn_click_cb, LV_EVENT_CLICKED, NULL);
+
         // FPS/CPU/BRI/SD labels - individual labels for per-line coloring
         const char* init_texts[] = {
             "FPS:  ---",
@@ -7141,9 +7538,9 @@ void setup() {
         
         int line_height = 16;  // Font height for lv_font_unscii_16
 #if ENABLE_FILE_BROWSER
-        int label_y_offset = 48;  // Offset for FILES button row
+        int label_y_offset = 96;  // Offset for FILES + Auto Brightness buttons (48 + 48)
 #else
-        int label_y_offset = 0;
+        int label_y_offset = 48;  // Offset for Auto Brightness button only
 #endif
         for (int i = 0; i < UTIL_LABEL_COUNT; i++) {
             util_labels[i] = lv_label_create(utility_box);
@@ -7166,6 +7563,9 @@ void setup() {
     setupUnitTapHandlers();
 
     setBrightness(255);
+    
+    // Initialize auto brightness (will start working once RTC/NTP time is available)
+    autoBrightnessInit();
 
     // Initialize all charts with draw callbacks
 #if ENABLE_CHARTS
@@ -7284,6 +7684,9 @@ void loop() {
     last_tick = now;
 
     loop_count++;
+
+    // Auto brightness update (sunrise/sunset based dimming)
+    autoBrightnessUpdate();
 
     // Check for long press on utility box (for demo mode toggle)
     checkUtilityLongPress();

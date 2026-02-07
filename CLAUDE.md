@@ -315,6 +315,28 @@ In demo mode, accelerometer simulates driving motion:
 
 ---
 
+## Serial Output & Debugging
+
+**Serial baud rate: 115200**
+
+Set in `370zMonitor.ino` line 7928:
+```cpp
+Serial.begin(115200);
+```
+
+**Arduino IDE Serial Monitor:**
+- Set baud rate dropdown to **115200** (bottom-right corner)
+- If you see garbled/corrupted output, verify baud rate matches code
+
+**Alternative Serial Tools:**
+- PuTTY, TeraTerm, or other terminal: Use **115200, 8N1, no flow control**
+
+**TeeSerial Feature:**
+- All `Serial.print()` output is automatically mirrored to SD card log files
+- Real-time debugging without changing code
+
+---
+
 ## Required Libraries
 
 1. **Arduino_GFX** (moononournation)

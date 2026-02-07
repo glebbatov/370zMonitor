@@ -2037,8 +2037,9 @@ static struct {
     bool steer_temp_sensor_ok;
     bool diff_temp_sensor_ok;
     bool accel_ok;            // LIS3DH accelerometer
+    bool obd_can_ok;          // OBD-II CAN bus (TWAI)
     bool initialized;  // Set true after first check
-} g_prev_system_status = {true, true, true, true, true, true, true, true, true, true, true, false};
+} g_prev_system_status = {true, true, true, true, true, true, true, true, true, true, true, true, false};
 
 // Chart series
 static lv_chart_series_t* chart_series_oil_press = NULL;
@@ -2755,6 +2756,9 @@ static int g_obd_pid_index = 0;                  // Round-robin index
 static uint32_t g_obd_last_request_ms = 0;       // Last PID request time
 static uint32_t g_obd_success_count = 0;
 static uint32_t g_obd_error_count = 0;
+static uint32_t g_obd_tx_error_count = 0;        // Transmit failures
+static uint32_t g_obd_tx_total_count = 0;        // Total TX attempts
+static bool g_obd_boot_status_logged = false;    // Post-boot status flag
 
 // Live OBD values with timestamps for staleness detection
 static struct {
@@ -2838,9 +2842,15 @@ static void sendOBD_Mode01(uint8_t pid) {
     tx.data[6] = 0x00;
     tx.data[7] = 0x00;
     
+    g_obd_tx_total_count++;
     esp_err_t err = twai_transmit(&tx, pdMS_TO_TICKS(10));
     if (err != ESP_OK) {
-        // TX queue full or error - will retry next cycle
+        g_obd_tx_error_count++;
+        // Log first few TX errors and then periodically
+        if (g_obd_tx_error_count <= 3 || (g_obd_tx_error_count % 50 == 0)) {
+            Serial.printf("[OBD] TX error 0x%X for PID 0x%02X (err#%lu/%lu)\n",
+                err, pid, g_obd_tx_error_count, g_obd_tx_total_count);
+        }
     }
 }
 
@@ -3122,9 +3132,9 @@ void updateOBDData() {
         g_vehicle_data.fuel_trust_valid = false;
     }
     
-    // 7. Periodic logging
+    // 7. Periodic logging (ALWAYS logs status, even when no ECU data received)
     static uint32_t lastOBDLog = 0;
-    if (now - lastOBDLog > 2000) {  // Log every 2 seconds
+    if (now - lastOBDLog > 5000) {  // Log every 5 seconds
         lastOBDLog = now;
         
         if (g_obd_data.coolant_valid || g_obd_data.rpm_valid || g_obd_data.fuel_trim_valid) {
@@ -3136,6 +3146,10 @@ void updateOBDData() {
                 g_obd_data.fuel_trim_valid ? g_obd_data.stft_b1 : 0,
                 g_obd_data.fuel_trim_valid ? g_obd_data.ltft_b1 : 0,
                 g_vehicle_data.fuel_trust_valid ? g_vehicle_data.fuel_trust_percent : -1);
+        } else {
+            // No valid data from ECU - log bus state so SD logs show OBD is alive but silent
+            Serial.printf("[OBD] CAN active, no ECU response (TX=GPIO%d RX=GPIO%d) pid_idx=%d\n",
+                CAN_TX_PIN, CAN_RX_PIN, g_obd_pid_index);
         }
     }
     
@@ -5456,9 +5470,10 @@ static void checkSystemsAndShowToast() {
     bool steer_temp_sensor_ok = true;
     bool diff_temp_sensor_ok = true;
     bool accel_ok = true;
+    bool obd_can_ok = true;
     
     // Build list of failures
-    char error_msg[256] = "";
+    char error_msg[320] = "";
     int error_count = 0;
     
     Serial.println("\n[SYSTEM CHECK] ========== Starting System Check ==========");
@@ -5600,6 +5615,29 @@ static void checkSystemsAndShowToast() {
 #else
     Serial.println("[SYSTEM CHECK] G-Sensor disabled - skipping accelerometer check");
 #endif
+
+#if ENABLE_OBD_CAN
+    // Check OBD-II CAN bus (TWAI -> TJA1051T -> ECU)
+    if (!g_obd_initialized) {
+        obd_can_ok = false;
+        Serial.println("[SYSTEM CHECK] OBD CAN: FAIL (not initialized)");
+        if (error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "OBD CAN offline");
+        error_count++;
+    } else if (g_obd_success_count == 0) {
+        obd_can_ok = false;
+        Serial.printf("[SYSTEM CHECK] OBD CAN: FAIL (init=1, ecu_resp=0, tx_err=%lu/%lu)\n",
+                      g_obd_tx_error_count, g_obd_tx_total_count);
+        if (error_count > 0) strcat(error_msg, "\n");
+        strcat(error_msg, "OBD no ECU response");
+        error_count++;
+    } else {
+        Serial.printf("[SYSTEM CHECK] OBD CAN: OK (resp=%lu, tx_err=%lu/%lu)\n",
+                      g_obd_success_count, g_obd_tx_error_count, g_obd_tx_total_count);
+    }
+#else
+    Serial.println("[SYSTEM CHECK] OBD CAN disabled - skipping");
+#endif
     
     Serial.println("[SYSTEM CHECK] ========== System Check Complete ==========");
     Serial.printf("[SYSTEM CHECK] Result: %d error(s)\n\n", error_count);
@@ -5616,6 +5654,7 @@ static void checkSystemsAndShowToast() {
     g_prev_system_status.steer_temp_sensor_ok = steer_temp_sensor_ok;
     g_prev_system_status.diff_temp_sensor_ok = diff_temp_sensor_ok;
     g_prev_system_status.accel_ok = accel_ok;
+    g_prev_system_status.obd_can_ok = obd_can_ok;
     g_prev_system_status.initialized = true;
     
     // Show appropriate toast
@@ -5642,12 +5681,13 @@ static void backgroundSystemMonitor() {
     bool steer_temp_sensor_ok = true;
     bool diff_temp_sensor_ok = true;
     bool accel_ok = true;
+    bool obd_can_ok = true;
     
     // Build list of NEW failures (things that just went offline)
-    char error_msg[256] = "";
+    char error_msg[320] = "";
     int new_error_count = 0;
     int recovery_count = 0;  // Track recoveries to show green toast
-    char recovery_msg[256] = "";
+    char recovery_msg[320] = "";
     
 #if ENABLE_SD_LOGGING
     // Runtime probe: Check if SD card is still accessible
@@ -5840,6 +5880,26 @@ static void backgroundSystemMonitor() {
         Serial.println("[MONITOR] G-Sensor RECOVERED");
     }
 #endif
+
+#if ENABLE_OBD_CAN
+    // OBD-II CAN bus monitoring
+    obd_can_ok = g_obd_initialized && (g_obd_success_count > 0);
+    if (!obd_can_ok && g_prev_system_status.obd_can_ok) {
+        if (new_error_count > 0) strcat(error_msg, "\n");
+        if (!g_obd_initialized) {
+            strcat(error_msg, "OBD CAN offline");
+        } else {
+            strcat(error_msg, "OBD no ECU response");
+        }
+        new_error_count++;
+        Serial.println("[MONITOR] OBD CAN went OFFLINE");
+    } else if (obd_can_ok && !g_prev_system_status.obd_can_ok) {
+        if (recovery_count > 0) strcat(recovery_msg, "\n");
+        strcat(recovery_msg, "OBD CAN back online");
+        recovery_count++;
+        Serial.println("[MONITOR] OBD CAN RECOVERED");
+    }
+#endif
     
     // Update previous status
     g_prev_system_status.sd_card_ok = sd_card_ok;
@@ -5853,6 +5913,7 @@ static void backgroundSystemMonitor() {
     g_prev_system_status.steer_temp_sensor_ok = steer_temp_sensor_ok;
     g_prev_system_status.diff_temp_sensor_ok = diff_temp_sensor_ok;
     g_prev_system_status.accel_ok = accel_ok;
+    g_prev_system_status.obd_can_ok = obd_can_ok;
     
     // Handle toast display
     if (new_error_count > 0) {
@@ -8050,6 +8111,15 @@ void setup() {
     
     Serial.println("      OK");
 
+    // Create serial log queue EARLY so initOBD() and initSensors() output reaches SD logs
+    // (was previously in [8/8] SD Card section, causing all [OBD] init messages to be dropped)
+    g_serial_log_queue = xQueueCreate(SERIAL_LOG_QUEUE_SIZE, sizeof(SerialLogEntry));
+    if (!g_serial_log_queue) {
+        Serial.println("      WARNING: Serial log queue creation failed!");
+    } else {
+        Serial.println("      Serial log queue created (early init)");
+    }
+
     Serial.println("[7/8] Data providers...");
     initSensors();
     initOBD();
@@ -8073,13 +8143,8 @@ void setup() {
         Serial.println("      SD queue created");
     }
     
-    // Create serial log queue
-    g_serial_log_queue = xQueueCreate(SERIAL_LOG_QUEUE_SIZE, sizeof(SerialLogEntry));
-    if (!g_serial_log_queue) {
-        Serial.println("      WARNING: Serial log queue creation failed!");
-    } else {
-        Serial.println("      Serial log queue created");
-    }
+    // NOTE: g_serial_log_queue already created before [7/8] Data providers
+    // so initOBD()/initSensors() output reaches SD logs
     
     if (sdInit()) {
         sdTestWrite();

@@ -2,10 +2,12 @@
 +Touch
 --
 *touch isn't persice on touch overall.
-It seems to be offset, and I'm not sure where and how. 
+It seems to have offset, and I'm not sure where and how.
 Also: 
 *there is a strip on the most left (~1cm) where touch dont register
 *there is a strip on the most bottom (~1cm) where touch dont register
+
+Do you see anything out of ordinary screen/touch?
 ======================================
 +File navigation
 --
@@ -23,7 +25,7 @@ don't write any code yet
 
 ======================================
 +Func
-
+*Log KPH/MPH
 ======================================
 +Other
 *refucktor 370zMonitor.ino into separate files (to reduce how big the file is)

@@ -1675,10 +1675,10 @@ int OIL_TEMP_Min_F = 150;
 int OIL_TEMP_Max_F = 300;
 int OIL_TEMP_ValueCriticalF = 260;
 
-// WATER TEMP: 100-260°F, Critical: >=230°F
+// WATER TEMP: 100-260°F, Critical: >=220°F
 int W_TEMP_Min_F = 100;
 int W_TEMP_Max_F = 260;
-int W_TEMP_ValueCritical_F = 230;
+int W_TEMP_ValueCritical_F = 220;
 
 // TRANS TEMP: 80-280°F, Critical: >=230°F
 int TRAN_TEMP_Min_F = 80;
@@ -1690,15 +1690,15 @@ int STEER_TEMP_Min_F = 60;
 int STEER_TEMP_Max_F = 300;
 int STEER_TEMP_ValueCritical_F = 230;
 
-// DIFF TEMP: 60-320°F, Critical: >=270°F
+// DIFF TEMP: 60-320°F, Critical: >=260°F
 int DIFF_TEMP_Min_F = 60;
 int DIFF_TEMP_Max_F = 320;
-int DIFF_TEMP_ValueCritical_F = 270;
+int DIFF_TEMP_ValueCritical_F = 260;
 
-// FUEL TRUST: 0-100%, Critical: <=50%
+// FUEL TRUST: 0-100%, Critical: <=75%
 int FUEL_TRUST_Min = 0;
 int FUEL_TRUST_Max = 100;
-int FUEL_TRUST_ValueCritical = 50;
+int FUEL_TRUST_ValueCritical = 75;
 
 #pragma endregion Gauges Configuration
 

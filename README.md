@@ -1,3 +1,4 @@
+![370zMonitor_Wiring_Diagram](https://github.com/user-attachments/assets/7bb15eca-8a60-40c7-aba1-2f2afad45fcd)
 370zMonitor — A comprehensive real-time automotive data acquisition and monitoring system purpose-built for track day use on a 2018 Nissan 370Z (works on Nissan/Infiniti vehicles). Powered by a Waveshare 7" ESP32-S3: all-in-one development board with an integrated 800×480 capacitive touch display, the system provides live sensor telemetry, interactive gauges, automated data logging, and critical alerts — all in a compact, self-contained package. Designed around the demands of regular track use, 370zMonitor gives you real-time visibility into fluid temperatures, oil pressure, and G-forces, helping you monitor vehicle health and catch dangerous conditions before they become expensive problems.
 
 --------------------------------------------------

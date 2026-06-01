@@ -686,6 +686,61 @@ TOAST_COLOR_ERROR    0xB71C1C    // Dark red
 
 ---
 
+## Vehicle Install — Power Distribution & Auxiliary Hardware
+
+External vehicle hardware that shares the install's 12V distribution with the monitor. Documented here so future wiring/sensor work follows the established topology.
+
+### Power Distribution Topology
+
+```
+Battery (+) ──► 60A MIDI/ANL master fuse (within 12" of battery)
+            ──► 6 AWG main feed
+            ──► Covered +/- bus bars (Blue Sea or equivalent, 100A+ rated)
+            ──► Inline ATC/ATO fuse holders (Littelfuse / Blue Sea / Bussmann)
+                 ▼  (each fuse holder mounted within ~7" of bus bar — tail wire is unprotected)
+            ──► Per-circuit branches (each to its own relay where applicable)
+
+Ground return: 6 AWG from (-) bus bar to clean, paint-stripped chassis stud.
+```
+
+### Per-Circuit Fuse Sizing
+
+| Circuit | Fuse | Wire | Notes |
+|---------|------|------|-------|
+| 370zMonitor (electric box) | 5 A | 18 AWG | **Isolated from motor circuits** — fan inrush spikes must not brown out the monitor |
+| Trans cooler fan (SPAL VA07-AP7C-31A) | 20 A | 12 AWG | ~10A continuous, ~17A inrush. Via Pico 5593PT relay (40A SPDT). Setrab thermo switch on coil ground |
+| Engine oil cooler fan | 20 A | 12 AWG | Via own relay. Setrab 200°F thermal switch on coil ground |
+| Z1 diff cooler **pump** | 10 A | 16 AWG | Tilton 40-524 (datasheet 98-1901). Via own relay |
+| Z1 diff cooler **fan** | 5 A | 18 AWG | SPAL 30103011 (5.2"). Via own relay |
+
+Pump and fan get **separate relays and fuses** so a stuck pump motor or shorted fan does not disable both halves of the diff cooler.
+
+### Z1 Motorsports 370Z/G37 Differential Cooler Kit (P/N 21139)
+
+| Component | Part | Spec |
+|-----------|------|------|
+| Pump | Tilton 40-524 (datasheet 98-1901) | 12 VDC, 2–3 A typical, 6.6 A max under load (8 A worst case per datasheet), Tilton-recommended **10 A inline fuse**, 16 AWG min stranded |
+| Fan | SPAL 30103011 | 5.2" low-profile puller, 12 VDC, **2.2 A**, 313–342 CFM |
+| Trigger | Setrab 200°F thermo switch (Z1 P/N 46687) | Installs in 1/8 NPT pilot hole on Z1 High Capacity Diff Cover, normally open, closes hot |
+| Cooler core | Z1 ProCooler 25-row | — |
+
+Per Z1 install manual: pump and fan are triggered by the Setrab probe via a relay kit (Z1 recommends DeatschWerks fuel pump hardwire kit). In this install, use the Pico-style 40A relay pattern documented for the other fans — one relay per circuit, Setrab switch on the coil ground side, ignition-switched +12V on the coil power side.
+
+### Bus Bar Hygiene
+
+- Positive bus bar **must be covered** — exposed +12V studs near each other are a wrench-drop short hazard
+- Inline fuse holders located within ~7" of the bus bar (tail wire is unprotected)
+- Avoid no-name Amazon fuse holders for sustained current near rating — spring contacts and crimps fail. Stick to Littelfuse / Blue Sea / Bussmann / Eaton
+
+### Setrab TS200 Reference (for trans, oil, and diff fans/pumps)
+
+- Normally open, closes when hot. ~200°F (~93°C) close / ~180°F (~83°C) open (verify body stamp on the specific unit)
+- Carries only relay coil current (~150 mA) — safe for low-current switch contacts
+- Wire on the **ground side** of the relay coil (pin 85), so when the switch closes the coil energizes
+- Single-spade Type-22 housing grounds through the threads into the fitting; two-spade variants need a dedicated ground
+
+---
+
 ## Known Issues / Gotchas
 
 1. **GPIO46 Conflict:** Cannot use GPIO46 for SD card — it is HSYNC for the display

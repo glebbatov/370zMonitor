@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>370z Monitor — Power Wiring Diagram</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    margin: 0;
+    padding: 30px 40px;
+    background: #f7f7f5;
+    color: #1a1a1a;
+    line-height: 1.5;
+  }
+  h1 {
+    font-size: 22px;
+    margin: 0 0 4px 0;
+    color: #A31621;
+  }
+  h2 {
+    font-size: 16px;
+    margin: 28px 0 10px 0;
+    padding-bottom: 4px;
+    border-bottom: 2px solid #A31621;
+    color: #1a1a1a;
+  }
+  .subtitle { color: #666; font-size: 13px; margin-bottom: 24px; }
+  .diagram-wrap {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 20px;
+    margin: 12px 0 18px 0;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+    background: #fff;
+    margin: 10px 0;
+  }
+  th, td { padding: 8px 12px; border: 1px solid #ddd; text-align: left; vertical-align: top; }
+  th { background: #f0f0ee; font-weight: 600; }
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; font-size: 12px; margin-bottom: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 8px; }
+  .swatch { width: 28px; height: 4px; border-radius: 2px; }
+  .checklist { background: #fff; border-left: 4px solid #A31621; padding: 14px 20px; margin: 12px 0; }
+  .checklist ol { margin: 0; padding-left: 20px; }
+  .checklist li { margin: 6px 0; font-size: 13px; }
+  .warning {
+    background: #fff4e6;
+    border-left: 4px solid #e67e22;
+    padding: 10px 16px;
+    margin: 10px 0;
+    font-size: 13px;
+    border-radius: 4px;
+  }
+  .note { font-size: 12px; color: #666; font-style: italic; }
+  @media print {
+    body { background: #fff; padding: 15px; }
+    .diagram-wrap { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<h1>370z Monitor — Power Wiring Diagram</h1>
+<div class="subtitle">Battery feed with ignition-triggered relay · v5.8 install reference</div>
+
+<h2>Wiring Schematic</h2>
+
+<div class="legend">
+  <div class="legend-item"><div class="swatch" style="background:#c0392b"></div>Always-hot 12V (battery)</div>
+  <div class="legend-item"><div class="swatch" style="background:#e67e22"></div>Switched 12V (after relay)</div>
+  <div class="legend-item"><div class="swatch" style="background:#27ae60; height: 4px; background-image: linear-gradient(to right, #27ae60 50%, transparent 50%); background-size: 8px 4px;"></div>Trigger signal (low-current)</div>
+  <div class="legend-item"><div class="swatch" style="background:#333"></div>Ground / chassis</div>
+</div>
+
+<div class="diagram-wrap">
+<svg viewBox="0 0 1000 720" xmlns="http://www.w3.org/2000/svg" style="width:100%; height:auto; display:block;">
+  <defs>
+    <marker id="arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#c0392b"/>
+    </marker>
+    <marker id="arrow-sw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#e67e22"/>
+    </marker>
+    <marker id="arrow-trig" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#27ae60"/>
+    </marker>
+    <marker id="arrow-gnd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+  </defs>
+
+  <style>
+    .lbl { font-family: -apple-system, system-ui, sans-serif; font-size: 13px; fill: #1a1a1a; }
+    .lbl-sm { font-family: -apple-system, system-ui, sans-serif; font-size: 11px; fill: #555; }
+    .lbl-bold { font-family: -apple-system, system-ui, sans-serif; font-size: 14px; font-weight: 700; fill: #000; }
+    .lbl-pin { font-family: -apple-system, system-ui, sans-serif; font-size: 12px; font-weight: 700; }
+    .wire-hot { stroke: #c0392b; stroke-width: 3; fill: none; }
+    .wire-sw { stroke: #e67e22; stroke-width: 3; fill: none; }
+    .wire-trig { stroke: #27ae60; stroke-width: 2.5; fill: none; stroke-dasharray: 8 4; }
+    .wire-gnd { stroke: #333; stroke-width: 2.5; fill: none; }
+    .box { fill: #fafafa; stroke: #888; stroke-width: 1.5; }
+    .box-batt { fill: #fafafa; stroke: #b03a2e; stroke-width: 2; }
+    .box-relay { fill: #fafafa; stroke: #444; stroke-width: 2; }
+    .box-enc { fill: #fff; stroke: #444; stroke-width: 2; stroke-dasharray: 8 5; }
+    .fuse { fill: #f5d76e; stroke: #b8860b; stroke-width: 1.5; }
+  </style>
+
+  <!-- ============== BATTERY (top-left) ============== -->
+  <g transform="translate(40, 40)">
+    <rect x="0" y="0" width="180" height="100" rx="4" class="box-batt"/>
+    <text x="90" y="24" text-anchor="middle" class="lbl-bold">CAR BATTERY</text>
+    <text x="90" y="40" text-anchor="middle" class="lbl-sm">passenger side, engine bay</text>
+    <circle cx="50" cy="70" r="14" fill="#c0392b" stroke="#7a1f10" stroke-width="1.5"/>
+    <text x="50" y="75" text-anchor="middle" class="lbl-bold" fill="#fff">+</text>
+    <circle cx="130" cy="70" r="14" fill="#444" stroke="#000" stroke-width="1.5"/>
+    <text x="130" y="75" text-anchor="middle" class="lbl-bold" fill="#fff">−</text>
+    <text x="50" y="95" text-anchor="middle" class="lbl-sm">always +12V</text>
+    <text x="130" y="95" text-anchor="middle" class="lbl-sm">chassis gnd</text>
+  </g>
+
+  <!-- Wire from battery + down through fuse -->
+  <path class="wire-hot" d="M 90 140 L 90 175"/>
+  <g transform="translate(60, 175)">
+    <rect x="0" y="0" width="60" height="26" rx="3" class="fuse"/>
+    <text x="30" y="17" text-anchor="middle" class="lbl-sm" font-weight="700">15A FUSE</text>
+  </g>
+  <text x="130" y="194" class="lbl-sm">inline, within 6" of battery</text>
+  <text x="22" y="225" class="lbl-sm" fill="#c0392b" font-weight="700">12 AWG</text>
+  <!-- Down then right to relay pin 30 -->
+  <path class="wire-hot" d="M 90 201 L 90 290 L 350 290" marker-end="url(#arrow-hot)"/>
+
+  <!-- Ground from battery - going down to enclosure -->
+  <path class="wire-gnd" d="M 170 140 L 170 350 L 80 350 L 80 580" marker-end="url(#arrow-gnd)"/>
+  <text x="178" y="200" class="lbl-sm">chassis ground</text>
+  <text x="178" y="215" class="lbl-sm">12 AWG black</text>
+
+  <!-- ============== PASSENGER FUSE BOX (top-right) ============== -->
+  <g transform="translate(740, 40)">
+    <rect x="0" y="0" width="220" height="100" rx="4" class="box"/>
+    <text x="110" y="24" text-anchor="middle" class="lbl-bold">PASSENGER FUSE BOX</text>
+    <text x="110" y="40" text-anchor="middle" class="lbl-sm">switched accessory circuit</text>
+    <rect x="55" y="55" width="110" height="32" rx="3" fill="#f5d76e" stroke="#b8860b" stroke-width="1.5"/>
+    <text x="110" y="69" text-anchor="middle" class="lbl-sm" font-weight="700">ADD-A-FUSE</text>
+    <text x="110" y="81" text-anchor="middle" class="lbl-sm">tap = 3A or 5A</text>
+  </g>
+
+  <!-- Trigger wire from fuse box down to relay pin 86 -->
+  <path class="wire-trig" d="M 850 140 L 850 280 L 590 280 L 590 320" marker-end="url(#arrow-trig)"/>
+  <text x="858" y="200" class="lbl-sm" fill="#27ae60" font-weight="700">22 AWG green</text>
+  <text x="858" y="215" class="lbl-sm">~150 mA only</text>
+
+  <!-- ============== RELAY (center) ============== -->
+  <g transform="translate(320, 280)">
+    <rect x="0" y="0" width="300" height="190" rx="6" class="box-relay"/>
+    <text x="150" y="24" text-anchor="middle" class="lbl-bold">PICO 40A RELAY (5593PT)</text>
+    <text x="150" y="40" text-anchor="middle" class="lbl-sm">5-pin Bosch / ISO 280 pinout</text>
+
+    <!-- Switch contacts (left side) -->
+    <g transform="translate(40, 60)">
+      <circle cx="0" cy="0" r="4" fill="#555"/>
+      <text x="-20" y="5" class="lbl-pin" fill="#c0392b">30</text>
+      <line x1="0" y1="0" x2="80" y2="50" stroke="#444" stroke-width="2"/>
+      <circle cx="80" cy="60" r="4" fill="#555"/>
+      <text x="92" y="65" class="lbl-pin" fill="#e67e22">87</text>
+      <text x="40" y="90" text-anchor="middle" class="lbl-sm" font-style="italic">switch (NO)</text>
+      <text x="40" y="103" text-anchor="middle" class="lbl-sm" font-style="italic">closes when</text>
+      <text x="40" y="116" text-anchor="middle" class="lbl-sm" font-style="italic">coil energized</text>
+    </g>
+
+    <!-- Coil (right side) -->
+    <g transform="translate(190, 60)">
+      <circle cx="0" cy="0" r="4" fill="#555"/>
+      <text x="-20" y="5" class="lbl-pin" fill="#27ae60">86</text>
+      <rect x="0" y="0" width="60" height="60" rx="3" fill="none" stroke="#444" stroke-width="1.5"/>
+      <path d="M 8 10 q 8 -8 16 0 t 16 0 t 16 0" stroke="#666" stroke-width="1.5" fill="none"/>
+      <path d="M 8 25 q 8 -8 16 0 t 16 0 t 16 0" stroke="#666" stroke-width="1.5" fill="none"/>
+      <path d="M 8 40 q 8 -8 16 0 t 16 0 t 16 0" stroke="#666" stroke-width="1.5" fill="none"/>
+      <text x="30" y="80" text-anchor="middle" class="lbl-sm" font-style="italic">coil</text>
+      <circle cx="60" cy="60" r="4" fill="#555"/>
+      <text x="68" y="65" class="lbl-pin" fill="#333">85</text>
+    </g>
+  </g>
+
+  <!-- Pin 87 (switched out) — goes down to enclosure -->
+  <path class="wire-sw" d="M 400 400 L 400 580" marker-end="url(#arrow-sw)"/>
+  <text x="408" y="450" class="lbl-sm" fill="#e67e22" font-weight="700">12 AWG orange</text>
+  <text x="408" y="465" class="lbl-sm">switched +12V</text>
+
+  <!-- Pin 85 (ground) — short trip to chassis ground -->
+  <path class="wire-gnd" d="M 590 400 L 590 530 L 80 530" marker-end="url(#arrow-gnd)"/>
+  <text x="500" y="525" class="lbl-sm">to chassis</text>
+
+  <!-- ============== ENCLOSURE (bottom) ============== -->
+  <g transform="translate(40, 580)">
+    <rect x="0" y="0" width="920" height="125" rx="6" class="box-enc"/>
+    <text x="460" y="22" text-anchor="middle" class="lbl-bold">JOISYOYA IP67 ENCLOSURE (front of engine bay, on DIN rail)</text>
+
+    <!-- + bus bar -->
+    <rect x="30" y="36" width="860" height="14" fill="#e67e22" opacity="0.85" stroke="#a0521a" stroke-width="1"/>
+    <text x="42" y="47" class="lbl-sm" fill="#fff" font-weight="700">+ BUS BAR (switched 12V from relay pin 87)</text>
+
+    <!-- − bus bar -->
+    <rect x="30" y="98" width="860" height="14" fill="#333" stroke="#000" stroke-width="1"/>
+    <text x="42" y="109" class="lbl-sm" fill="#fff" font-weight="700">− BUS BAR (chassis ground)</text>
+
+    <!-- Loads sitting between the rails -->
+    <g transform="translate(180, 56)">
+      <rect x="0" y="0" width="150" height="38" rx="3" class="box"/>
+      <text x="75" y="17" text-anchor="middle" class="lbl-bold">VICTRON Orion-Tr</text>
+      <text x="75" y="31" text-anchor="middle" class="lbl-sm">12V → 24V DC-DC</text>
+    </g>
+    <line x1="255" y1="50" x2="255" y2="56" class="wire-sw"/>
+    <line x1="255" y1="94" x2="255" y2="98" class="wire-gnd"/>
+
+    <g transform="translate(390, 56)">
+      <rect x="0" y="0" width="150" height="38" rx="3" class="box"/>
+      <text x="75" y="17" text-anchor="middle" class="lbl-bold">WAVESHARE</text>
+      <text x="75" y="31" text-anchor="middle" class="lbl-sm">Modbus RTU 8CH</text>
+    </g>
+    <line x1="465" y1="50" x2="465" y2="56" class="wire-sw"/>
+    <line x1="465" y1="94" x2="465" y2="98" class="wire-gnd"/>
+
+    <g transform="translate(600, 56)">
+      <rect x="0" y="0" width="150" height="38" rx="3" class="box"/>
+      <text x="75" y="17" text-anchor="middle" class="lbl-bold">5V BUCK</text>
+      <text x="75" y="31" text-anchor="middle" class="lbl-sm">Mean Well / R-78W</text>
+    </g>
+    <line x1="675" y1="50" x2="675" y2="56" class="wire-sw"/>
+    <line x1="675" y1="94" x2="675" y2="98" class="wire-gnd"/>
+
+    <!-- Note about 24V rail -->
+    <text x="780" y="76" class="lbl-sm" fill="#666">24V rail →</text>
+    <text x="780" y="90" class="lbl-sm" fill="#666">4× PRTXI sensors</text>
+  </g>
+
+</svg>
+</div>
+
+<h2>Relay Pin Reference</h2>
+
+<table>
+  <thead><tr><th>Pin</th><th>Function</th><th>Connects to</th><th>Wire color (suggestion)</th><th>Gauge</th></tr></thead>
+  <tbody>
+    <tr><td><b>30</b></td><td>Battery 12V input</td><td>Battery (+) via 15A inline fuse</td><td>Red</td><td>12 AWG</td></tr>
+    <tr><td><b>87</b></td><td>Switched 12V output</td><td>+ bus bar inside enclosure</td><td>Orange (or red)</td><td>12 AWG</td></tr>
+    <tr><td><b>86</b></td><td>Trigger coil input</td><td>Add-a-fuse on switched circuit</td><td>Green</td><td>22 AWG</td></tr>
+    <tr><td><b>85</b></td><td>Trigger coil ground</td><td>Chassis ground bolt</td><td>Black</td><td>22 AWG</td></tr>
+    <tr><td>87a</td><td>Normally-closed (unused)</td><td>—</td><td>—</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<h2>Wire &amp; Fuse Spec Summary</h2>
+
+<table>
+  <thead><tr><th>Wire</th><th>Gauge</th><th>Fuse</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Battery → relay pin 30 (red)</td><td>12 AWG</td><td>15A inline, near battery</td><td>Handles 10A peak DC-DC draw with headroom</td></tr>
+    <tr><td>Relay pin 87 → bus bar (orange)</td><td>12 AWG</td><td>(protected by 15A upstream)</td><td>Same current path as above</td></tr>
+    <tr><td>Fuse box → relay pin 86 (green)</td><td>22 AWG</td><td>3A or 5A in add-a-fuse</td><td>Only carries ~150 mA coil current</td></tr>
+    <tr><td>Relay pin 85 → chassis (black)</td><td>22 AWG</td><td>—</td><td>Ground return for coil only</td></tr>
+    <tr><td>Battery (−) → enclosure bus (black)</td><td>12 AWG</td><td>—</td><td>Main ground return path; can also bolt directly to chassis</td></tr>
+  </tbody>
+</table>
+
+<h2>Install Order Checklist</h2>
+
+<div class="warning">
+  <b>Before you start:</b> Disconnect the battery negative terminal. Keep it disconnected until you've finished wiring and verified everything with a multimeter.
+</div>
+
+<div class="checklist">
+<ol>
+  <li><b>Disconnect battery negative.</b> Loosen the 10mm nut on the (−) terminal, lift the cable clear, tuck it aside so it can't spring back onto the post.</li>
+  <li><b>Mount the relay</b> somewhere in the engine bay — zip-tie it inside the Joisyoya enclosure or to a wire loom nearby. Coil-up orientation doesn't matter.</li>
+  <li><b>Run red 12 AWG</b> from battery (+) → inline 15A fuse holder (within 6" of battery) → relay pin 30. Use loom or split-loom tubing to protect the run.</li>
+  <li><b>Run orange 12 AWG</b> from relay pin 87 → enclosure + bus bar. Ring terminal on the bus bar end, female spade on the relay end.</li>
+  <li><b>Run black 22 AWG</b> from relay pin 85 → nearest clean chassis ground bolt (sand any paint off, use a star washer).</li>
+  <li><b>Run green 22 AWG</b> from relay pin 86 → through firewall grommet → add-a-fuse in passenger fuse box. Use 3A or 5A fuse in the tap slot.</li>
+  <li><b>Run black 12 AWG</b> from battery (−) → enclosure − bus bar (or bolt the bus bar directly to chassis near the enclosure).</li>
+  <li><b>Multimeter check (battery still disconnected):</b> Verify continuity from pin 85 to chassis ground. Verify no continuity between pin 30 and pin 87 (relay should be open at rest).</li>
+  <li><b>Reconnect battery negative.</b></li>
+  <li><b>Trigger check (ignition off):</b> Black probe to chassis ground, red probe to pin 86. Should read 0V.</li>
+  <li><b>Trigger check (ignition on, engine off):</b> Same probes. Should read ~12V. Should hear a faint click from the relay as the coil energizes.</li>
+  <li><b>Output check (ignition on):</b> Probe + bus bar in the enclosure. Should read ~12V.</li>
+  <li><b>Ignition off:</b> + bus bar should drop to 0V. Confirms the relay is doing its job and the enclosure won't drain the battery.</li>
+</ol>
+</div>
+
+<p class="note">If the green wire trigger circuit reads 0V with ignition on, you're tapped into a non-switched circuit. Try a different fuse position. The cigarette lighter / 12V accessory outlet is the most universally reliable switched source on the 370Z.</p>
+
+</body>
+</html>

@@ -711,7 +711,7 @@ Ground return: 6 AWG from (-) bus bar to clean, paint-stripped chassis stud.
 | Trans cooler fan (SPAL VA07-AP7C-31A) | 20 A | 12 AWG | ~10A continuous, ~17A inrush. Via Pico 5593PT relay (40A SPDT). Setrab thermo switch on coil ground |
 | Engine oil cooler fan | 20 A | 12 AWG | Via own relay. Setrab 200°F thermal switch on coil ground |
 | Z1 diff cooler **pump** | 10 A | 16 AWG | Tilton 40-524 (datasheet 98-1901). Via own relay |
-| Z1 diff cooler **fan** | 5 A | 18 AWG | SPAL 30103011 (5.2"). Via own relay |
+| Z1 diff cooler **fan** | 7.5 A slow-blow | 18 AWG | SPAL 30103011 (5.2"). Inrush ~15–25 A for 100–300 ms — 5 A ATC nuisance-blows. Via own relay |
 
 Pump and fan get **separate relays and fuses** so a stuck pump motor or shorted fan does not disable both halves of the diff cooler.
 
@@ -724,7 +724,16 @@ Pump and fan get **separate relays and fuses** so a stuck pump motor or shorted 
 | Trigger | Setrab 200°F thermo switch (Z1 P/N 46687) | Installs in 1/8 NPT pilot hole on Z1 High Capacity Diff Cover, normally open, closes hot |
 | Cooler core | Z1 ProCooler 25-row | — |
 
-Per Z1 install manual: pump and fan are triggered by the Setrab probe via a relay kit (Z1 recommends DeatschWerks fuel pump hardwire kit). In this install, use the Pico-style 40A relay pattern documented for the other fans — one relay per circuit, Setrab switch on the coil ground side, ignition-switched +12V on the coil power side.
+**Wiring topology in this install** (deviates from Z1 default — pump is manual, only the fan is auto-triggered):
+
+- **Power distribution at diff**: single 10 AWG +12 V trunk feed from engine-bay bus bar (25 A fused) to a Blue Sea 5025 mini fuse block at the diff. From there, 10 A → pump relay pin 30, **7.5 A slow-blow** → fan relay pin 30.
+- **Pump trigger (manual, OR logic)**: two SPST switches in parallel feed the +12 V ignition trigger (washer-tank fuse tap) to pump relay coil pin 86 at "node Y" — (a) Gardner Bender **GSW-49** illuminated rocker in the cabin dashboard (neon lamp stays dark on 12 V DC, switch contacts work fine) and (b) a DPST waterproof inline switch under the car at the diff (one pole wired, other capped). Either switch closes → pump runs. Driver watches diff temp on the 370zMonitor display and toggles manually.
+- **Fan trigger (auto)**: Setrab 31-TS200-08 (200 °F NO, opens at 185 °F) inline between the +12 V trigger and fan relay coil pin 86 — **high-side switching**, matches Setrab's own install diagram.
+- **Both Pico 5593PT relays**: pin 85 permanently grounded at the diff GND bolt, pin 87a (NC) capped and heat-shrunk.
+- **No auto pump mode** — pump must be on for the cooler/fan to do useful work; this is a deliberate trust-the-driver decision (Tilton also warns against running pump on cold heavy gear oil).
+- **PRTXI temp sensor (CH5)**: 2-wire 4-20 mA loop from electric box to diff. Belden 8761 shielded twisted pair. Shield grounded at the Waveshare end only; diff end capped and heat-shrunk.
+
+Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the repo root.
 
 ### Bus Bar Hygiene
 
@@ -734,10 +743,12 @@ Per Z1 install manual: pump and fan are triggered by the Setrab probe via a rela
 
 ### Setrab TS200 Reference (for trans, oil, and diff fans/pumps)
 
-- Normally open, closes when hot. ~200°F (~93°C) close / ~180°F (~83°C) open (verify body stamp on the specific unit)
-- Carries only relay coil current (~150 mA) — safe for low-current switch contacts
-- Wire on the **ground side** of the relay coil (pin 85), so when the switch closes the coil energizes
-- Single-spade Type-22 housing grounds through the threads into the fitting; two-spade variants need a dedicated ground
+- Normally open, closes when hot. **~200 °F (~93 °C) close / ~185 °F (~85 °C) open** per Setrab spec sheet (~15 °F hysteresis; verify body stamp on the specific unit)
+- **10 A @ 12 V DC** contact rating — switching ~150 mA relay coil is trivial
+- Wire **high-side** (between ignition-switched +12 V and relay coil pin 86) per Setrab's own install PDF. Low-side (pin 85 → switch → ground) works electrically too, but high-side keeps installs consistent across all three Setrab-controlled circuits (trans, engine oil, diff)
+- The **AN08 variant** (`31-TS200-08`, used on the Z1 diff cover via the SUSA AN-male-to-AN-female adapter) has **2 spade terminals, electrically isolated from the case** — non-polarity-sensitive, either terminal either direction
+- **Single-spade Type-22** housing variants ground through the threads into the fitting and need a clean metal-to-metal interface
+- **PTFE tape on the 1/8" NPT: 1.5–2 turns max** — more turns can distort the port and throw off the switching temperature
 
 ---
 

@@ -1,9 +1,15 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v5.8
+ * 370zMonitor v5.9
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v5.9 Changes:
+ * - REMOVED: 10kΩ/22kΩ voltage divider on PX3AN2BH150PSAAX oil pressure signal
+ * - Sensor now wires directly to Waveshare AI1 (Mode 0 = 0-10V natively handles 0.5-4.5V)
+ * - PRESSURE_DIVIDER_RATIO changed from 1.4545 to 1.0 — Modbus mV is sensor mV directly
+ * - Restored proper 3-conductor wiring (V+, GND, Signal) to PX3 sensor
  *
  * v5.8 Changes:
  * - ADDED: LIS3DH accelerometer support via I2C (ADA2809 breakout)
@@ -719,9 +725,10 @@ void resetUIElements();
 #define WAVESHARE_CH4_MODE_REG  0x1003  // Holding register for CH4 mode
 #define WAVESHARE_CH5_MODE_REG  0x1004  // Holding register for CH5 mode
 
-// Pressure Sensor Calibration (PX3AN2BH150PSAAX with voltage divider)
-// Your voltage divider: 10kΩ / 22kΩ = ratio of 0.6875
-#define PRESSURE_DIVIDER_RATIO  1.4545f  // Inverse of 0.6875
+// Pressure Sensor Calibration (PX3AN2BH150PSAAX, direct wiring, no divider)
+// v5.9: Removed 10kΩ/22kΩ voltage divider. Sensor signal (0.5-4.5V) now
+// goes directly into Waveshare AI1 (Mode 0 = 0-10V). No scaling needed.
+#define PRESSURE_DIVIDER_RATIO  1.0f     // No divider — raw_mV IS sensor mV
 #define PRESSURE_OFFSET_MV      500.0f   // 0.5V = 500mV at 0 PSI
 #define PRESSURE_SCALE          0.0375f  // 150 PSI / 4000 mV range
 
@@ -1042,15 +1049,15 @@ static bool modbusReadHoldingRegister(uint8_t slaveAddr, uint16_t regAddr, uint1
 //-----------------------------------------------------------------------------
 // Sensor: PX3AN2BH150PSAAX (0-150 PSI, 0.5V-4.5V output)
 //
-// Wiring includes a voltage divider (10kΩ / 22kΩ) to scale 5V sensor
-// output to safe 3.3V range for Modbus module input.
+// v5.9: Direct wiring (no voltage divider). Sensor signal pin connects
+// straight into Waveshare AI1 (Mode 0 = 0-10V), which natively handles
+// the 0.5-4.5V range. The Modbus mV reading IS the sensor voltage.
 //
-//   Actual sensor output: 500mV (0 PSI) to 4500mV (150 PSI)
-//   After divider (0.6875): 344mV (0 PSI) to 3094mV (150 PSI)
-//   Modbus reads: ~307mV at 0 PSI (close to theoretical 344mV)
+//   Sensor output: 500mV (0 PSI) to 4500mV (150 PSI)
+//   Modbus reads:  same — no divider correction needed
 //
 // Conversion formula:
-//   1. Multiply by divider ratio inverse (1.4545) to get original mV
+//   1. Multiply by PRESSURE_DIVIDER_RATIO (now 1.0 — kept for symmetry)
 //   2. Subtract 500mV offset (sensor outputs 500mV at 0 PSI)
 //   3. Multiply by scale (150 PSI / 4000 mV = 0.0375)
 //

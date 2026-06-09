@@ -4,7 +4,7 @@
 
 **370zMonitor** is a track car data logging and display system for a 2018 Nissan 370Z. It uses an ESP32-S3 microcontroller with a 7" touchscreen to display real-time sensor data during track days.
 
-- **Current Version:** v5.8
+- **Current Version:** v5.9
 - **Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (800x480) with onboard TJA1051T CAN transceiver and SP3485 RS485 transceiver
 - **Hardware:** Waveshare Industrial 8-Ch Analog Acquisition Module (Model B, 0-10V / 0-20mA / 4-20mA selectable)
 - **Hardware:** Crowtail I2C Hub 2.0 (for multiple I2C devices)
@@ -240,7 +240,7 @@ Transparent `Print` wrapper that mirrors all `Serial.print()` output to the per-
 ### Channel Mapping (5 channels active as of v5.4)
 | Channel | Sensor | Signal | Waveshare Mode |
 |---------|--------|--------|----------------|
-| 0 (AI1) | Oil Pressure (PX3AN2BH150PSAAX) | 0.5-4.5V via 10kΩ/22kΩ divider | Mode 0 (0-10V) |
+| 0 (AI1) | Oil Pressure (PX3AN2BH150PSAAX) | 0.5-4.5V direct (no divider, v5.9+) | Mode 0 (0-10V) |
 | 1 (AI2) | Oil Temperature (PRTXI 4-20mA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
 | 2 (AI3) | Transmission Temperature (PRTXI 4-20mA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
 | 3 (AI4) | Power Steering Temperature (PRTXI 4-20mA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
@@ -252,14 +252,67 @@ Channel mode is written at startup via Modbus Function 0x06 to holding registers
 ### Pressure Sensor Calibration (CH1)
 ```cpp
 // PX3AN2BH150PSAAX: 0.5V-4.5V for 0-150 PSI
-// Voltage divider: 10kΩ / 22kΩ — divides by 0.6875 (inverse = 1.4545)
+// v5.9: Direct wiring, no voltage divider. Sensor signal connects straight
+// to Waveshare AI1 in Mode 0 (0-10V), which natively handles 0.5-4.5V.
 // Effective formula in convertToPSI():
-//   PSI = (raw_mV * 1.4545 - 500) * 0.0375
+//   PSI = (raw_mV - 500) * 0.0375          (DIVIDER_RATIO is now 1.0)
 // Clamped to [0, 150]
-#define PRESSURE_DIVIDER_RATIO 1.4545f
+#define PRESSURE_DIVIDER_RATIO 1.0f       // No divider (v5.9+)
 #define PRESSURE_OFFSET_MV     500.0f
 #define PRESSURE_SCALE         0.0375f
 ```
+
+### Wiring Diagram (PX3 oil pressure — v5.9+ direct, no divider)
+
+**Sensor: 3-wire ratiometric voltage output. Red = +5V, Black = GND, Yellow = Signal.**
+
+```
+                ┌─────────────────────────────┐
+                │   LM2596 buck converter      │
+   OBD pin 16 ─▶│   IN+              OUT+ ────┼──▶ +5.00V regulated rail
+   OBD pin 5  ─▶│   IN−              OUT− ────┼──▶ Common GND
+                └─────────────────────────────┘
+
+   +5V rail ─────────────────────▶ PX3 Red  (V+ pin)
+   Common GND ───────────────────▶ PX3 Black (GND pin)
+   PX3 Yellow (Signal) ──────────▶ Waveshare AI1+
+   Common GND ───────────────────▶ Waveshare AI1−
+
+   Supply decoupling near sensor: 10 µF + 0.1 µF across +5V/GND
+   (short leads, close to the PX3 supply branch)
+```
+
+**Critical wiring rules:**
+- Must run **3 conductors** end-to-end (V+, GND, Signal) — sensor will not function with 2 wires. The sensor body does NOT reliably ground through its 1/8-27 NPT thread; do not assume chassis grounding.
+- LM2596 must output **5.00V ± 0.05V under load**. Verify with a multimeter before connecting the sensor. PX3 absolute max supply is ~18V so brief overvoltage is survivable, but sustained >5.5V will produce out-of-range signal that pegs the gauge at 150 PSI.
+- Shielded 3-conductor cable preferred for the engine-bay run; tie shield to GND **at the box end only**.
+- **Verify connector pinout with a multimeter before powering** — Vout and GND have been found swapped at the PX3 pigtail in past builds. Do not trust wire colors blindly. With sensor unpowered: between V+ and GND pins you should see a finite resistance in the kΩ range; between V+ and Signal, and GND and Signal, expect high resistance (MΩ+).
+
+### Pressure Sensor Install Status (as of 2026-06-09)
+
+**Current state (broken, mid-rewire):** Legacy 2-wire harness from sensor to electric box; LM2596 was outputting 8.5V instead of 5V; firmware was applying the obsolete 1.4545 divider correction. Symptom: pegged 150 PSI constantly. Most likely root cause is missing Signal conductor (AI1 input floating).
+
+**Target state (after rewire, matches code/diagram above):** Clean 3-conductor harness directly to the sensor, no in-line voltage divider, LM2596 reset to 5.00V, decoupling caps near the sensor V+ pin. Firmware already updated to `PRESSURE_DIVIDER_RATIO = 1.0` in v5.9.
+
+**Rewire plan steps:**
+1. Remove oil filter sandwich plate from engine
+2. Pull PX3 sensor out of sandwich plate
+3. Open existing sensor harness, remove all resistors / divider components (the "Frankenstein" parts)
+4. Replace the 2-conductor cable from sensor to electric box with a 3-conductor shielded cable
+5. Inside the electric box: verify the existing 2 outputs and add a 3rd (likely the previously-missing Signal wire). Identify each existing terminal with a multimeter before reconnecting.
+6. Verify LM2596 trim pot set to 5.00V under load before powering the sensor
+7. Bench-test sensor at atmospheric pressure first — expect ~500 mV on Modbus AI1 (= 0 PSI in firmware)
+8. Reinstall, start engine, watch `[MODBUS]` per-second log for smooth rise
+
+### Expected Validation Readings (PX3, v5.9 direct wiring)
+
+| Condition | PX3 Signal pin | Waveshare AI1 (raw mV via Modbus) | Firmware shows |
+|-----------|---------------|------------------------------------|----------------|
+| Engine off, 0 psi, 5.00V supply | ~0.50V | ~500 mV | 0 PSI |
+| Engine cold idle (typical) | ~1.0–1.5V | ~1000–1500 mV | ~19–38 PSI |
+| Full scale, 150 psi | ~4.50V | ~4500 mV | 150 PSI |
+| Pegged at 150 with engine off | sensor signal > 4.5V or supply wrong | > 4500 mV | 150 PSI (clamped) — sensor damaged or wiring fault |
+| Stuck near 0 with engine running | signal floating / disconnected | < 100 mV | "---" (sensor offline per `SENSOR_MIN_VALID_MV`) |
 
 ### Temperature Sensor Calibration (CH2-CH5)
 ```cpp
@@ -762,6 +815,10 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 6. **Touch task pinned to Core 1, not Core 0:** Historical CLAUDE.md docs said Core 0, but the code now pins `touchTask` to Core 1 to avoid I2C contention with RTC/SD operations on Core 0
 7. **PRTXI wiring is confirmed correct as documented** (Pin 1 = V+, Pin 2 = Signal). Do NOT flip these in docs even though some PRTXI datasheets diagram them differently.
 8. **CAN pins are GPIO19/20, not 17/18:** Some inline comments in the .ino header still reference the older "GPIO17/18" plan from before the onboard TJA1051T transceiver was used. The active configuration is GPIO19/20.
+9. **PX3 oil pressure sensor is 3-wire, not 2-wire:** It outputs ratiometric 0.5–4.5V on a separate Signal pin. Running only 2 conductors (V+/GND) leaves the AI1 input floating and produces a pegged 150 PSI reading. This bit the install in June 2026 — 8 months of bench testing showed 0 PSI because both bench grounds were at the same potential and signal floated low; on the car the floating input read near rail.
+10. **PX3 pinout: verify with a multimeter, do not trust colors.** Vout and GND have been found swapped at the PX3 pigtail in past builds. Always confirm pinout against the connector before applying power.
+11. **LM2596 trim pot must be set under load.** A no-load LM2596 may read 5V on the bench and then drift to 8V+ when the car's electrical system pulls on it. Verify output voltage with the actual install load connected. If the module won't trim down to 5.0V under load, replace it — knockoff LM2596 modules have unreliable feedback networks.
+12. **The PDF `PX3AN2BH150PSAAX_ESP32_3V3_Interface_Breakdown.pdf` describes the OLD design** (PX3 → 10kΩ/22kΩ divider → ESP32 GPIO 3.3V ADC directly). The current architecture uses a Waveshare Modbus module in Mode 0 (0-10V), so the divider was redundant and was removed in v5.9. Refer to the PX3 wiring diagram in this CLAUDE.md (not the PDF) for the active design.
 
 ---
 
@@ -769,6 +826,7 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 
 | Version | Key Changes |
 |---------|-------------|
+| v5.9 | Removed PX3 voltage divider — direct wiring to Waveshare AI1 (Mode 0 handles 0.5-4.5V natively); `PRESSURE_DIVIDER_RATIO` is now 1.0 |
 | v5.8 | LIS3DH accelerometer (G-sensor) via I2C, logs X/Y/Z to CSV, toast monitor extended |
 | v5.7 | OBD-II via CAN bus (TWAI) using onboard TJA1051T, Fuel Trust calculation, RPM/ECT via PIDs |
 | v5.6 | Auto Brightness (sunrise/sunset based dimming) using NOAA solar calculator |

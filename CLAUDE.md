@@ -264,45 +264,85 @@ Channel mode is written at startup via Modbus Function 0x06 to holding registers
 
 ### Wiring Diagram (PX3 oil pressure — v5.9+ direct, no divider)
 
-**Sensor: 3-wire ratiometric voltage output. Red = +5V, Black = GND, Yellow = Signal.**
+**Sensor: 3-wire ratiometric voltage output. Red = +5V (Pin A), Black = GND (Pin B), Yellow = Signal (Pin C).**
 
 ```
-                ┌─────────────────────────────┐
-                │   LM2596 buck converter      │
-   OBD pin 16 ─▶│   IN+              OUT+ ────┼──▶ +5.00V regulated rail
-   OBD pin 5  ─▶│   IN−              OUT− ────┼──▶ Common GND
-                └─────────────────────────────┘
+                ┌──────────────────────────────────┐
+                │   Fixed 5V regulator             │
+                │   (Recom R-78E5.0-1.0 or equiv;  │
+   24V rail ───▶│   NOT a JTAREA LM2596 — see #11) │
+   GND      ───▶│   IN+              OUT+ ─────────┼──▶ +5.00V regulated rail
+                │   IN−              OUT− ─────────┼──▶ Common GND
+                └──────────────────────────────────┘
 
-   +5V rail ─────────────────────▶ PX3 Red  (V+ pin)
-   Common GND ───────────────────▶ PX3 Black (GND pin)
-   PX3 Yellow (Signal) ──────────▶ Waveshare AI1+
+   +5V rail ─────────────────────▶ PX3 Red    (V+,     Pin A)
+   Common GND ───────────────────▶ PX3 Black  (GND,    Pin B)
+   PX3 Yellow (Signal, Pin C) ───▶ Waveshare AI1+
    Common GND ───────────────────▶ Waveshare AI1−
 
    Supply decoupling near sensor: 10 µF + 0.1 µF across +5V/GND
    (short leads, close to the PX3 supply branch)
 ```
 
+**Confirmed PX3 wire colors (validated 2026-06-11 with multimeter and HANGELL bench supply):**
+- **Red = V+** (Metri-Pack 150 Pin A)
+- **Black = GND** (Pin B)
+- **Yellow = Signal/Output** (Pin C)
+
+The Metri-Pack connector on this particular PX3 has **no "A" stamp/cast** on the body — colors are the only practical key in the field. Verify electrically anyway (see resistance fingerprint below).
+
 **Critical wiring rules:**
 - Must run **3 conductors** end-to-end (V+, GND, Signal) — sensor will not function with 2 wires. The sensor body does NOT reliably ground through its 1/8-27 NPT thread; do not assume chassis grounding.
-- LM2596 must output **5.00V ± 0.05V under load**. Verify with a multimeter before connecting the sensor. PX3 absolute max supply is ~18V so brief overvoltage is survivable, but sustained >5.5V will produce out-of-range signal that pegs the gauge at 150 PSI.
+- **Supply must be 4.75 V–5.25 V (5.0 V nominal). 5.25 V is absolute max** per Honeywell datasheet — exceeding it damages the internal ASIC, typically rails the output high regardless of pressure. The June 2026 install cooked one sensor at 8.5 V from a broken JTAREA LM2596 module (see gotcha #11). **Verify supply with a multimeter, under load, before plugging the sensor in. Every time.**
 - Shielded 3-conductor cable preferred for the engine-bay run; tie shield to GND **at the box end only**.
-- **Verify connector pinout with a multimeter before powering** — Vout and GND have been found swapped at the PX3 pigtail in past builds. Do not trust wire colors blindly. With sensor unpowered: between V+ and GND pins you should see a finite resistance in the kΩ range; between V+ and Signal, and GND and Signal, expect high resistance (MΩ+).
+- **Verify connector pinout with a multimeter before powering.** Do not trust wire colors blindly. Resistance fingerprint of a healthy unpowered PX3 (2026-06-11 measurements):
+  - V+ to GND (red↔black): **2–5 MΩ** (drifts as meter charges internal cap — normal)
+  - V+ to Signal (red↔yellow): **2–5 MΩ** (same)
+  - GND to Signal (black↔yellow): **~49 kΩ stable** (internal discharge path through output stage)
 
-### Pressure Sensor Install Status (as of 2026-06-09)
+  The asymmetry — two high-MΩ readings and one stable ~49 kΩ — uniquely identifies V+ as the wire that reads MΩ against both others. The 49 kΩ pair is GND/Signal in some order; powering up at 5 V and looking for 0.50 V on one of them distinguishes which is which (Signal = 0.50 V, GND = bench ground reference).
 
-**Current state (broken, mid-rewire):** Legacy 2-wire harness from sensor to electric box; LM2596 was outputting 8.5V instead of 5V; firmware was applying the obsolete 1.4545 divider correction. Symptom: pegged 150 PSI constantly. Most likely root cause is missing Signal conductor (AI1 input floating).
+### Pressure Sensor Install Status (as of 2026-06-11)
 
-**Target state (after rewire, matches code/diagram above):** Clean 3-conductor harness directly to the sensor, no in-line voltage divider, LM2596 reset to 5.00V, decoupling caps near the sensor V+ pin. Firmware already updated to `PRESSURE_DIVIDER_RATIO = 1.0` in v5.9.
+**Current state (sensor dead, replacement on order):**
 
-**Rewire plan steps:**
-1. Remove oil filter sandwich plate from engine
-2. Pull PX3 sensor out of sandwich plate
-3. Open existing sensor harness, remove all resistors / divider components (the "Frankenstein" parts)
-4. Replace the 2-conductor cable from sensor to electric box with a 3-conductor shielded cable
-5. Inside the electric box: verify the existing 2 outputs and add a 3rd (likely the previously-missing Signal wire). Identify each existing terminal with a multimeter before reconnecting.
-6. Verify LM2596 trim pot set to 5.00V under load before powering the sensor
-7. Bench-test sensor at atmospheric pressure first — expect ~500 mV on Modbus AI1 (= 0 PSI in firmware)
-8. Reinstall, start engine, watch `[MODBUS]` per-second log for smooth rise
+Root cause confirmed: the JTAREA LM2596 buck module ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) had a broken feedback path and was passing 8.5 V (close to its 24 V input) straight through to the sensor — 62 % over the PX3's 5.25 V absolute max. The sensor's ASIC output stage was cooked. Bench test on 2026-06-11 with the HANGELL HPS-3010D supply at 5.00 V on red, GND on black, multimeter on yellow showed **4.06 V at rest** (should be 0.50 V) and **zero response to mouth-blown pressure** — classic dead-ASIC signature.
+
+Secondary issue: the original harness was 2-conductor (V+ and Signal only — GND missing), so even if the sensor had been healthy it couldn't have worked correctly on the car. The previously-installed "Frankenstein" inline resistors/divider in the harness have been removed.
+
+**Actions:**
+1. ✅ Confirmed sensor is dead via bench test (HANGELL @ 5.00 V, yellow rails at 4.06 V).
+2. ✅ Confirmed Honeywell wire color convention (red/black/yellow → V+/GND/Signal).
+3. ⏳ Order replacement PX3AN2BH150PSAAX (Newark, Digi-Key, or Mouser — ~$30–40, see distributor links in [Buck Converter & Supply Notes](#buck-converter--supply-notes) below).
+4. ⏳ Replace the JTAREA LM2596 with a known-good fixed 5 V regulator (see options below) — do not reuse the JTAREA module under any circumstances.
+5. ⏳ Add the missing GND conductor between the electric box and the sensor (use 3-conductor shielded cable end-to-end).
+
+**Target state (after parts arrive):** Clean 3-conductor shielded harness sensor→box; reliable fixed-output 5.00 V regulator from the 24 V rail; no inline divider; firmware already on `PRESSURE_DIVIDER_RATIO = 1.0` (v5.9). Decoupling caps (10 µF + 0.1 µF) at the sensor V+ pin.
+
+**Install sequence when parts arrive:**
+1. Bench-test the new regulator standalone first: 24 V in, verify **5.00 V ± 0.05 V** at the output with a ~50–100 mA dummy load (e.g. 100 Ω resistor → ~50 mA). Confirm regulation holds under no-load too. If output drifts outside 4.9–5.1 V at any time, do not use it.
+2. Bench-test the new sensor before installing in the car: HANGELL supply at 5.00 V, red→V+, black→GND, **expect yellow = 500 mV ± 50 mV at atmospheric pressure**. Apply pressure (bike pump or even mouth pressure) and confirm voltage climbs. Resistance fingerprint should also match the values above (~49 kΩ black↔yellow, MΩ for the other pairs).
+3. Replace the 2-conductor harness from sensor location to the electric box with 3-conductor shielded cable. Shield to box-end GND only.
+4. Inside the box: regulator IN+ from 24 V rail (fused 1 A), regulator OUT+ to sensor V+ wire, regulator OUT- to common GND (tied to Waveshare AI1-). Sensor Signal wire to Waveshare AI1+.
+5. Add 10 µF (electrolytic) + 0.1 µF (ceramic) decoupling across V+/GND at the sensor end of the harness.
+6. Power-up bench check before screwing the sensor back into the sandwich plate: `[MODBUS]` CH1 raw should read **~500 mV** and display **0 PSI**.
+7. Reinstall sensor in oil filter sandwich plate, start engine, watch the `[MODBUS]` per-second log for smooth rise to ~30–60 PSI at idle, climbing with RPM.
+
+### Buck Converter & Supply Notes
+
+**Do not reuse the JTAREA LM2596 module.** Its feedback path is broken — outputs nearly the full input voltage under no-load and almost certainly under load too. This is what killed the original sensor. Common failure mode for cloned LM2596 modules sold on Amazon under unfamiliar brand names.
+
+**Replacement options (all fixed 5 V output, drop-in 3-pin SIP, no trim pot):**
+
+| Part | Input range | Output | Price | Best for |
+|------|-------------|--------|-------|----------|
+| [Recom R-78E5.0-1.0](https://www.digikey.com/en/products/detail/recom-power/R-78E5-0-1-0/4930585) | 8–28 V | 5 V @ 1 A | ~$7 | Industrial-grade, 3-yr warranty — best choice for automotive |
+| [Murata OKI-78SR-5/1.5-W36-C](https://www.digikey.com/en/products/detail/murata-power-solutions-inc/OKI-78SR-5-1.5-W36-C/811-2196-5-ND/2259781) | 7–36 V | 5 V @ 1.5 A | ~$8 | Wider input range, more headroom over 24 V nominal |
+| [Pololu D24V5F5](https://www.pololu.com/product/2843) | 5.1–36 V | 5 V @ 500 mA | ~$6 | Hobbyist favorite, board-mount; 500 mA is plenty for 3.5 mA PX3 load |
+
+All three are switching topology (low heat), TO-220-compatible 3-pin form factor, fixed output (no trim — nothing to drift), and from reputable manufacturers (not Amazon-resold knock-offs). The PX3 draws ~3.5 mA, so any of these is massively over-specced — pick on input range and form factor.
+
+**Recommendation:** Recom R-78E5.0-1.0 — industrial, used in EU automotive aftermarket gear, fits 7805 footprint, 3-year warranty. Per memory `component-preferences.md`, this matches the "industrial/enclosed parts from reputable brands" preference.
 
 ### Expected Validation Readings (PX3, v5.9 direct wiring)
 
@@ -816,9 +856,11 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 7. **PRTXI wiring is confirmed correct as documented** (Pin 1 = V+, Pin 2 = Signal). Do NOT flip these in docs even though some PRTXI datasheets diagram them differently.
 8. **CAN pins are GPIO19/20, not 17/18:** Some inline comments in the .ino header still reference the older "GPIO17/18" plan from before the onboard TJA1051T transceiver was used. The active configuration is GPIO19/20.
 9. **PX3 oil pressure sensor is 3-wire, not 2-wire:** It outputs ratiometric 0.5–4.5V on a separate Signal pin. Running only 2 conductors (V+/GND) leaves the AI1 input floating and produces a pegged 150 PSI reading. This bit the install in June 2026 — 8 months of bench testing showed 0 PSI because both bench grounds were at the same potential and signal floated low; on the car the floating input read near rail.
-10. **PX3 pinout: verify with a multimeter, do not trust colors.** Vout and GND have been found swapped at the PX3 pigtail in past builds. Always confirm pinout against the connector before applying power.
-11. **LM2596 trim pot must be set under load.** A no-load LM2596 may read 5V on the bench and then drift to 8V+ when the car's electrical system pulls on it. Verify output voltage with the actual install load connected. If the module won't trim down to 5.0V under load, replace it — knockoff LM2596 modules have unreliable feedback networks.
-12. **The PDF `PX3AN2BH150PSAAX_ESP32_3V3_Interface_Breakdown.pdf` describes the OLD design** (PX3 → 10kΩ/22kΩ divider → ESP32 GPIO 3.3V ADC directly). The current architecture uses a Waveshare Modbus module in Mode 0 (0-10V), so the divider was redundant and was removed in v5.9. Refer to the PX3 wiring diagram in this CLAUDE.md (not the PDF) for the active design.
+10. **PX3 wire colors (this connector): red=V+, black=GND, yellow=Signal.** Confirmed 2026-06-11 by bench test. The Metri-Pack 150 on this unit has no "A" cast/stamp on the body — colors are the only field key. Always cross-check with the resistance fingerprint (red↔others = MΩ, black↔yellow = ~49 kΩ) before applying power.
+11. **JTAREA-branded LM2596 modules ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) are unsafe — do not use.** The unit installed in 2026 had a broken feedback path and passed 8.5 V (near its 24 V input) straight through under no load, cooking the original PX3 sensor at 62 % over its 5.25 V absolute max. A working LM2596 should regulate independent of load — if it doesn't, the chip has no feedback. Use fixed-output industrial parts (Recom R-78E5.0-1.0, Murata OKI-78SR, Pololu D24V5F5) instead of any adjustable Amazon-resold LM2596. See [Buck Converter & Supply Notes](#buck-converter--supply-notes).
+12. **PX3 absolute max supply is 5.25 V (datasheet), not 18 V.** Earlier CLAUDE.md said "~18V" — that was wrong and contributed to the June 2026 sensor death. The PX3 ASIC is regulated at ~5 V internally; sustained supply above 5.25 V damages the output stage permanently. Symptom of overvoltage damage: signal pin sits near rail (~4 V) at rest, ignores pressure changes, even after correct supply is restored.
+13. **Dead-sensor signature (post over-voltage):** Signal pin rails high (~3.5–4.5 V) at atmospheric pressure on a correct 5 V supply, with **no measurable response to applied pressure**. The diaphragm may still be mechanically fine, but the signal-conditioning ASIC is cooked. There is no field repair — replace the sensor. Order from Newark, Digi-Key, or Mouser; avoid eBay/Amazon for this part.
+14. **The PDF `PX3AN2BH150PSAAX_ESP32_3V3_Interface_Breakdown.pdf` describes the OLD design** (PX3 → 10kΩ/22kΩ divider → ESP32 GPIO 3.3V ADC directly). The current architecture uses a Waveshare Modbus module in Mode 0 (0-10V), so the divider was redundant and was removed in v5.9. Refer to the PX3 wiring diagram in this CLAUDE.md (not the PDF) for the active design.
 
 ---
 

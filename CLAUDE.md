@@ -48,6 +48,7 @@
 │   ├── GaugeAndChartDesign.spj  # SquareLine Studio project
 │   ├── !export/                 # Export destination
 │   └── assets/                  # UI assets
+├── lv_conf.h                    # Reference copy of the working LVGL v9 config (copy to Arduino libraries root to build)
 └── CLAUDE.md                    # This file
 ```
 
@@ -606,14 +607,21 @@ Lightweight-bars use `0x32231E` (dark brown) background and `0xFF4500` (orange) 
 | Setting | Value |
 |---------|-------|
 | Board | ESP32S3 Dev Module |
-| USB CDC On Boot | Enabled |
+| USB CDC On Boot | **Disabled** (see note) |
+| CPU Frequency | 240MHz (WiFi/BT) |
 | PSRAM | OPI PSRAM |
 | Flash Mode | QIO 80MHz |
-| Flash Size | 16MB |
+| Flash Size | 16MB (128Mb) |
 | Partition | 16M Flash (3MB APP / 9.9MB FATFS) |
+| Upload Mode | UART0 / Hardware CDC |
 | Upload Speed | 921600 |
 
-A `platformio.ini` is also present for PlatformIO users.
+**Flashing & serial use the UART USB-C port, NOT the native-USB port.** Reasons:
+- `USB CDC On Boot` is **Disabled**, so `Serial` maps to UART0 → the onboard CH343 USB-UART bridge (the "UART" Type-C connector). The board has a **UART-select switch** that must be set to route that port to the console.
+- When CAN is enabled (`CAN_MUX_TO_CAN 1`), EXIO5 flips the FSUSB42 mux to CAN mode and the **native USB port goes dark** (GPIO19/20 are shared — see gotcha #8). So always flash/monitor over the UART port.
+- To flash when the running app has taken over the port: enter download mode manually — **hold BOOT, tap RESET, release BOOT**, then Upload.
+
+A `platformio.ini` is also present for PlatformIO users (it correctly sets `ARDUINO_USB_CDC_ON_BOOT=0`; update its `flash_size` to 16MB and partition to `default_16MB`/FATFS to match the board).
 
 ---
 
@@ -637,17 +645,66 @@ A `platformio.ini` is also present for PlatformIO users.
 
 ## Required Libraries
 
-1. **Arduino_GFX_Library** (moononournation)
-2. **lvgl** (9.x)
-3. **TAMC_GT911** (touch driver)
+**Versions matter — the code is written against specific major versions. Mismatches cause hundreds of compile errors or runtime failures. See the "LVGL v9 / Display Stack" section below for the full setup.**
+
+1. **GFX Library for Arduino** (moononournation) — installs the header `Arduino_GFX_Library.h`. Tested with **v1.6.6**. NOTE: the Library-Manager package is named "GFX Library for Arduino", not "Arduino_GFX_Library" (searching the header name won't find it).
+2. **lvgl** — **must be 9.1.0** (the SquareLine UI export and the sketch use the v9 API). v8 will not compile; v9.2+ may drift. Requires a matching v9 `lv_conf.h` (see below).
+3. **TAMC_GT911** (touch driver) — included as `TAMC_GT911.h`
 4. **Adafruit_LIS3DH** (accelerometer driver)
-5. **Adafruit_Sensor** (required by LIS3DH)
-6. **SD** (built-in)
+5. **Adafruit_Unified_Sensor** (required by LIS3DH)
+6. **SD** (built-in — the ESP32 core copy is used; a "Multiple libraries for SD.h" warning is harmless)
 7. **SPI** (built-in)
 8. **Preferences** (built-in)
 9. **WiFi** (built-in, for NTP)
 10. **driver/twai.h** (ESP-IDF TWAI/CAN driver — bundled with ESP32 core)
-11. **USB / USBMSC** (ESP32-S3 native USB, for Mass Storage mode)
+11. **USB / USBMSC** (ESP32-S3 native USB, for Mass Storage mode — conflicts with CAN, see gotcha #8)
+
+---
+
+## LVGL v9 / Display Stack (read before touching the display or upgrading libraries)
+
+The project runs **LVGL 9.1.0** with **GFX Library for Arduino 1.6.6** driving the onboard 800×480 RGB panel. Getting from a fresh library install to a working, tear-free display requires the following — every item here cost real debugging time, so don't skip them.
+
+### lv_conf.h (the v9 config)
+- **A known-good copy of this config is checked into the repo root: `lv_conf.h`.** It is a *reference copy only* — LVGL does not read it from the repo. To build, copy it to the Arduino **libraries root** (next to the `lvgl` folder, e.g. `<sketchbook>/libraries/lv_conf.h`). Keep the two in sync if you change either.
+- Active location: in the Arduino **libraries root**, *next to* (not inside) the `lvgl` folder — e.g. `<sketchbook>/libraries/lv_conf.h`.
+- **Must be the v9 template**, not a v8 one. Generate it by copying `lvgl/lv_conf_template.h` → `lv_conf.h` (or just use the repo's `lv_conf.h`). A leftover v8 `lv_conf.h` "mostly compiles" under v9 but misbehaves (a stray GarageLatch v8 config with `LV_COLOR_DEPTH 32` caused the first failures).
+- Required settings:
+  - Top guard `#if 0` → **`#if 1`** (the #1 thing people miss — without it the whole file is ignored).
+  - `LV_COLOR_DEPTH 16`
+  - Fonts on: `LV_FONT_MONTSERRAT_14`, `_20`, `_38`, `LV_FONT_UNSCII_8`, `LV_FONT_UNSCII_16` (the sketch references all of these).
+  - **Put LVGL's heap pool in PSRAM** to free scarce internal RAM:
+    ```c
+    #define LV_MEM_SIZE (128 * 1024U)
+    #define LV_MEM_ADR 0
+    #define LV_MEM_POOL_INCLUDE "esp_heap_caps.h"
+    #define LV_MEM_POOL_ALLOC(size) heap_caps_malloc(size, MALLOC_CAP_SPIRAM)
+    ```
+    Without this, v9's default builtin pool is a ~64 KB static block in internal RAM. Combined with the DMA draw buffers it leaves only ~11 KB free → the **WiFi task fails to create, SD queue overflows, and the touch task can't run** (looks like "touch broken").
+
+### Draw-buffer sizing (the v9 black-screen trap)
+- In v9, `lv_color_t` is a **3-byte RGB888 struct regardless of `LV_COLOR_DEPTH`** (it was 2 bytes in v8). So `LVGL_BUFFER_SIZE * sizeof(lv_color_t)` over-allocates by 50% and the internal-DMA-RAM alloc fails → firmware halts at `[5/8] LVGL init` with a black (backlit) screen.
+- Size the buffer by the **render format**: RGB565 = **2 bytes/px**. The sketch uses `buf_bytes = LVGL_BUFFER_SIZE * 2`.
+- `LVGL_BUFFER_SIZE = 800 * 30` (two ~48 KB buffers, double-buffered) in internal DMA RAM. Fits comfortably once the LVGL pool is moved to PSRAM (above).
+
+### Arduino_GFX RGB panel constructor (v1.6.6 signature)
+The v1.6.6 `Arduino_ESP32RGBPanel(...)` signature ends with:
+`(..., pclk_active_neg, prefer_speed, useBigEndian, de_idle_high, pclk_idle_high, bounce_buffer_size_px)`.
+An older API had an `auto_flush` arg here; the sketch's trailing args were written for that older API. Correct values for this board:
+- **`useBigEndian = true`** — RGB565 byte order. If false/omitted, **all colors invert**.
+- `de_idle_high = 0`, `pclk_idle_high = 0`.
+- **`bounce_buffer_size_px = 800 * 10`** — this is what **eliminates the screen tearing**. With a single framebuffer (the lib hardcodes `num_fbs = 1`), the bounce buffer decouples the LCD scan from PSRAM reads. Setting it to 0 brings the tearing back.
+- True hardware double-buffering / VSYNC isn't available in Arduino_GFX 1.6.6 (single FB). If the bounce buffer ever proves insufficient, the real fix is a double/triple-framebuffer + VSYNC backend (e.g. the installed `ESP32_Display_Panel` library or direct `esp_lcd`).
+
+### The `.S` assembler errors after installing/upgrading LVGL
+LVGL 9.x ships ARM assembly files (`lvgl/src/draw/sw/blend/neon/lv_blend_neon.S` and `.../helium/lv_blend_helium.S`) that `#include` a C header **before** their architecture guard. The Arduino builder feeds them to the xtensa assembler, which dies with `Error: unknown opcode or format name 'typedef'` on `stdint.h`. Fix (re-apply after any LVGL reinstall — these live in the library, not the repo):
+wrap each file's `#include` (and the NEON body) in `#if defined(__ARM_NEON)` / `#if defined(__ARM_FEATURE_MVE)` so non-ARM targets preprocess them to nothing.
+
+### GT911 touch startup quirk
+On most boots the GT911 isn't ready when first probed: log shows `GT911 no ACK` ×5 → `Controller stuck - attempting recovery` → `Reset attempt 1/3` → `GT911 verified`. It self-heals (touch works) but adds ~3 s and log noise. Low priority; a longer pre-init delay would smooth it.
+
+### Internal-RAM budget (current)
+After the PSRAM pool move + 2×48 KB draw buffers + 800×10 bounce buffer: ~95 KB internal free at LVGL init, ~46 KB free at runtime. Healthy, but internal RAM is the tightest resource — watch it if adding features.
 
 ---
 
@@ -863,6 +920,9 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 12. **PX3 absolute max supply is 5.25 V (datasheet), not 18 V.** Earlier CLAUDE.md said "~18V" — that was wrong and contributed to the June 2026 sensor death. The PX3 ASIC is regulated at ~5 V internally; sustained supply above 5.25 V damages the output stage permanently. Symptom of overvoltage damage: signal pin sits near rail (~4 V) at rest, ignores pressure changes, even after correct supply is restored.
 13. **Dead-sensor signature (post over-voltage):** Signal pin rails high (~3.5–4.5 V) at atmospheric pressure on a correct 5 V supply, with **no measurable response to applied pressure**. The diaphragm may still be mechanically fine, but the signal-conditioning ASIC is cooked. There is no field repair — replace the sensor. Order from Newark, Digi-Key, or Mouser; avoid eBay/Amazon for this part.
 14. **The PDF `PX3AN2BH150PSAAX_ESP32_3V3_Interface_Breakdown.pdf` describes the OLD design** (PX3 → 10kΩ/22kΩ divider → ESP32 GPIO 3.3V ADC directly). The current architecture uses a Waveshare Modbus module in Mode 0 (0-10V), so the divider was redundant and was removed in v5.9. Refer to the PX3 wiring diagram in this CLAUDE.md (not the PDF) for the active design.
+15. **`CAN_MUX_TO_CAN` debug flag (in `initIOExtension`) — currently `0` (CAN OFF).** It was set to 0 during the v6.0 LVGL/display bring-up to keep the native USB port alive and isolate the display work. While 0, OBD logs `CAN active, no ECU response` / `TX error 0x107` no matter what — that's expected, not a fault. **Set it to `1` to actually drive EXIO5 and enable OBD CAN.**
+16. **LVGL v9 has its own set of traps** — wrong library version, v8 `lv_conf.h`, the `sizeof(lv_color_t)`=3 buffer trap (black screen), internal-RAM exhaustion (breaks touch/WiFi/SD), the `.S` assembler errors, and the `useBigEndian`/bounce-buffer constructor args (inverted colors / tearing). All are documented in the **"LVGL v9 / Display Stack"** section above. If the display, touch, or memory misbehaves after a library change, start there.
+17. **Modbus dropping out when the car key cycles is NOT a fault.** The electric box is powered from an ignition-switched wire, so it loses power with the car. Repeated `[MODBUS] Read failed` / `Communication LOST` after a key-off is expected; it recovers on the next power-up.
 
 ---
 
@@ -870,7 +930,7 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 
 | Version | Key Changes |
 |---------|-------------|
-| v6.0 | **OBD CAN fixed.** Drive CH422G EXIO5 (`EXIO_CAN_SEL`) HIGH to route the FSUSB42UMX mux to the TJA1051T (GPIO19/20 are shared with native USB); un-swapped CAN pins (now TX=GPIO20, RX=GPIO19). See `obd_can_wiring.md` |
+| v6.0 | **OBD CAN fix + LVGL v9 migration / display stabilization.** CAN: drive CH422G EXIO5 (`EXIO_CAN_SEL`) HIGH to route the FSUSB42UMX mux to the TJA1051T (GPIO19/20 shared with native USB); un-swapped CAN pins (now TX=GPIO20, RX=GPIO19) — see `obd_can_wiring.md`. (CAN currently gated off via `CAN_MUX_TO_CAN 0` debug flag — gotcha #15.) Display: migrated to LVGL 9.1.0 — fixed `lv_conf.h` (v9 template, PSRAM heap pool, fonts, color depth), fixed the `sizeof(lv_color_t)` draw-buffer trap, patched LVGL's ARM `.S` files for xtensa, restored `useBigEndian` + added bounce buffer (colors + tearing). Full detail in "LVGL v9 / Display Stack". Build: `USB CDC On Boot` Disabled; flash/monitor over the UART port. |
 | v5.9 | Removed PX3 voltage divider — direct wiring to Waveshare AI1 (Mode 0 handles 0.5-4.5V natively); `PRESSURE_DIVIDER_RATIO` is now 1.0 |
 | v5.8 | LIS3DH accelerometer (G-sensor) via I2C, logs X/Y/Z to CSV, toast monitor extended |
 | v5.7 | OBD-II via CAN bus (TWAI) using onboard TJA1051T, Fuel Trust calculation, RPM/ECT via PIDs |

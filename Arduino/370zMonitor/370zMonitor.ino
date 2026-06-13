@@ -1907,11 +1907,13 @@ Arduino_ESP32RGBPanel* rgbpanel = new Arduino_ESP32RGBPanel(
     13,  // vsync_front_porch (Waveshare recommended)
     3,   // vsync_pulse_width (Waveshare recommended)
     32,  // vsync_back_porch (Waveshare recommended)
-    1,   // pclk_active_neg
-    14000000,  // pixel clock
-    true,      // auto_flush
-    0,   // de_idle_high
-    0    // pclk_idle_high
+    1,          // pclk_active_neg
+    14000000,   // prefer_speed (pixel clock)
+    true,       // useBigEndian — RGB565 byte order. MUST be true on this panel or colors invert.
+                //   (This is the arg the old sketch's mislabeled 'auto_flush' true was actually setting.)
+    0,          // de_idle_high
+    0,          // pclk_idle_high
+    (800 * 10)  // bounce_buffer_size_px: decouples LCD DMA from PSRAM reads (helps flicker; not VSYNC tearing)
 );
 Arduino_RGB_Display* gfx = new Arduino_RGB_Display(800, 480, rgbpanel, 0, true);
 

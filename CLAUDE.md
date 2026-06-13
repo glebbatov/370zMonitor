@@ -4,7 +4,7 @@
 
 **370zMonitor** is a track car data logging and display system for a 2018 Nissan 370Z. It uses an ESP32-S3 microcontroller with a 7" touchscreen to display real-time sensor data during track days.
 
-- **Current Version:** v5.9
+- **Current Version:** v6.0
 - **Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (800x480) with onboard TJA1051T CAN transceiver and SP3485 RS485 transceiver
 - **Hardware:** Waveshare Industrial 8-Ch Analog Acquisition Module (Model B, 0-10V / 0-20mA / 4-20mA selectable)
 - **Hardware:** Crowtail I2C Hub 2.0 (for multiple I2C devices)
@@ -84,8 +84,8 @@
 | SD CS | IO Expander bit 4 (`EXIO_SD_CS`) — no native GPIO |
 | RS485 TX | 16 (Serial1, to SP3485 DI) |
 | RS485 RX | 15 (Serial1, from SP3485 RO) |
-| CAN TX | 19 (to onboard TJA1051T TXD) |
-| CAN RX | 20 (from onboard TJA1051T RXD) |
+| CAN TX | 20 (CANTX, to onboard TJA1051T TXD) — shared w/ native USB via EXIO5 mux |
+| CAN RX | 19 (CANRX, from onboard TJA1051T RXD) — shared w/ native USB via EXIO5 mux |
 | BOOT Button | 0 (`USB_MSC_BOOT_PIN`) |
 
 **GPIO Conflicts to Avoid:**
@@ -403,16 +403,18 @@ The system reads live data from the vehicle ECU over the OBD-II port using the E
 ### Hardware Wiring
 | Board | OBD-II Port |
 |-------|-------------|
-| J6 Pin 1 (CANL) | OBD-II Pin 14 |
-| J6 Pin 2 (CANH) | OBD-II Pin 6 |
-| Any board GND | OBD-II Pin 4 or 5 (signal ground) |
+| CAN terminal CANL | OBD-II Pin 14 (pigtail Brown/White) |
+| CAN terminal CANH | OBD-II Pin 6 (pigtail Green) |
+| Any board GND | OBD-II Pin 4 + 5 (pigtail Orange + Yellow, signal/chassis ground) |
 
-No termination resistor needed — the car's ECU provides termination.
+**Remove the board's onboard 120Ω CAN termination jumper.** The car's CAN-C bus is already terminated at both ends (2×120Ω = 60Ω). Leaving the board terminator in makes it 40Ω, out of spec. See `obd_can_wiring.md` for the full harness + bring-up guide.
+
+**EXIO5 mux gotcha:** GPIO19/20 are shared between native USB and the TJA1051T via an FSUSB42UMX mux selected by CH422G EXIO5 (`EXIO_CAN_SEL`). It must be driven HIGH (done in `initIOExtension()`) or CAN is electrically disconnected. This disables native USB / USB-MSC while CAN is active; flash & serial use the separate UART USB-C port.
 
 ### Configuration
 ```cpp
-#define CAN_TX_PIN  GPIO_NUM_19     // to TJA1051T TXD
-#define CAN_RX_PIN  GPIO_NUM_20     // from TJA1051T RXD
+#define CAN_TX_PIN  GPIO_NUM_20     // CANTX -> TJA1051T TXD (per Waveshare pinout)
+#define CAN_RX_PIN  GPIO_NUM_19     // CANRX <- TJA1051T RXD
 // Bit rate: 500 kbit/s (OBD-II standard)
 // Addressing: ISO 15765-4 11-bit CAN
 //   Functional request: 0x7DF
@@ -854,7 +856,7 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 5. **Demo Mode:** Persists across reboots only via the `g_demo_mode` global (defaults to LIVE on every boot); 5-second hold on utility box toggles
 6. **Touch task pinned to Core 1, not Core 0:** Historical CLAUDE.md docs said Core 0, but the code now pins `touchTask` to Core 1 to avoid I2C contention with RTC/SD operations on Core 0
 7. **PRTXI wiring is confirmed correct as documented** (Pin 1 = V+, Pin 2 = Signal). Do NOT flip these in docs even though some PRTXI datasheets diagram them differently.
-8. **CAN pins are GPIO19/20, not 17/18:** Some inline comments in the .ino header still reference the older "GPIO17/18" plan from before the onboard TJA1051T transceiver was used. The active configuration is GPIO19/20.
+8. **CAN pins: GPIO20=CANTX, GPIO19=CANRX (do not swap), and they are MUXED with native USB.** Two things bit the June 2026 install and produced *zero* CAN data: (a) CH422G **EXIO5 (`EXIO_CAN_SEL`) was never driven HIGH**, so the FSUSB42UMX mux left GPIO19/20 on the native-USB port and the TJA1051T was disconnected from the MCU; (b) **TX/RX were swapped** in firmware (had TX=19/RX=20). Fixed in v6.0. Per Waveshare: GPIO20=CANTX, GPIO19=CANRX. Setting CAN mode disables native USB (USB-MSC can't run with CAN active) — use the separate UART USB-C port for flash/serial. Ignore any older "GPIO17/18" comments.
 9. **PX3 oil pressure sensor is 3-wire, not 2-wire:** It outputs ratiometric 0.5–4.5V on a separate Signal pin. Running only 2 conductors (V+/GND) leaves the AI1 input floating and produces a pegged 150 PSI reading. This bit the install in June 2026 — 8 months of bench testing showed 0 PSI because both bench grounds were at the same potential and signal floated low; on the car the floating input read near rail.
 10. **PX3 wire colors (this connector): red=V+, black=GND, yellow=Signal.** Confirmed 2026-06-11 by bench test. The Metri-Pack 150 on this unit has no "A" cast/stamp on the body — colors are the only field key. Always cross-check with the resistance fingerprint (red↔others = MΩ, black↔yellow = ~49 kΩ) before applying power.
 11. **JTAREA-branded LM2596 modules ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) are unsafe — do not use.** The unit installed in 2026 had a broken feedback path and passed 8.5 V (near its 24 V input) straight through under no load, cooking the original PX3 sensor at 62 % over its 5.25 V absolute max. A working LM2596 should regulate independent of load — if it doesn't, the chip has no feedback. Use fixed-output industrial parts (Recom R-78E5.0-1.0, Murata OKI-78SR, Pololu D24V5F5) instead of any adjustable Amazon-resold LM2596. See [Buck Converter & Supply Notes](#buck-converter--supply-notes).
@@ -868,6 +870,7 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 
 | Version | Key Changes |
 |---------|-------------|
+| v6.0 | **OBD CAN fixed.** Drive CH422G EXIO5 (`EXIO_CAN_SEL`) HIGH to route the FSUSB42UMX mux to the TJA1051T (GPIO19/20 are shared with native USB); un-swapped CAN pins (now TX=GPIO20, RX=GPIO19). See `obd_can_wiring.md` |
 | v5.9 | Removed PX3 voltage divider — direct wiring to Waveshare AI1 (Mode 0 handles 0.5-4.5V natively); `PRESSURE_DIVIDER_RATIO` is now 1.0 |
 | v5.8 | LIS3DH accelerometer (G-sensor) via I2C, logs X/Y/Z to CSV, toast monitor extended |
 | v5.7 | OBD-II via CAN bus (TWAI) using onboard TJA1051T, Fuel Trust calculation, RPM/ECT via PIDs |

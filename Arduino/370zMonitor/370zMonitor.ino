@@ -1,9 +1,20 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v5.9
+ * 370zMonitor v6.0
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v6.0 Changes (OBD CAN finally works):
+ * - FIXED: EXIO_CAN_SEL (CH422G EXIO5) now driven HIGH in initIOExtension().
+ *   On this board GPIO19/20 are shared between native USB and the TJA1051T CAN
+ *   transceiver via an FSUSB42UMX mux; EXIO5 selects which. It was never set,
+ *   so the transceiver was disconnected from the MCU and CAN produced no data.
+ * - FIXED: CAN TX/RX pins were swapped. Waveshare routes GPIO20=CANTX, GPIO19=CANRX;
+ *   firmware had them reversed. Now CAN_TX_PIN=GPIO20, CAN_RX_PIN=GPIO19.
+ * - NOTE: CAN mode disables native USB (USB-MSC cannot run while CAN is active).
+ *   Flash/serial use the separate UART USB-C port.
+ * - See obd_can_wiring.md for harness colors, termination jumper, and bring-up.
  *
  * v5.9 Changes:
  * - REMOVED: 10kΩ/22kΩ voltage divider on PX3AN2BH150PSAAX oil pressure signal
@@ -1654,6 +1665,9 @@ bool isAccelerometerConnected() {
 #define EXIO_TP_RST   1
 #define EXIO_DISP     2
 #define EXIO_SD_CS    4
+#define EXIO_CAN_SEL  5   // FSUSB42UMX USB mux select: HIGH = CAN mode (GPIO19/20 -> TJA1051T),
+                          //                            LOW  = USB mode (GPIO19/20 -> native USB D-/D+).
+                          // Must be HIGH for OBD CAN to work. NOTE: disables native USB (incl. USB-MSC) while set.
 #define TOUCH_INT_PIN 4
 
 static uint8_t g_exio_state = 0;
@@ -1904,7 +1918,9 @@ Arduino_RGB_Display* gfx = new Arduino_RGB_Display(800, 480, rgbpanel, 0, true);
 //-----------------------------------------------------------------
 
 // LVGL
-#define LVGL_BUFFER_SIZE (800 * 30)  // 30 lines in internal DMA RAM (~48KB per buffer) - prevents PSRAM contention/tearing
+#define LVGL_BUFFER_SIZE (800 * 30)  // 30 lines, double-buffered in internal DMA RAM (~48KB each @ RGB565).
+                                     // Restored to original size after moving LVGL's heap pool to PSRAM (lv_conf.h)
+                                     // freed internal RAM. Larger buffer = fewer partial flushes = less tearing.
 static lv_display_t* disp;
 static lv_indev_t* indev;
 static uint8_t* disp_draw_buf1;
@@ -2707,23 +2723,26 @@ void updateSensorData() {
 // CAN BUS CONFIGURATION (Waveshare ESP32-S3-Touch-LCD-7)
 //-----------------------------------------------------------------------------
 // The Waveshare board has an ONBOARD TJA1051T CAN transceiver (U7).
-// No external transceiver needed!
+// No external transceiver needed — but GPIO19/20 are SHARED with native USB
+// through an FSUSB42UMX mux selected by CH422G EXIO5 (see EXIO_CAN_SEL).
+// EXIO_CAN_SEL must be driven HIGH (done in initIOExtension) or CAN is dead.
 //
-// DIRECTLY ACTIVE CONNECTIONS (active at boot):
-//   GPIO19 (CANTX) -> TJA1051T TXD (directly routed on PCB)
-//   GPIO20 (CANRX) -> TJA1051T RXD (directly routed on PCB)
-//   TJA1051T CANH/CANL -> J6 connector (directly accessible on PCB)
+// PER WAVESHARE PINOUT (do not swap):
+//   GPIO20 (CANTX) -> TJA1051T TXD   (ESP32 transmit)
+//   GPIO19 (CANRX) <- TJA1051T RXD   (ESP32 receive)
+//   TJA1051T CANH/CANL -> CAN PH2.0 terminal (J6)
 //
-// WIRING TO OBD-II PORT (directly to J6 on PCB):
-//   J6 Pin 1 (CANL) -> OBD-II Pin 14
-//   J6 Pin 2 (CANH) -> OBD-II Pin 6
-//   GND (any board GND) -> OBD-II Pin 4 or 5 (signal ground reference)
+// WIRING TO OBD-II PORT (370Z CAN-C, 500 kbps):
+//   CANH -> OBD-II Pin 6   (pigtail Green)
+//   CANL -> OBD-II Pin 14  (pigtail Brown/White)
+//   GND  -> OBD-II Pin 4 + 5 (pigtail Orange + Yellow)
 //
-// NOTE: No termination resistor needed - car's ECU provides termination.
+// TERMINATION: remove the board's onboard 120R jumper. The car's bus is already
+// terminated (2x120R = 60R); the board terminator would make it 40R (out of spec).
 //-----------------------------------------------------------------------------
 
-#define CAN_TX_PIN  GPIO_NUM_19     // ESP32 TX to onboard TJA1051T transceiver
-#define CAN_RX_PIN  GPIO_NUM_20     // ESP32 RX from onboard TJA1051T transceiver
+#define CAN_TX_PIN  GPIO_NUM_20     // ESP32 CANTX -> onboard TJA1051T TXD (per Waveshare pinout)
+#define CAN_RX_PIN  GPIO_NUM_19     // ESP32 CANRX <- onboard TJA1051T RXD
 
 // OBD-II addressing (ISO 15765-4, 11-bit CAN)
 #define OBD_FUNCTIONAL_REQ_ID  0x7DF    // Broadcast request address
@@ -6456,7 +6475,17 @@ bool initIOExtension() {
     delay(10);
     if (!ch422_write_system(0x11)) return false;
     delay(10);
-    g_exio_state = (1u << EXIO_TP_RST) | (1u << EXIO_SD_CS);
+    // EXIO_CAN_SEL HIGH routes the FSUSB42UMX mux to the onboard TJA1051T CAN transceiver.
+    // Setting it HIGH disconnects the NATIVE USB port (GPIO19/20).
+    // *** TEMPORARILY DISABLED for bring-up/debug *** — leave mux in USB mode so the
+    // native USB port stays alive and CAN is removed from the equation. To re-enable CAN,
+    // change CAN_MUX_TO_CAN to 1.
+    #define CAN_MUX_TO_CAN 0
+#if CAN_MUX_TO_CAN
+    g_exio_state = (1u << EXIO_TP_RST) | (1u << EXIO_SD_CS) | (1u << EXIO_CAN_SEL);
+#else
+    g_exio_state = (1u << EXIO_TP_RST) | (1u << EXIO_SD_CS);   // USB mode (CAN off)
+#endif
     return ch422_write_io(g_exio_state);
 }
 
@@ -7988,7 +8017,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v5.8 - Dual-Core + G-Sensor");
+    Serial.println("   370zMonitor v6.0 - Dual-Core + G-Sensor");
     Serial.println("========================================");
 
     if (psramFound()) {
@@ -8064,7 +8093,10 @@ void setup() {
     Serial.println("[5/8] LVGL init...");
     lv_init();
 
-    size_t buf_bytes = LVGL_BUFFER_SIZE * sizeof(lv_color_t);
+    // LVGL v9: lv_color_t is RGB888 (3 bytes) regardless of LV_COLOR_DEPTH, but this
+    // display renders RGB565 (2 bytes/px). Size the DMA buffer by the render format,
+    // NOT sizeof(lv_color_t) — using sizeof here over-allocates 50% (the v9 black-screen bug).
+    size_t buf_bytes = LVGL_BUFFER_SIZE * 2;  // RGB565 = 2 bytes per pixel
 
     // CRITICAL: Allocate LVGL buffers in internal DMA-capable RAM, NOT PSRAM!
     // PSRAM allocation causes screen tearing/shift because both cores fight for

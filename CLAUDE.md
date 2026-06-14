@@ -4,12 +4,12 @@
 
 **370zMonitor** is a track car data logging and display system for a 2018 Nissan 370Z. It uses an ESP32-S3 microcontroller with a 7" touchscreen to display real-time sensor data during track days.
 
-- **Current Version:** v6.1
+- **Current Version:** v6.2
 - **Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (800x480) with onboard TJA1051T CAN transceiver and SP3485 RS485 transceiver
 - **Hardware:** Waveshare Industrial 8-Ch Analog Acquisition Module (Model B, 0-10V / 0-20mA / 4-20mA selectable)
 - **Hardware:** Crowtail I2C Hub 2.0 (for multiple I2C devices)
 - **Hardware:** HW-084 DS3231 RTC module (battery-backed real-time clock)
-- **Sensor:** Oil Pressure: PX3AN2BH150PSAAX (Channel 1 / AI1 on Waveshare, Mode 0 = 0-10V)
+- **Sensor:** Oil Pressure: P51-150-G-B-P-20MA-000-000 (Channel 1 / AI1, Mode 3 = 4-20mA loop) — replaced the PX3 voltage sensor in v6.2
 - **Sensor:** Oil Temperature: PRTXI-1/2N-1/4-4-IO RTD transmitter (Channel 2 / AI2, Mode 3 = 4-20mA)
 - **Sensor:** Trans Temperature: PRTXI RTD transmitter (Channel 3 / AI3, Mode 3 = 4-20mA)
 - **Sensor:** Power Steering Temperature: PRTXI RTD transmitter (Channel 4 / AI4, Mode 3 = 4-20mA)
@@ -241,119 +241,104 @@ Transparent `Print` wrapper that mirrors all `Serial.print()` output to the per-
 ### Channel Mapping (5 channels active as of v5.4)
 | Channel | Sensor | Signal | Waveshare Mode |
 |---------|--------|--------|----------------|
-| 0 (AI1) | Oil Pressure (PX3AN2BH150PSAAX) | 0.5-4.5V direct (no divider, v5.9+) | Mode 0 (0-10V) |
+| 0 (AI1) | Oil Pressure (P51-150-G-B-P-20MA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
 | 1 (AI2) | Oil Temperature (PRTXI 4-20mA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
 | 2 (AI3) | Transmission Temperature (PRTXI 4-20mA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
 | 3 (AI4) | Power Steering Temperature (PRTXI 4-20mA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
 | 4 (AI5) | Differential Temperature (PRTXI 4-20mA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
 | 5-7 | Reserved for future sensors | - | - |
 
-Channel mode is written at startup via Modbus Function 0x06 to holding registers `0x1000` (CH1) through `0x1004` (CH5). The PRTXI channels are auto-configured to Mode 3 on each boot in `initModbusSensors()`.
+Channel mode is written at startup via Modbus Function 0x06 to holding registers `0x1000` (CH1) through `0x1004` (CH5). **As of v6.2 all five channels (CH1-CH5) are 4-20mA loops, so every channel is auto-configured to Mode 3 on each boot** in `initModbusSensors()`. (CH1 was Mode 0 / 0-10V during the PX3 voltage era, through v6.1.)
 
 ### Pressure Sensor Calibration (CH1)
 ```cpp
-// PX3AN2BH150PSAAX: 0.5V-4.5V for 0-150 PSI
-// v5.9: Direct wiring, no voltage divider. Sensor signal connects straight
-// to Waveshare AI1 in Mode 0 (0-10V), which natively handles 0.5-4.5V.
+// P51-150-G-B-P-20MA-000-000: 4-20mA loop output, 0-150 PSI gauge.
+// v6.2: Replaced the PX3 (0.5-4.5V) with the P51 4-20mA current-loop sensor.
+// Waveshare CH1 is now Mode 3 (4-20mA) like CH2-CH5, so the module returns
+// microamps (uA) directly. Loop-powered off the 24V rail - no buck, no divider.
+//   4000  uA (4mA)  = 0 PSI
+//   20000 uA (20mA) = 150 PSI
 // Effective formula in convertToPSI():
-//   PSI = (raw_mV - 500) * 0.0375          (DIVIDER_RATIO is now 1.0)
-// Clamped to [0, 150]
-#define PRESSURE_DIVIDER_RATIO 1.0f       // No divider (v5.9+)
-#define PRESSURE_OFFSET_MV     500.0f
-#define PRESSURE_SCALE         0.0375f
+//   PSI = ((uA - 4000) / 16000) * 150        // clamped to [0, 150]
+#define PRESSURE_MIN_CURRENT_UA   4000     // 4mA = 0 PSI
+#define PRESSURE_CURRENT_SPAN_UA  16000    // 20mA - 4mA span
+#define PRESSURE_FS_PSI           150.0f   // full-scale at 20mA
+// Disconnect: CH1 uses PRTXI_MIN_VALID_UA (<3mA = open loop), same as CH2-CH5.
 ```
 
-### Wiring Diagram (PX3 oil pressure — v5.9+ direct, no divider)
+### Wiring Diagram (P51 oil pressure — 4-20mA loop, v6.2+)
 
-**Sensor: 3-wire ratiometric voltage output. Red = +5V (Pin A), Black = GND (Pin B), Yellow = Signal (Pin C).**
+**2-wire 4-20mA current loop, loop-powered. Function is fixed by connector PIN, not wire color: Pin 1 = Vin (8-30V), Pin 2 = NC (unused on the 4-20mA variant), Pin 3 = loop return.**
 
 ```
-                ┌──────────────────────────────────┐
-                │   Fixed 5V regulator             │
-                │   (Recom R-78E5.0-1.0 or equiv;  │
-   24V rail ───▶│   NOT a JTAREA LM2596 — see #11) │
-   GND      ───▶│   IN+              OUT+ ─────────┼──▶ +5.00V regulated rail
-                │   IN−              OUT− ─────────┼──▶ Common GND
-                └──────────────────────────────────┘
+   +24V rail --[fuse]--+-----------------> P51 Pin 1 (Vin, 8-30V)
+                       |                         |
+                  1.5KE36A TVS            (sensor regulates 4-20mA)
+                  band(cathode) -> +24V          |
+                       |                   P51 Pin 3 (loop return)
+                       |                         |
+                       |                         v
+                       |                   Waveshare AI1+
+                       |                         |  (internal sense resistor)
+                       |                   Waveshare AI1-
+                       |                         |
+   GND (24V-) ---------+-------------------------+
 
-   +5V rail ─────────────────────▶ PX3 Red    (V+,     Pin A)
-   Common GND ───────────────────▶ PX3 Black  (GND,    Pin B)
-   PX3 Yellow (Signal, Pin C) ───▶ Waveshare AI1+
-   Common GND ───────────────────▶ Waveshare AI1−
-
-   Supply decoupling near sensor: 10 µF + 0.1 µF across +5V/GND
-   (short leads, close to the PX3 supply branch)
+   P51 Pin 2 = NC  ->  cut back, cap, heat-shrink
 ```
 
-**Confirmed PX3 wire colors (validated 2026-06-11 with multimeter and HANGELL bench supply):**
-- **Red = V+** (Metri-Pack 150 Pin A)
-- **Black = GND** (Pin B)
-- **Yellow = Signal/Output** (Pin C)
+**Wire colors on this unit: red / black / yellow.** (The SSI datasheet's generic table lists Pin 3 as *white*; this harness has *yellow* there.) Most likely mapping:
 
-The Metri-Pack connector on this particular PX3 has **no "A" stamp/cast** on the body — colors are the only practical key in the field. Verify electrically anyway (see resistance fingerprint below).
+- **Red -> +24V** (Pin 1, Vin)
+- **Yellow -> Waveshare AI1+** (Pin 3, loop return)
+- **Black -> UNUSED** (Pin 2, NC) — cap it. On the old PX3 black was GND and used; on the P51 it is **not connected**.
+- **Waveshare AI1- -> GND (24V-)**
 
-**Critical wiring rules:**
-- Must run **3 conductors** end-to-end (V+, GND, Signal) — sensor will not function with 2 wires. The sensor body does NOT reliably ground through its 1/8-27 NPT thread; do not assume chassis grounding.
-- **Supply must be 4.75 V–5.25 V (5.0 V nominal). 5.25 V is absolute max** per Honeywell datasheet — exceeding it damages the internal ASIC, typically rails the output high regardless of pressure. The June 2026 install cooked one sensor at 8.5 V from a broken JTAREA LM2596 module (see gotcha #11). **Verify supply with a multimeter, under load, before plugging the sensor in. Every time.**
-- Shielded 3-conductor cable preferred for the engine-bay run; tie shield to GND **at the box end only**.
-- **Verify connector pinout with a multimeter before powering.** Do not trust wire colors blindly. Resistance fingerprint of a healthy unpowered PX3 (2026-06-11 measurements):
-  - V+ to GND (red↔black): **2–5 MΩ** (drifts as meter charges internal cap — normal)
-  - V+ to Signal (red↔yellow): **2–5 MΩ** (same)
-  - GND to Signal (black↔yellow): **~49 kΩ stable** (internal discharge path through output stage)
+Versus the old PX3 harness, only two things change: Red now feeds from the 24V rail (not a 5V buck output), and **Black goes from GND to disconnected**. Yellow->AI1+ and AI1- ->GND are unchanged.
 
-  The asymmetry — two high-MΩ readings and one stable ~49 kΩ — uniquely identifies V+ as the wire that reads MΩ against both others. The 49 kΩ pair is GND/Signal in some order; powering up at 5 V and looking for 0.50 V on one of them distinguishes which is which (Signal = 0.50 V, GND = bench ground reference).
+**Verify before power (this connector has no pin-number stamp — colors are the only field key):**
+- Unplugged, ohm each wire pair. On the 4-20mA variant the **NC pin (Pin 2 / black) reads OPEN to both others** — that uniquely identifies the unused wire. (Contrast the PX3, where black-to-yellow read ~49 kΩ; if black now reads open you've confirmed the 2-wire loop.)
+- The other two wires are Vin and return. Confirm which is Vin by bench-powering at **12V** (within the P51's +/-16V / 5-min reverse tolerance, so a wrong guess for a few seconds won't hurt) with a meter in mA series: ~4 mA at atmosphere = correct, that wire is Vin.
+- Shielded 2-conductor cable for the engine-bay run; shield to GND at the box end only.
 
-### Pressure Sensor Install Status (as of 2026-06-11)
+### Pressure Sensor Install Status (as of 2026-06-14)
 
-**Current state (sensor dead, replacement on order):**
+**Current state:** PX3 replaced by the **P51 4-20mA** sensor (ordered + received). Firmware updated to v6.2 (CH1 -> Mode 3, current-based `convertToPSI()`). Not yet flashed / bench-confirmed on the car.
 
-Root cause confirmed: the JTAREA LM2596 buck module ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) had a broken feedback path and was passing 8.5 V (close to its 24 V input) straight through to the sensor — 62 % over the PX3's 5.25 V absolute max. The sensor's ASIC output stage was cooked. Bench test on 2026-06-11 with the HANGELL HPS-3010D supply at 5.00 V on red, GND on black, multimeter on yellow showed **4.06 V at rest** (should be 0.50 V) and **zero response to mouth-blown pressure** — classic dead-ASIC signature.
-
-Secondary issue: the original harness was 2-conductor (V+ and Signal only — GND missing), so even if the sensor had been healthy it couldn't have worked correctly on the car. The previously-installed "Frankenstein" inline resistors/divider in the harness have been removed.
+Why the PX3 died (historical): the JTAREA LM2596 buck module ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) had a broken feedback path and passed 8.5 V (near its 24 V input) straight to the sensor — 62 % over the PX3's 5.25 V absolute max — cooking its ASIC. The 4-20mA P51 removes this entire failure class: loop-powered off 24V, with no regulated-5V rail to fail.
 
 **Actions:**
-1. ✅ Confirmed sensor is dead via bench test (HANGELL @ 5.00 V, yellow rails at 4.06 V).
-2. ✅ Confirmed Honeywell wire color convention (red/black/yellow → V+/GND/Signal).
-3. ⏳ Order replacement PX3AN2BH150PSAAX (Newark, Digi-Key, or Mouser — ~$30–40, see distributor links in [Buck Converter & Supply Notes](#buck-converter--supply-notes) below).
-4. ⏳ Replace the JTAREA LM2596 with a known-good fixed 5 V regulator (see options below) — do not reuse the JTAREA module under any circumstances.
-5. ⏳ Add the missing GND conductor between the electric box and the sensor (use 3-conductor shielded cable end-to-end).
+1. ✅ Replaced PX3 with Amphenol SSI **P51-150-G-B-P-20MA-000-000** (150 PSI gauge, 4-20mA, 1/8" NPT, Packard / Metri-Pack 150).
+2. ✅ Dropped the buck converter entirely — P51 runs straight off the 24V rail (8-30V). The JTAREA LM2596 is out for good.
+3. ✅ Firmware v6.2: CH1 Mode 3; `convertToPSI()` = `((uA-4000)/16000)*150`; disconnect via `PRTXI_MIN_VALID_UA`.
+4. ⏳ Confirm wire->pin mapping (red/black/yellow; black / Pin 2 should read open — see wiring diagram).
+5. ⏳ Add 1.5KE36A TVS across the 24V rail (band -> +24V) for transient protection.
+6. ⏳ Bench-test, then install: read CH1 PSI directly off the ESP32.
 
-**Target state (after parts arrive):** Clean 3-conductor shielded harness sensor→box; reliable fixed-output 5.00 V regulator from the 24 V rail; no inline divider; firmware already on `PRESSURE_DIVIDER_RATIO = 1.0` (v5.9). Decoupling caps (10 µF + 0.1 µF) at the sensor V+ pin.
+**Bench / install sequence:**
+1. Wire the loop: 24V+ -> P51 Pin 1 (Red); P51 Pin 3 (Yellow) -> Waveshare AI1+; AI1- -> GND. Pin 2 (Black) capped.
+2. Any 8-30V supply works on the bench (loop current is supply-independent). No precise-5V check needed — that risk is gone.
+3. Flash v6.2 over the UART USB-C port (native USB is off while CAN is active). Serial @ 115200.
+4. On boot: `[MODBUS] CH1 (Oil Pressure) configured for 4-20mA (Mode 3)`. When the loop is alive: `[MODBUS] CH1: Sensor CONNECTED (~4000 uA)` — ~4000 uA at atmosphere is the zero check.
+5. The 1-second summary shows `Oil-Press:0PSI` at rest, climbing with applied pressure (bike pump). `DISCONNECTED (<3000 uA)` = open loop / wrong pins / no 24V.
+6. Reinstall in the oil-filter sandwich plate; start engine; watch for a smooth ~30-60 PSI at idle, climbing with RPM.
 
-**Install sequence when parts arrive:**
-1. Bench-test the new regulator standalone first: 24 V in, verify **5.00 V ± 0.05 V** at the output with a ~50–100 mA dummy load (e.g. 100 Ω resistor → ~50 mA). Confirm regulation holds under no-load too. If output drifts outside 4.9–5.1 V at any time, do not use it.
-2. Bench-test the new sensor before installing in the car: HANGELL supply at 5.00 V, red→V+, black→GND, **expect yellow = 500 mV ± 50 mV at atmospheric pressure**. Apply pressure (bike pump or even mouth pressure) and confirm voltage climbs. Resistance fingerprint should also match the values above (~49 kΩ black↔yellow, MΩ for the other pairs).
-3. Replace the 2-conductor harness from sensor location to the electric box with 3-conductor shielded cable. Shield to box-end GND only.
-4. Inside the box: regulator IN+ from 24 V rail (fused 1 A), regulator OUT+ to sensor V+ wire, regulator OUT- to common GND (tied to Waveshare AI1-). Sensor Signal wire to Waveshare AI1+.
-5. Add 10 µF (electrolytic) + 0.1 µF (ceramic) decoupling across V+/GND at the sensor end of the harness.
-6. Power-up bench check before screwing the sensor back into the sandwich plate: `[MODBUS]` CH1 raw should read **~500 mV** and display **0 PSI**.
-7. Reinstall sensor in oil filter sandwich plate, start engine, watch the `[MODBUS]` per-second log for smooth rise to ~30–60 PSI at idle, climbing with RPM.
+### Buck Converter & Supply Notes (historical — no longer used)
 
-### Buck Converter & Supply Notes
+**The P51 4-20mA sensor needs no buck converter** — it is loop-powered directly off the 24V rail (8-30V). The buck converter is gone from the oil-pressure circuit; this section is retained only as a caution.
 
-**Do not reuse the JTAREA LM2596 module.** Its feedback path is broken — outputs nearly the full input voltage under no-load and almost certainly under load too. This is what killed the original sensor. Common failure mode for cloned LM2596 modules sold on Amazon under unfamiliar brand names.
+**Do not reuse the JTAREA LM2596 module ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)).** Its feedback path is broken — it passed ~8.5 V straight through and cooked the original PX3. A common failure mode for cloned LM2596 modules sold under unfamiliar Amazon brand names. If any *future* circuit needs regulated 5V, use a fixed-output industrial part (Recom R-78E5.0-1.0, Murata OKI-78SR-5, or Pololu D24V5F5) — never an adjustable Amazon-resold LM2596. Matches the "industrial / enclosed parts from reputable brands" preference (memory `component-preferences.md`).
 
-**Replacement options (all fixed 5 V output, drop-in 3-pin SIP, no trim pot):**
+### Expected Validation Readings (P51, 4-20mA, v6.2)
 
-| Part | Input range | Output | Price | Best for |
-|------|-------------|--------|-------|----------|
-| [Recom R-78E5.0-1.0](https://www.digikey.com/en/products/detail/recom-power/R-78E5-0-1-0/4930585) | 8–28 V | 5 V @ 1 A | ~$7 | Industrial-grade, 3-yr warranty — best choice for automotive |
-| [Murata OKI-78SR-5/1.5-W36-C](https://www.digikey.com/en/products/detail/murata-power-solutions-inc/OKI-78SR-5-1.5-W36-C/811-2196-5-ND/2259781) | 7–36 V | 5 V @ 1.5 A | ~$8 | Wider input range, more headroom over 24 V nominal |
-| [Pololu D24V5F5](https://www.pololu.com/product/2843) | 5.1–36 V | 5 V @ 500 mA | ~$6 | Hobbyist favorite, board-mount; 500 mA is plenty for 3.5 mA PX3 load |
-
-All three are switching topology (low heat), TO-220-compatible 3-pin form factor, fixed output (no trim — nothing to drift), and from reputable manufacturers (not Amazon-resold knock-offs). The PX3 draws ~3.5 mA, so any of these is massively over-specced — pick on input range and form factor.
-
-**Recommendation:** Recom R-78E5.0-1.0 — industrial, used in EU automotive aftermarket gear, fits 7805 footprint, 3-year warranty. Per memory `component-preferences.md`, this matches the "industrial/enclosed parts from reputable brands" preference.
-
-### Expected Validation Readings (PX3, v5.9 direct wiring)
-
-| Condition | PX3 Signal pin | Waveshare AI1 (raw mV via Modbus) | Firmware shows |
-|-----------|---------------|------------------------------------|----------------|
-| Engine off, 0 psi, 5.00V supply | ~0.50V | ~500 mV | 0 PSI |
-| Engine cold idle (typical) | ~1.0–1.5V | ~1000–1500 mV | ~19–38 PSI |
-| Full scale, 150 psi | ~4.50V | ~4500 mV | 150 PSI |
-| Pegged at 150 with engine off | sensor signal > 4.5V or supply wrong | > 4500 mV | 150 PSI (clamped) — sensor damaged or wiring fault |
-| Stuck near 0 with engine running | signal floating / disconnected | < 100 mV | "---" (sensor offline per `SENSOR_MIN_VALID_MV`) |
+| Condition | P51 loop current | Waveshare AI1 (raw uA via Modbus) | Firmware shows |
+|-----------|------------------|------------------------------------|----------------|
+| Engine off, 0 psi | 4.0 mA | ~4000 uA | 0 PSI |
+| Engine cold idle (~30 psi) | ~7.2 mA | ~7200 uA | ~30 PSI |
+| ~60 psi | ~10.4 mA | ~10400 uA | ~60 PSI |
+| Full scale, 150 psi | 20.0 mA | ~20000 uA | 150 PSI |
+| Open loop / sensor offline | <3 mA | <3000 uA | "---" (offline per `PRTXI_MIN_VALID_UA`) |
+| Pegged at 150, engine off | >20 mA | >20000 uA | 150 PSI (clamped) — overpressure or wiring fault |
 
 ### Temperature Sensor Calibration (CH2-CH5)
 ```cpp
@@ -387,7 +372,7 @@ PRTXI Pins 3,4: Not used (IO-Link mode only)
 ### Error Handling
 - `MODBUS_RETRY_COUNT = 2` retries on each failed read
 - `MODBUS_ERROR_THRESHOLD = 3` consecutive errors mark every channel invalid
-- CH1: `mV < SENSOR_MIN_VALID_MV (100)` => pressure sensor disconnected
+- CH1: `µA < PRTXI_MIN_VALID_UA (3000)` => P51 pressure loop disconnected (4-20mA as of v6.2; was mV-based in the PX3 era)
 - CH2-CH5: `µA < PRTXI_MIN_VALID_UA (3000)` => RTD transmitter disconnected
 - UI shows "---" when invalid; lightweight bars and tap panels reset to default
 
@@ -914,12 +899,12 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 6. **Touch task pinned to Core 1, not Core 0:** Historical CLAUDE.md docs said Core 0, but the code now pins `touchTask` to Core 1 to avoid I2C contention with RTC/SD operations on Core 0
 7. **PRTXI wiring is confirmed correct as documented** (Pin 1 = V+, Pin 2 = Signal). Do NOT flip these in docs even though some PRTXI datasheets diagram them differently.
 8. **CAN pins: GPIO20=CANTX, GPIO19=CANRX (do not swap), and they are MUXED with native USB.** Two things bit the June 2026 install and produced *zero* CAN data: (a) CH422G **EXIO5 (`EXIO_CAN_SEL`) was never driven HIGH**, so the FSUSB42UMX mux left GPIO19/20 on the native-USB port and the TJA1051T was disconnected from the MCU; (b) **TX/RX were swapped** in firmware (had TX=19/RX=20). Fixed in v6.0. Per Waveshare: GPIO20=CANTX, GPIO19=CANRX. Setting CAN mode disables native USB (USB-MSC can't run with CAN active) — use the separate UART USB-C port for flash/serial. Ignore any older "GPIO17/18" comments.
-9. **PX3 oil pressure sensor is 3-wire, not 2-wire:** It outputs ratiometric 0.5–4.5V on a separate Signal pin. Running only 2 conductors (V+/GND) leaves the AI1 input floating and produces a pegged 150 PSI reading. This bit the install in June 2026 — 8 months of bench testing showed 0 PSI because both bench grounds were at the same potential and signal floated low; on the car the floating input read near rail.
-10. **PX3 wire colors (this connector): red=V+, black=GND, yellow=Signal.** Confirmed 2026-06-11 by bench test. The Metri-Pack 150 on this unit has no "A" cast/stamp on the body — colors are the only field key. Always cross-check with the resistance fingerprint (red↔others = MΩ, black↔yellow = ~49 kΩ) before applying power.
-11. **JTAREA-branded LM2596 modules ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) are unsafe — do not use.** The unit installed in 2026 had a broken feedback path and passed 8.5 V (near its 24 V input) straight through under no load, cooking the original PX3 sensor at 62 % over its 5.25 V absolute max. A working LM2596 should regulate independent of load — if it doesn't, the chip has no feedback. Use fixed-output industrial parts (Recom R-78E5.0-1.0, Murata OKI-78SR, Pololu D24V5F5) instead of any adjustable Amazon-resold LM2596. See [Buck Converter & Supply Notes](#buck-converter--supply-notes).
-12. **PX3 absolute max supply is 5.25 V (datasheet), not 18 V.** Earlier CLAUDE.md said "~18V" — that was wrong and contributed to the June 2026 sensor death. The PX3 ASIC is regulated at ~5 V internally; sustained supply above 5.25 V damages the output stage permanently. Symptom of overvoltage damage: signal pin sits near rail (~4 V) at rest, ignores pressure changes, even after correct supply is restored.
-13. **Dead-sensor signature (post over-voltage):** Signal pin rails high (~3.5–4.5 V) at atmospheric pressure on a correct 5 V supply, with **no measurable response to applied pressure**. The diaphragm may still be mechanically fine, but the signal-conditioning ASIC is cooked. There is no field repair — replace the sensor. Order from Newark, Digi-Key, or Mouser; avoid eBay/Amazon for this part.
-14. **The PDF `PX3AN2BH150PSAAX_ESP32_3V3_Interface_Breakdown.pdf` describes the OLD design** (PX3 → 10kΩ/22kΩ divider → ESP32 GPIO 3.3V ADC directly). The current architecture uses a Waveshare Modbus module in Mode 0 (0-10V), so the divider was redundant and was removed in v5.9. Refer to the PX3 wiring diagram in this CLAUDE.md (not the PDF) for the active design.
+9. **Oil pressure is now a P51 4-20mA current loop (v6.2), not the old PX3 voltage sensor.** 2-wire, loop-powered off the 24V rail (8-30V); CH1 is Waveshare Mode 3 like the temp channels. No buck converter, no 5V rail, no divider — which removes the regulated-5V overvoltage failure mode that killed the PX3. Function is set by connector PIN: Pin 1 = Vin, Pin 2 = NC (unused), Pin 3 = loop return -> AI1+.
+10. **P51 wire colors on this unit: red / black / yellow** (the SSI datasheet's generic table shows Pin 3 = *white*; this harness has *yellow*). Most likely mapping: **Red = Pin 1 (Vin -> +24V), Black = Pin 2 (NC — UNUSED, cap it), Yellow = Pin 3 (return -> AI1+)**. Trap vs. the old PX3: black was GND-and-used; on the P51 it is **not connected**. Verify unplugged — the NC pin (black) reads **open** to both others (PX3 black-to-yellow read ~49 kΩ); then bench-power at 12V and look for ~4 mA to confirm which wire is Vin. Pending bench confirmation on this unit.
+11. **No buck converter in the oil-pressure circuit anymore.** The P51 is loop-powered off 24V directly. The JTAREA-branded LM2596 ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) that cooked the PX3 (broken feedback, passed ~8.5 V) is removed for good. If any *future* circuit needs regulated 5V, use a fixed-output industrial part (Recom R-78E5.0-1.0 / Murata OKI-78SR-5 / Pololu D24V5F5), never an adjustable Amazon-resold LM2596.
+12. **P51 supply range is 8-30V; the 24V rail is well within it.** Unlike the PX3 (5.25 V absolute max, easily exceeded), the P51 tolerates the raw rail, so there is no precise-supply check to get wrong. Add a **1.5KE36A TVS across the 24V rail** (band / cathode -> +24V) for load-dump / transient protection; one TVS on the rail covers the P51 and all four PRTXI loops.
+13. **P51 reverse-polarity tolerance is +/-16V for ~5 min (datasheet) — not unlimited.** A brief reversed bench hookup at <=16V won't kill it, but sustained reverse at 24V can. The rail TVS + fuse protect against a reversed *rail* (TVS forward-conducts, blows the fuse) but **not** against swapping the sensor's own two leads. Always confirm Red=Vin, Yellow=return before power.
+14. **The PDF `PX3AN2BH150PSAAX_ESP32_3V3_Interface_Breakdown.pdf` is obsolete** — it described the PX3 -> divider -> ESP32 ADC design. The active design is the P51 4-20mA loop into the Waveshare in Mode 3. Refer to the P51 wiring diagram in this CLAUDE.md, not that PDF.
 15. **`CAN_MUX_TO_CAN` flag (in `initIOExtension`) — now `1` (CAN ON) as of the 2026-06-14 OBD harness work.** It was temporarily `0` during the v6.0 LVGL/display bring-up (to keep native USB alive). It is now `1`, so EXIO5 is driven HIGH and the FSUSB42UMX mux connects GPIO19/20 to the onboard TJA1051T — OBD CAN is live. **Side effect: native USB / USB-MSC is disabled while CAN is active; flash and serial over the separate UART USB-C port.** Set back to `0` only if you specifically need native USB/USB-MSC and can live without CAN. If OBD still logs `CAN active, no ECU response` with the flag at `1`, it's wiring/car-side (see `obd_can_wiring.md`), not this flag.
 16. **LVGL v9 has its own set of traps** — wrong library version, v8 `lv_conf.h`, the `sizeof(lv_color_t)`=3 buffer trap (black screen), internal-RAM exhaustion (breaks touch/WiFi/SD), the `.S` assembler errors, and the `useBigEndian`/bounce-buffer constructor args (inverted colors / tearing). All are documented in the **"LVGL v9 / Display Stack"** section above. If the display, touch, or memory misbehaves after a library change, start there.
 17. **Modbus dropping out when the car key cycles is NOT a fault.** The electric box is powered from an ignition-switched wire, so it loses power with the car. Repeated `[MODBUS] Read failed` / `Communication LOST` after a key-off is expected; it recovers on the next power-up.
@@ -931,6 +916,7 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 
 | Version | Key Changes |
 |---------|-------------|
+| v6.2 | **Oil pressure sensor: PX3 voltage -> P51 4-20mA current loop.** Replaced PX3AN2BH150PSAAX (0.5-4.5V, needed a regulated 5V buck) with Amphenol SSI P51-150-G-B-P-20MA (4-20mA loop, loop-powered off the 24V rail, 8-30V) — eliminates the buck-converter overvoltage failure mode that killed the PX3. Firmware: Waveshare CH1 -> Mode 3 (4-20mA) at boot alongside CH2-CH5; `convertToPSI()` rewritten current-based (`PSI = ((uA-4000)/16000)*150`); CH1 disconnect via `PRTXI_MIN_VALID_UA`; var renamed oil_press_mV -> oil_press_uA. Wiring: 24V+ -> Red(Pin1); Yellow(Pin3) -> AI1+; AI1- -> GND; Black(Pin2) unused; 1.5KE36A TVS across the 24V rail. |
 | v6.1 | **OBD CAN operational on the car + stale-value UI fix.** Set `CAN_MUX_TO_CAN 1` (EXIO5 HIGH → FSUSB42UMX mux to the onboard TJA1051T); OBD CAN confirmed reading the 2018 370Z ECU (water temp / ECT) over a 2-wire CANH/CANL tap (OBD pins 6/14; ground shared via chassis) — see `obd_can_wiring.md` + `obd_can_harness_diagram.svg`. UI: Water Temp and Fuel Trust were latching their last value when OBD data went stale; added the per-gauge "became-invalid → show `---`" block the Modbus gauges already had, so both clear ~3 s (`OBD_PID_STALE_THRESHOLD_MS`) after the ECU stops responding. Fuel Trust still only shows once ECT ≥ 80 °C. |
 | v6.0 | **OBD CAN fix + LVGL v9 migration / display stabilization.** CAN: drive CH422G EXIO5 (`EXIO_CAN_SEL`) HIGH to route the FSUSB42UMX mux to the TJA1051T (GPIO19/20 shared with native USB); un-swapped CAN pins (now TX=GPIO20, RX=GPIO19) — see `obd_can_wiring.md`. (CAN was gated off via `CAN_MUX_TO_CAN 0` during this release while the display was stabilized; turned **on** in v6.1.) Display: migrated to LVGL 9.1.0 — fixed `lv_conf.h` (v9 template, PSRAM heap pool, fonts, color depth), fixed the `sizeof(lv_color_t)` draw-buffer trap, patched LVGL's ARM `.S` files for xtensa, restored `useBigEndian` + added bounce buffer (colors + tearing). Full detail in "LVGL v9 / Display Stack". Build: `USB CDC On Boot` Disabled; flash/monitor over the UART port. |
 | v5.9 | Removed PX3 voltage divider — direct wiring to Waveshare AI1 (Mode 0 handles 0.5-4.5V natively); `PRESSURE_DIVIDER_RATIO` is now 1.0 |

@@ -1,9 +1,22 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v6.1
+ * 370zMonitor v6.2
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v6.2 Changes (oil pressure: PX3 voltage sensor -> P51 4-20mA current loop):
+ * - Replaced PX3AN2BH150PSAAX (0.5-4.5V ratiometric, needed a regulated 5V
+ *   buck supply) with Amphenol SSI P51-150-G-B-P-20MA (4-20mA loop). The P51
+ *   is loop-powered straight off the 24V rail (8-30V) — no buck converter,
+ *   which removes the 5V-overvoltage failure mode that killed the PX3.
+ * - Waveshare CH1 now configured to Mode 3 (4-20mA) at boot alongside CH2-CH5;
+ *   module returns uA directly. convertToPSI() rewritten to current-based:
+ *   PSI = ((uA - 4000) / 16000) * 150, clamped [0,150].
+ * - CH1 disconnect detection now uses PRTXI_MIN_VALID_UA (<3mA = open loop)
+ *   instead of the legacy mV threshold.
+ * - Wiring: 24V+ -> P51 Red(Pin1 Vin); P51 White(Pin3) -> Waveshare AI1+;
+ *   AI1- -> GND. P51 Black(Pin2) unused. 1.5KE36A TVS across 24V rail.
  *
  * v6.1 Changes (OBD CAN operational on-car + stale-value UI fix):
  * - CAN_MUX_TO_CAN set to 1 — EXIO5 driven HIGH at boot, so the FSUSB42UMX mux
@@ -746,12 +759,19 @@ void resetUIElements();
 #define WAVESHARE_CH4_MODE_REG  0x1003  // Holding register for CH4 mode
 #define WAVESHARE_CH5_MODE_REG  0x1004  // Holding register for CH5 mode
 
-// Pressure Sensor Calibration (PX3AN2BH150PSAAX, direct wiring, no divider)
-// v5.9: Removed 10kΩ/22kΩ voltage divider. Sensor signal (0.5-4.5V) now
-// goes directly into Waveshare AI1 (Mode 0 = 0-10V). No scaling needed.
-#define PRESSURE_DIVIDER_RATIO  1.0f     // No divider — raw_mV IS sensor mV
-#define PRESSURE_OFFSET_MV      500.0f   // 0.5V = 500mV at 0 PSI
-#define PRESSURE_SCALE          0.0375f  // 150 PSI / 4000 mV range
+// Pressure Sensor Calibration (P51-150-G-B-P-20MA-000-000, 4-20mA loop)
+// v6.2: Replaced PX3 (0.5-4.5V) with Amphenol SSI P51 4-20mA current-loop
+// sensor. Waveshare CH1 is now set to Mode 3 (4-20mA) just like the PRTXI
+// temp channels, so the module returns microamps (µA) directly over Modbus.
+// Loop-powered straight off the 24V rail (8-30V) — no buck converter, no divider.
+//
+//   4000  µA (4mA)  = 0 PSI
+//   12000 µA (12mA) = 75 PSI   (midpoint)
+//   20000 µA (20mA) = 150 PSI
+//
+#define PRESSURE_MIN_CURRENT_UA   4000     // 4000 µA (4mA) = 0 PSI
+#define PRESSURE_CURRENT_SPAN_UA  16000    // 20000 - 4000 = 16000 µA span
+#define PRESSURE_FS_PSI           150.0f   // Full-scale pressure at 20mA
 
 // PRTXI Temperature Sensor Calibration (4-20mA output, loop-powered)
 // PRTXI-1/2N-1/4-4-IO outputs 4-20mA linear for -50°C to +200°C (250°C range)
@@ -776,10 +796,10 @@ void resetUIElements();
 #define PRTXI_MIN_VALID_UA      3000      // Below this = sensor disconnected (~3mA)
 
 // Sensor Health Detection
-// When sensor is disconnected, modbus reads 0 mV
-// Valid sensor at 0 PSI outputs ~307-308 mV after voltage divider (500mV / 1.4545 = 344mV theoretical)
-// Use threshold below which we consider sensor disconnected
-#define SENSOR_MIN_VALID_MV     100     // Below this = sensor disconnected
+// v6.2: CH1 (oil pressure) is now a 4-20mA loop like CH2-CH5, so it uses the
+// PRTXI_MIN_VALID_UA threshold (below ~3mA = open loop = disconnected).
+// SENSOR_MIN_VALID_MV is legacy (PX3 voltage era) and no longer referenced.
+#define SENSOR_MIN_VALID_MV     100     // Legacy (PX3 voltage); unused as of v6.2
 #define MODBUS_ERROR_THRESHOLD  3       // Mark invalid after this many consecutive errors
 
 // Modbus State
@@ -1066,25 +1086,22 @@ static bool modbusReadHoldingRegister(uint8_t slaveAddr, uint16_t regAddr, uint1
 }
 
 //-----------------------------------------------------------------------------
-// convertToPSI() - Convert Modbus mV reading to PSI
+// convertToPSI() - Convert Modbus µA reading to PSI
 //-----------------------------------------------------------------------------
-// Sensor: PX3AN2BH150PSAAX (0-150 PSI, 0.5V-4.5V output)
+// Sensor: P51-150-G-B-P-20MA-000-000 (0-150 PSI gauge, 4-20mA loop output)
 //
-// v5.9: Direct wiring (no voltage divider). Sensor signal pin connects
-// straight into Waveshare AI1 (Mode 0 = 0-10V), which natively handles
-// the 0.5-4.5V range. The Modbus mV reading IS the sensor voltage.
+// v6.2: Replaced the PX3 voltage sensor with the P51 4-20mA current-loop
+// sensor. Waveshare CH1 is configured to Mode 3 (4-20mA), so the module
+// returns microamps (µA) directly — identical path to the PRTXI temp
+// channels. Loop-powered off the 24V rail; no buck converter, no divider.
 //
-//   Sensor output: 500mV (0 PSI) to 4500mV (150 PSI)
-//   Modbus reads:  same — no divider correction needed
+//   4000  µA (4mA)  = 0 PSI
+//   20000 µA (20mA) = 150 PSI
 //
-// Conversion formula:
-//   1. Multiply by PRESSURE_DIVIDER_RATIO (now 1.0 — kept for symmetry)
-//   2. Subtract 500mV offset (sensor outputs 500mV at 0 PSI)
-//   3. Multiply by scale (150 PSI / 4000 mV = 0.0375)
+// Linear: PSI = ((µA - 4000) / 16000) * 150
 //
-static float convertToPSI(uint16_t modbus_mV) {
-    float raw_mV = (float)modbus_mV * PRESSURE_DIVIDER_RATIO;
-    float psi = (raw_mV - PRESSURE_OFFSET_MV) * PRESSURE_SCALE;
+static float convertToPSI(uint16_t modbus_uA) {
+    float psi = (((float)modbus_uA - PRESSURE_MIN_CURRENT_UA) / PRESSURE_CURRENT_SPAN_UA) * PRESSURE_FS_PSI;
     if (psi < 0.0f) psi = 0.0f;
     if (psi > 150.0f) psi = 150.0f;
     return psi;
@@ -1178,43 +1195,44 @@ void initModbusSensors() {
         // Check for valid Modbus response (01 04 02 XX XX CRC CRC)
         if (rxCount >= 7 && testResp[0] == 0x01 && testResp[1] == 0x04 && testResp[2] == 0x02) {
             uint16_t value = (testResp[3] << 8) | testResp[4];
-            Serial.printf("[MODBUS] SUCCESS! CH1 = %d mV\n", value);
+            Serial.printf("[MODBUS] SUCCESS! CH1 raw = %d (comms OK)\n", value);
             g_modbus_initialized = true;
             g_modbus_comm_ok = true;
             
-            // Set initial sensor state
-            g_sensor_ch1_connected = (value >= SENSOR_MIN_VALID_MV);
-            if (!g_sensor_ch1_connected) {
-                Serial.printf("[MODBUS] CH1: Sensor not connected at startup (%d mV)\n", value);
-            }
+            // CH1 is switched to 4-20mA (Mode 3) below; this test read may
+            // still be in the old mode, so don't classify it here. The real
+            // connected state is set on the first poll in readModbusSensors().
+            g_sensor_ch1_connected = false;
             
-            // ========== CONFIGURE TEMPERATURE CHANNELS FOR 4-20mA ==========
-            // CH2-CH5 all use PRTXI temperature sensors (4-20mA output)
-            // This writes Mode 3 (4-20mA) to each channel's mode register
-            Serial.println("[MODBUS] Configuring temperature channels for 4-20mA mode...");
+            // ========== CONFIGURE ALL CURRENT-LOOP CHANNELS FOR 4-20mA ==========
+            // v6.2: CH1 is now the P51 oil-pressure sensor (4-20mA), joining the
+            // four PRTXI temp sensors on CH2-CH5. All five are 4-20mA loops, so
+            // write Mode 3 (4-20mA) to every channel's mode register.
+            Serial.println("[MODBUS] Configuring CH1-CH5 for 4-20mA mode...");
             
             // Channel configuration array: {register, name}
             struct ChannelConfig {
                 uint16_t reg;
                 const char* name;
             };
-            ChannelConfig tempChannels[] = {
+            ChannelConfig currentChannels[] = {
+                {WAVESHARE_CH1_MODE_REG, "CH1 (Oil Pressure)"},
                 {WAVESHARE_CH2_MODE_REG, "CH2 (Oil Temp)"},
                 {WAVESHARE_CH3_MODE_REG, "CH3 (Trans Temp)"},
                 {WAVESHARE_CH4_MODE_REG, "CH4 (Steer Temp)"},
                 {WAVESHARE_CH5_MODE_REG, "CH5 (Diff Temp)"}
             };
             
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 5; i++) {
                 uint16_t currentMode = 0;
-                if (modbusReadHoldingRegister(MODBUS_SLAVE_ADDR, tempChannels[i].reg, &currentMode)) {
-                    Serial.printf("[MODBUS] %s current mode: %d\n", tempChannels[i].name, currentMode);
+                if (modbusReadHoldingRegister(MODBUS_SLAVE_ADDR, currentChannels[i].reg, &currentMode)) {
+                    Serial.printf("[MODBUS] %s current mode: %d\n", currentChannels[i].name, currentMode);
                 }
                 
-                if (modbusWriteHoldingRegister(MODBUS_SLAVE_ADDR, tempChannels[i].reg, WAVESHARE_MODE_4_20MA)) {
-                    Serial.printf("[MODBUS] %s configured for 4-20mA (Mode 3)\n", tempChannels[i].name);
+                if (modbusWriteHoldingRegister(MODBUS_SLAVE_ADDR, currentChannels[i].reg, WAVESHARE_MODE_4_20MA)) {
+                    Serial.printf("[MODBUS] %s configured for 4-20mA (Mode 3)\n", currentChannels[i].name);
                 } else {
-                    Serial.printf("[MODBUS] WARNING: Failed to configure %s!\n", tempChannels[i].name);
+                    Serial.printf("[MODBUS] WARNING: Failed to configure %s!\n", currentChannels[i].name);
                     Serial.println("[MODBUS]   Check: Is jumper set to 'I' or 'mA' position?");
                 }
                 delay(10);  // Small delay between writes
@@ -1287,24 +1305,25 @@ void readModbusSensors() {
             g_modbus_comm_ok = true;
         }
         
-        // Channel 1: Oil Pressure
-        uint16_t oil_press_mV = g_modbus_channel_values[MODBUS_CH_OIL_PRESSURE];
-        bool sensor_connected = (oil_press_mV >= SENSOR_MIN_VALID_MV);
+        // Channel 1: Oil Pressure (P51 4-20mA transmitter)
+        // Waveshare configured to Mode 3 (4-20mA) - returns µA directly
+        uint16_t oil_press_uA = g_modbus_channel_values[MODBUS_CH_OIL_PRESSURE];
+        bool sensor_connected = (oil_press_uA >= PRTXI_MIN_VALID_UA);
         
         // Log sensor state changes
         if (sensor_connected != g_sensor_ch1_connected) {
             if (sensor_connected) {
-                Serial.printf("[MODBUS] CH1: Sensor CONNECTED (%d mV)\n", oil_press_mV);
+                Serial.printf("[MODBUS] CH1: Sensor CONNECTED (%d µA)\n", oil_press_uA);
             } else {
-                Serial.printf("[MODBUS] CH1: Sensor DISCONNECTED (%d mV < %d mV threshold)\n", 
-                             oil_press_mV, SENSOR_MIN_VALID_MV);
+                Serial.printf("[MODBUS] CH1: Sensor DISCONNECTED (%d µA < %d µA threshold)\n", 
+                             oil_press_uA, PRTXI_MIN_VALID_UA);
             }
             g_sensor_ch1_connected = sensor_connected;
         }
         
         if (sensor_connected) {
             // Sensor connected and reading valid
-            float oil_press_psi = convertToPSI(oil_press_mV);
+            float oil_press_psi = convertToPSI(oil_press_uA);
             
             g_vehicle_data.oil_pressure_psi = (int)(oil_press_psi + 0.5f);
             g_vehicle_data.oil_pressure_valid = true;
@@ -1463,7 +1482,7 @@ void readModbusSensors() {
             
             // CH1: Oil Pressure
             if (sensor_connected) {
-                int psi = (int)(convertToPSI(oil_press_mV) + 0.5f);
+                int psi = (int)(convertToPSI(oil_press_uA) + 0.5f);
                 bool crit = (psi < OIL_PRESS_ValueCriticalLow) || (psi > OIL_PRESS_ValueCriticalAbsolute);
                 pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, "Oil-Press:%dPSI%s", 
                                psi, crit ? " (VALUE CRITICAL)" : "");

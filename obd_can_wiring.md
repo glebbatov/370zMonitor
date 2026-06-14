@@ -1,8 +1,12 @@
 # OBD-II CAN Wiring & Bring-up — Waveshare ESP32-S3-Touch-LCD-7 ↔ 2018 Nissan 370Z
 
-**Status:** New harness, fresh start. Goal: get the onboard TWAI/CAN reading the car's ECU (water temp, RPM, fuel trims) over the OBD-II port.
+**Status: ✅ RESOLVED (2026-06-14, v6.1).** OBD CAN is reading the 2018 370Z ECU on the car — water temp / ECT confirmed in the serial log (`[OBD] ECT:25°C ...` + `OBD CAN back online`). The working harness is a **2-wire CANH/CANL tap** (OBD pin 6 → CANH, pin 14 → CANL); no separate OBD ground was needed because the electric box already shares chassis ground with the car. Fix was firmware (`CAN_MUX_TO_CAN 1` + the v6.0 pin/EXIO5 work), not wiring.
 
-**Symptom on the old attempt:** No CAN data at all. Two firmware bugs explain this completely (see below). Fix those first — the wiring is the easy part.
+**What was wrong (history):** No CAN data at all. Two firmware bugs (TX/RX swapped + the EXIO5 USB/CAN mux never selected), both fixed in v6.0, plus the `CAN_MUX_TO_CAN` debug gate left at `0` during display bring-up — flipped to `1` on 2026-06-14 (v6.1).
+
+> **Note on the 3rd wire:** earlier drafts of this doc recommended running OBD pins 4/5 (ground) as well. In practice the 2-conductor CANH/CANL tap works because the box's 12 V supply ground is bonded to chassis, the same reference as the ECU. Add the OBD ground wire only if you ever see flaky/no comms.
+
+**Visual:** see `obd_can_harness_diagram.svg` in this repo for the pigtail-color → board-terminal map.
 
 ---
 
@@ -13,59 +17,29 @@ The Waveshare ESP32-S3-Touch-LCD-7 does **not** give the ESP32 a dedicated CAN p
 Confirmed from three sources that all agree:
 - Waveshare wiki pinout: `GPIO20 = CANTX`, `GPIO19 = CANRX`, and `EXIO5 CAN_SEL — pull **up** to CAN mode, otherwise USB mode`.
 - The board schematic (`ESP32-S3-Touch-LCD-7-Sch.pdf`, page 1): U7 = `TJA1051T` transceiver; `EXIO5 / USB_SEL` drives a `FSUSB42UMX` 2:1 USB mux on the D+/D- lines.
-- Your firmware: `g_exio_state` is initialized to only `EXIO_TP_RST | EXIO_SD_CS` — **EXIO5 is never set**, so the mux stays in USB mode and the TJA1051T is disconnected from the MCU.
+- Your firmware (v6.0): the original no-data was caused by (1) **EXIO5 never set**, so the mux stayed in USB mode and the TJA1051T was disconnected from the MCU, and (2) **TX/RX swapped**. Both are **now fixed** — `CAN_TX_PIN = GPIO20`, `CAN_RX_PIN = GPIO19`, and EXIO5 is driven HIGH at boot. The last thing gating it, the debug flag `CAN_MUX_TO_CAN`, was left at `0` during the LVGL/display bring-up and is **now `1`** (2026-06-14).
 
-So even with perfect wiring, the transceiver was never electrically connected to the ESP32. **This is the primary bug.**
-
-**Bug #2:** TX and RX are swapped in firmware. Waveshare routes `GPIO20→CANTX` and `GPIO19→CANRX`, but the sketch defines `CAN_TX_PIN = GPIO19` and `CAN_RX_PIN = GPIO20`. Backwards.
-
-Fix both and the wiring below will work.
+So the firmware is ready. The remaining job is a clean 3-wire-plus-ground tap to the OBD port — see "Firmware status" and "The harness" below.
 
 ---
 
-## Firmware fixes (required — do these before wiring matters)
+## Firmware status (done — nothing to change)
 
-> The repo memory note says don't touch firmware unless asked. These two changes are the reason CAN never worked, so they're in scope for "make CAN work." Apply them (or ask me to).
+Every firmware item that caused the old no-data is already in the code as of v6.0 + the 2026-06-14 flag flip:
 
-### Fix 1 — drive EXIO5 to CAN mode at boot
+| Item | State | Where |
+|---|---|---|
+| `CAN_TX_PIN` / `CAN_RX_PIN` | `GPIO20` / `GPIO19` — correct, un-swapped | ~line 2746 |
+| `EXIO_CAN_SEL` (EXIO5) | defined as bit 5, driven HIGH at boot | ~line 1668 + `initIOExtension()` |
+| `CAN_MUX_TO_CAN` gate | **`1`** — set 2026-06-14 (was `0` during display bring-up) | `initIOExtension()`, ~line 6485 |
 
-In the IO-expander defines block (near line ~1654), add a bit for EXIO5:
-
-```cpp
-#define EXIO_TP_RST   1
-#define EXIO_DISP     2
-#define EXIO_SD_CS    4
-#define EXIO_CAN_SEL  5   // FSUSB42UMX mux: HIGH = CAN mode, LOW = USB mode
-```
-
-In `exio_init()` (near line ~6457), include EXIO5 in the initial state so the mux selects CAN:
-
-```cpp
-// was: g_exio_state = (1u << EXIO_TP_RST) | (1u << EXIO_SD_CS);
-g_exio_state = (1u << EXIO_TP_RST) | (1u << EXIO_SD_CS) | (1u << EXIO_CAN_SEL);
-```
-
-(or call `exio_set(EXIO_CAN_SEL, true);` right after `exio_init()` succeeds, before `startCAN()`.)
-
-### Fix 2 — un-swap the CAN pins
-
-At ~line 2725:
-
-```cpp
-// was:
-// #define CAN_TX_PIN  GPIO_NUM_19
-// #define CAN_RX_PIN  GPIO_NUM_20
-#define CAN_TX_PIN  GPIO_NUM_20   // ESP32 CANTX -> TJA1051T TXD  (per Waveshare pinout)
-#define CAN_RX_PIN  GPIO_NUM_19   // ESP32 CANRX <- TJA1051T RXD
-```
-
-Also fix the stale header comment at ~line 2713 (it currently claims GPIO19=CANTX, which is the source of the confusion).
+With `CAN_MUX_TO_CAN 1`, `initIOExtension()` sets `g_exio_state = EXIO_TP_RST | EXIO_SD_CS | EXIO_CAN_SEL`, flipping the FSUSB42UMX mux so GPIO19/20 reach the onboard TJA1051T. On boot the log should print `[OBD] Config: TX=GPIO20, RX=GPIO19, 500kbps` and the TWAI driver should install without `0x…` errors. **Flash this build before testing the harness.**
 
 ### Side effect to know about
 
-Putting EXIO5 in CAN mode **disconnects the ESP32-S3 native USB** (the FSUSB42 can only route D+/D- to one place). On this board that's fine for normal operation because:
-- Flashing and the serial monitor run through the **separate "UART" USB-C port** (the CH343/USB-UART bridge), not the native USB. Keep using that port at 115200.
-- **USB Mass Storage mode (`ENABLE_USB_MSC`) uses the native USB and therefore cannot coexist with CAN mode.** When you boot into MSC to pull SD logs, CAN will be off — expected. If you want MSC, set EXIO5 low (or just don't start CAN) in that mode.
+Putting EXIO5 in CAN mode **disconnects the ESP32-S3 native USB** (the FSUSB42 routes D+/D- to USB *or* CAN, not both). On this board that's fine for normal operation:
+- Flashing and the serial monitor run through the **separate "UART" USB-C port** (CH343/USB-UART bridge) at 115200. Keep using that port.
+- **USB Mass Storage (`ENABLE_USB_MSC`) uses native USB and cannot coexist with CAN.** To pull SD logs over USB-MSC, set `CAN_MUX_TO_CAN 0` and reflash; CAN will be off in that mode (expected).
 
 ---
 
@@ -106,7 +80,7 @@ Unused pigtail wires (1,2,3,7,8,9,10,11,12,13,15) — cut back, individually hea
 
 Do this with the **engine running** (or at least ignition in RUN). On the 370Z the powertrain CAN on pins 6/14 is only active and the ECU only answers when the car is awake — a no-data result at key-off is normal and not a wiring fault.
 
-1. **Bench/firmware check first.** Flash the two fixes. On boot, the serial log should print `[OBD] Config: TX=GPIO20, RX=GPIO19, 500kbps` and the TWAI driver should install/start without `0x...` errors.
+1. **Bench/firmware check first.** Flash the current build (with `CAN_MUX_TO_CAN 1`). On boot, the serial log should print `[OBD] Config: TX=GPIO20, RX=GPIO19, 500kbps` and the TWAI driver should install/start without `0x...` errors.
 2. **Continuity-verify the pigtail** (key out): meter from each OBD socket pin to the bare wire end. Confirm pin 6 = Green, pin 14 = Brown/White, pin 4/5 = Orange/Yellow. Re-label if the factory colors are wrong.
 3. **Resistance sanity check at the OBD plug** (key out, car asleep): CANH↔CANL should read **~60 Ω** (the two factory terminators in parallel). If you read ~120 Ω something's off; if you read 40 Ω your board terminator is still jumpered in — go fix step 1 of hardware setup.
 4. **Plug in, key to RUN / start engine.** Watch the once-per-second OBD/`[OBD]` log. You should see successful PID replies; the toast monitor should clear "OBD CAN offline."
@@ -121,17 +95,20 @@ Do this with the **engine running** (or at least ignition in RUN). On the 370Z t
 
 ---
 
-## Parts list
+## Parts list (researched 2026-06-14)
 
-| Item | Why | Notes |
-|---|---|---|
-| XMSJSIY OBD-II 16-pin male pigtail (you have it) | OBD plug → bare wires | [Amazon B0CSK7FRG6](https://www.amazon.com/dp/B0CSK7FRG6). Verify colors with a meter. |
-| JST PH 2.0 mm 2-pin pigtail/housing | Land Green/Brown-White into the board CAN terminal | Ships with the board; spares are cheap (JST PHR-2 + crimps, or pre-made PH2.0 leads). |
-| 3-conductor shielded cable (engine-bay run) | CANH + CANL + drain, OBD plug → box | Twisted pair preferred for CANH/CANL. Tie shield to GND at the box end only. |
-| Heat-shrink + crimp ferrules | Cap unused pigtail wires (esp. pin 16 +12 V) | — |
-| (Optional) OBD-II Y-splitter | Keep a port free for a scan tool | Only if you still want to plug in a code reader without unplugging the monitor. |
+You already have the only must-buy item (the pigtail). Everything else is connectors/cable/consumables — **nothing active is needed**, since the transceiver, mux, and termination are all on the Waveshare board.
 
-No new active parts needed — the transceiver, mux, and termination are all already on the Waveshare board. The fix is firmware (EXIO5 + TX/RX) plus a clean 3-wire-plus-ground tap.
+| Item | Spec / part | Why | ~Price |
+|---|---|---|---|
+| **OBD-II pigtail** (have it) | XMSJSIY 16-pin male, open-end, 1 m — [Amazon B0CSK7FRG6](https://www.amazon.com/dp/B0CSK7FRG6) | OBD plug → bare wires | $9 |
+| **Board CAN lead** | JST **PH2.0 2-pin** — ships in the board box (PH2.0→2.54 mm leads). Spare: JST **PHR-2** housing + **SPH-002T-P0.5S** crimps, or a pre-made PH2.0 2-pin lead | Land Green / Brown-White into CAN terminal (item 9) without soldering the pads | $0–6 |
+| **CAN cable, OBD→box** | 120 Ω twisted shielded pair — **Belden 3105A** (J1939/11, 22 AWG) or **L-com** per-foot CAN cable (24 AWG, 120 Ω, double-shielded) | Twisted CANH/CANL run; shield to GND at the box end only. Run is short (~1–3 ft) so even plain shielded twisted pair works — the twist matters more than the exact P/N | $1–2/ft |
+| **Capping consumables** | Adhesive-lined heat-shrink + crimp ferrules | Cap the 11 unused pigtail wires (esp. pin 16 +12 V) | $8 kit |
+| **(Optional) USB-CAN analyzer** | Waveshare **USB-CAN-A** (their own recommended bench tool) | Bench-test the board's CAN with demo `06_TWAItransmit` / `07_TWAIreceive` before going to the car — isolates the board from car-side issues | $12 |
+| **(Optional) OBD-II Y-splitter** | 16-pin male → dual female (VIMVIP / iKKEGOL) | Keep a port free for a scan tool. Note: only one device can actively talk at a time | $8 |
+
+Bottom line: the only fix beyond a clean 3-wire-plus-ground tap was firmware (EXIO5 + TX/RX + the `CAN_MUX_TO_CAN` gate), and that's done.
 
 ---
 

@@ -1,0 +1,106 @@
+<svg viewBox="0 0 980 760" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+  <!-- background -->
+  <rect x="0" y="0" width="980" height="760" fill="#0A0A0A"/>
+
+  <!-- title bar -->
+  <rect x="0" y="0" width="980" height="76" fill="#141517"/>
+  <rect x="0" y="0" width="8" height="76" fill="#A31621"/>
+  <text x="32" y="34" fill="#FFFFFF" font-size="22" font-weight="700">OBD-II  &#8594;  Waveshare ESP32-S3-Touch-LCD-7  &#183;  CAN Harness</text>
+  <text x="32" y="59" fill="#AAAAAA" font-size="13">2018 Nissan 370Z &#183; CAN-C 500 kbps &#183; ISO 15765-4 (11-bit) &#183; you are a tap on an already-terminated bus</text>
+
+  <!-- column headers -->
+  <text x="175" y="108" fill="#D41F2D" font-size="12.5" font-weight="700" text-anchor="middle" letter-spacing="0.5">OBD-II PLUG &#8212; XMSJSIY pigtail</text>
+  <text x="486" y="108" fill="#777777" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="2">WIRE</text>
+  <text x="797" y="108" fill="#D41F2D" font-size="12.5" font-weight="700" text-anchor="middle" letter-spacing="0.5">LANDS ON &#8212; Waveshare board</text>
+
+  <!-- ===================== ROW 1: pin 6 CANH ===================== -->
+  <!-- wire -->
+  <line x1="310" y1="160" x2="662" y2="160" stroke="#27AE3A" stroke-width="9" stroke-linecap="round"/>
+  <text x="486" y="150" fill="#46d35a" font-size="12" font-weight="700" text-anchor="middle">GREEN</text>
+  <!-- left card -->
+  <rect x="40" y="130" width="270" height="60" rx="8" fill="#1B1C1E" stroke="#34363A"/>
+  <rect x="52" y="140" width="44" height="40" rx="6" fill="#A31621"/>
+  <text x="74" y="166" fill="#FFFFFF" font-size="19" font-weight="700" text-anchor="middle">6</text>
+  <text x="110" y="156" fill="#FFFFFF" font-size="15" font-weight="700">CAN High</text>
+  <text x="110" y="175" fill="#9AA0A6" font-size="11.5">CAN-C, pin 6</text>
+  <!-- right card -->
+  <rect x="662" y="130" width="278" height="60" rx="8" fill="#1B1C1E" stroke="#34363A"/>
+  <text x="680" y="158" fill="#FFFFFF" font-size="17" font-weight="700">CANH</text>
+  <text x="680" y="177" fill="#9AA0A6" font-size="11.5">board CAN terminal (item 9, PH2.0)</text>
+
+  <!-- ===================== ROW 2: pin 14 CANL ===================== -->
+  <line x1="310" y1="240" x2="662" y2="240" stroke="#6E4A2A" stroke-width="9" stroke-linecap="round"/>
+  <line x1="310" y1="240" x2="662" y2="240" stroke="#FFFFFF" stroke-width="2.5" stroke-dasharray="9 9" stroke-linecap="round"/>
+  <text x="486" y="230" fill="#C9A36F" font-size="12" font-weight="700" text-anchor="middle">BROWN / WHITE</text>
+  <rect x="40" y="210" width="270" height="60" rx="8" fill="#1B1C1E" stroke="#34363A"/>
+  <rect x="52" y="220" width="44" height="40" rx="6" fill="#A31621"/>
+  <text x="74" y="246" fill="#FFFFFF" font-size="19" font-weight="700" text-anchor="middle">14</text>
+  <text x="110" y="236" fill="#FFFFFF" font-size="15" font-weight="700">CAN Low</text>
+  <text x="110" y="255" fill="#9AA0A6" font-size="11.5">CAN-C, pin 14</text>
+  <rect x="662" y="210" width="278" height="60" rx="8" fill="#1B1C1E" stroke="#34363A"/>
+  <text x="680" y="238" fill="#FFFFFF" font-size="17" font-weight="700">CANL</text>
+  <text x="680" y="257" fill="#9AA0A6" font-size="11.5">board CAN terminal (item 9, PH2.0)</text>
+
+  <!-- ===================== ROW 3 + 4: grounds -> common ground ===================== -->
+  <!-- common ground card spans rows 3-4 -->
+  <rect x="662" y="290" width="278" height="140" rx="8" fill="#15211A" stroke="#2E6B45"/>
+  <text x="680" y="346" fill="#FFFFFF" font-size="17" font-weight="700">COMMON GROUND</text>
+  <text x="680" y="368" fill="#9FC9AE" font-size="11.5">tie pin 4 + pin 5 together, then to</text>
+  <text x="680" y="384" fill="#9FC9AE" font-size="11.5">any board GND / supply &#8722; (shared</text>
+  <text x="680" y="400" fill="#9FC9AE" font-size="11.5">with the car through chassis ground)</text>
+
+  <!-- row 3 wire (orange, pin4) -->
+  <line x1="310" y1="320" x2="662" y2="332" stroke="#E8821E" stroke-width="9" stroke-linecap="round"/>
+  <text x="470" y="312" fill="#F0922E" font-size="12" font-weight="700" text-anchor="middle">ORANGE</text>
+  <rect x="40" y="290" width="270" height="60" rx="8" fill="#1B1C1E" stroke="#34363A"/>
+  <rect x="52" y="300" width="44" height="40" rx="6" fill="#A31621"/>
+  <text x="74" y="326" fill="#FFFFFF" font-size="19" font-weight="700" text-anchor="middle">4</text>
+  <text x="110" y="316" fill="#FFFFFF" font-size="15" font-weight="700">Chassis ground</text>
+  <text x="110" y="335" fill="#9AA0A6" font-size="11.5">pin 4</text>
+
+  <!-- row 4 wire (yellow, pin5) -->
+  <line x1="310" y1="400" x2="662" y2="388" stroke="#EBD11A" stroke-width="9" stroke-linecap="round"/>
+  <text x="470" y="392" fill="#EBD11A" font-size="12" font-weight="700" text-anchor="middle">YELLOW</text>
+  <rect x="40" y="370" width="270" height="60" rx="8" fill="#1B1C1E" stroke="#34363A"/>
+  <rect x="52" y="380" width="44" height="40" rx="6" fill="#A31621"/>
+  <text x="74" y="406" fill="#FFFFFF" font-size="19" font-weight="700" text-anchor="middle">5</text>
+  <text x="110" y="396" fill="#FFFFFF" font-size="15" font-weight="700">Signal ground</text>
+  <text x="110" y="415" fill="#9AA0A6" font-size="11.5">pin 5</text>
+
+  <!-- ===================== ROW 5: pin 16 +12V -> capped ===================== -->
+  <line x1="310" y1="480" x2="662" y2="480" stroke="#27AE3A" stroke-width="9" stroke-linecap="round" opacity="0.55"/>
+  <line x1="310" y1="480" x2="662" y2="480" stroke="#FFFFFF" stroke-width="2.5" stroke-dasharray="9 9" stroke-linecap="round" opacity="0.55"/>
+  <text x="486" y="470" fill="#8aa890" font-size="12" font-weight="700" text-anchor="middle">GREEN / WHITE</text>
+  <rect x="40" y="450" width="270" height="60" rx="8" fill="#161616" stroke="#2C2E31"/>
+  <rect x="52" y="460" width="44" height="40" rx="6" fill="#555759"/>
+  <text x="74" y="486" fill="#FFFFFF" font-size="19" font-weight="700" text-anchor="middle">16</text>
+  <text x="110" y="476" fill="#C7C7C7" font-size="15" font-weight="700">+12 V (constant)</text>
+  <text x="110" y="495" fill="#8A8F94" font-size="11.5">pin 16</text>
+  <rect x="662" y="450" width="278" height="60" rx="8" fill="#231314" stroke="#7A2A2E" stroke-dasharray="6 5"/>
+  <text x="680" y="478" fill="#E8888C" font-size="16" font-weight="700">NOT USED &#8212; cap it</text>
+  <text x="680" y="497" fill="#C99A9C" font-size="11.5">cut back + heat-shrink (also pins 1,2,3,7,8,9,10,11,12,13,15)</text>
+
+  <!-- ===================== bottom panels ===================== -->
+  <!-- panel A: board hardware -->
+  <rect x="40" y="540" width="430" height="196" rx="10" fill="#161719" stroke="#303236"/>
+  <text x="60" y="568" fill="#D41F2D" font-size="13" font-weight="700" letter-spacing="0.5">BOARD HARDWARE</text>
+  <text x="60" y="594" fill="#E6E6E6" font-size="12.5">&#8226;  Pull the 120 &#937; CAN terminator: item 13 &#8594; NC.</text>
+  <text x="60" y="616" fill="#E6E6E6" font-size="12.5">&#8226;  Car bus is already terminated &#8212; board jumper makes it 40 &#937;.</text>
+  <text x="60" y="638" fill="#E6E6E6" font-size="12.5">&#8226;  Key-off at OBD plug: CANH&#8596;CANL &#8776; 60 &#937; (120 &#937; = jumper in).</text>
+  <text x="60" y="660" fill="#E6E6E6" font-size="12.5">&#8226;  Land CANH/CANL with the included PH2.0&#8594;2.54 lead.</text>
+  <text x="60" y="682" fill="#E6E6E6" font-size="12.5">&#8226;  Polarity: Green&#8594;CANH (6), Brown/White&#8594;CANL (14).</text>
+  <text x="60" y="704" fill="#E6E6E6" font-size="12.5">&#8226;  Ground is not optional &#8212; transceiver needs a car reference.</text>
+
+  <!-- panel B: firmware + bring-up -->
+  <rect x="500" y="540" width="440" height="196" rx="10" fill="#161719" stroke="#303236"/>
+  <text x="520" y="568" fill="#D41F2D" font-size="13" font-weight="700" letter-spacing="0.5">FIRMWARE + BRING-UP</text>
+  <text x="520" y="594" fill="#E6E6E6" font-size="12.5">&#8226;  CAN_MUX_TO_CAN = 1  &#10003;  set (EXIO5 HIGH &#8594; TJA1051T).</text>
+  <text x="520" y="616" fill="#E6E6E6" font-size="12.5">&#8226;  Native USB / USB-MSC off with CAN on &#8594; use UART port.</text>
+  <text x="520" y="638" fill="#E6E6E6" font-size="12.5">&#8226;  Engine in RUN to wake the bus; key-off silence is normal.</text>
+  <text x="520" y="660" fill="#E6E6E6" font-size="12.5">&#8226;  Boot log should read: TX=GPIO20, RX=GPIO19, 500kbps.</text>
+  <text x="520" y="682" fill="#E6E6E6" font-size="12.5">&#8226;  Verify every wire color with a meter before trusting it.</text>
+  <text x="520" y="704" fill="#F0C24A" font-size="12.5">&#8226;  Still silent? Swap CANH&#8596;CANL (Green&#8596;Brown/White).</text>
+
+  <!-- footer -->
+  <text x="60" y="752" fill="#5C6063" font-size="11">370zMonitor v6.0 &#183; onboard TJA1051T transceiver &#183; GPIO19/20 muxed with native USB via FSUSB42UMX (EXIO5)</text>
+</svg>

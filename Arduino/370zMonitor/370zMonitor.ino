@@ -1,9 +1,19 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v6.0
+ * 370zMonitor v6.1
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v6.1 Changes (OBD CAN operational on-car + stale-value UI fix):
+ * - CAN_MUX_TO_CAN set to 1 — EXIO5 driven HIGH at boot, so the FSUSB42UMX mux
+ *   connects GPIO19/20 to the onboard TJA1051T. OBD CAN confirmed reading the
+ *   2018 370Z ECU (water temp / ECT) on the car over a 2-wire CANH/CANL tap.
+ * - FIXED: Water Temp and Fuel Trust gauges latched their last value when OBD
+ *   data went stale (they had no "became-invalid -> show ---" handler). Added the
+ *   same invalid-transition block the Modbus gauges use; both now clear to "---"
+ *   ~3 s (OBD_PID_STALE_THRESHOLD_MS) after the ECU stops responding.
+ * - NOTE: Fuel Trust still only displays once ECT >= OBD_WARMUP_TEMP_C (80 C).
  *
  * v6.0 Changes (OBD CAN finally works):
  * - FIXED: EXIO_CAN_SEL (CH422G EXIO5) now driven HIGH in initIOExtension().
@@ -6479,10 +6489,12 @@ bool initIOExtension() {
     delay(10);
     // EXIO_CAN_SEL HIGH routes the FSUSB42UMX mux to the onboard TJA1051T CAN transceiver.
     // Setting it HIGH disconnects the NATIVE USB port (GPIO19/20).
-    // *** TEMPORARILY DISABLED for bring-up/debug *** — leave mux in USB mode so the
-    // native USB port stays alive and CAN is removed from the equation. To re-enable CAN,
-    // change CAN_MUX_TO_CAN to 1.
-    #define CAN_MUX_TO_CAN 0
+    // CAN_MUX_TO_CAN 1 = drive EXIO5 HIGH so the FSUSB42UMX mux connects GPIO19/20 to the
+    // onboard TJA1051T CAN transceiver. REQUIRED for OBD CAN to produce data. Side effect:
+    // native USB goes dark (USB-MSC can't run while CAN is active) — flash/serial over the
+    // separate UART USB-C port. Set back to 0 only if you need native USB/USB-MSC and can
+    // live without CAN.
+    #define CAN_MUX_TO_CAN 1
 #if CAN_MUX_TO_CAN
     g_exio_state = (1u << EXIO_TP_RST) | (1u << EXIO_SD_CS) | (1u << EXIO_CAN_SEL);
 #else
@@ -7295,6 +7307,45 @@ void updateUI() {
 #endif
     }
 
+    // Handle transition to invalid state for water temperature (OBD stale / disconnected)
+    static bool water_temp_was_data_valid = true;
+    if (!g_vehicle_data.water_temp_valid && water_temp_was_data_valid) {
+        // Just became invalid - update UI once to show "---" with unit
+        const char* waterTempUnit = getTempUnitStr(g_water_temp_unit);
+        char buf[32];
+        if (ui_W_TEMP_Value) {
+            snprintf(buf, sizeof(buf), "---°%s", waterTempUnit);
+            lv_label_set_text(ui_W_TEMP_Value, buf);
+            lv_obj_set_style_text_color(ui_W_TEMP_Value, lv_color_hex(0xFFFFFF), 0);
+        }
+
+        // Reset panel background
+        if (ui_W_TEMP_Value_Tap_Panel) {
+            lv_obj_set_style_bg_opa(ui_W_TEMP_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        }
+        g_water_temp_panel_was_critical = false;
+
+        // Hide critical label immediately
+#if ENABLE_VALUE_CRITICAL
+        if (ui_W_TEMP_VALUE_CRITICAL_Label) {
+            lv_obj_set_style_text_opa(ui_W_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(ui_W_TEMP_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+        }
+        water_temp_was_critical = false;
+        water_temp_visible = false;
+        water_temp_exit_time = 0;
+#endif
+
+#if ENABLE_LIGHTWEIGHT_BARS
+        // Reset bar to 0
+        updateLightweightBar(2, 0);
+#endif
+
+        // Reset last display value
+        last_water_temp_hot_display = -9999;
+    }
+    water_temp_was_data_valid = g_vehicle_data.water_temp_valid;
+
     // ----- Trans Temperature -----
     if (g_vehicle_data.trans_temp_valid) {
         const char* transTempUnit = getTempUnitStr(g_trans_temp_unit);
@@ -7645,6 +7696,44 @@ void updateUI() {
             &fuel_trust_was_critical, &fuel_trust_visible, &fuel_trust_exit_time, &fuel_trust_last_blink);
 #endif
     }
+
+    // Handle transition to invalid state for fuel trust
+    // (OBD stale/disconnected, OR engine not yet warmed to OBD_WARMUP_TEMP_C)
+    static bool fuel_trust_was_data_valid = true;
+    if (!g_vehicle_data.fuel_trust_valid && fuel_trust_was_data_valid) {
+        // Just became invalid - show "---" once
+        if (ui_FUEL_TRUST_Value) {
+            lv_label_set_text(ui_FUEL_TRUST_Value, "--- %");
+            lv_obj_set_style_text_color(ui_FUEL_TRUST_Value, lv_color_hex(0xFFFFFF), 0);
+        }
+
+        // Reset panel background
+        if (ui_FUEL_TRUST_Value_Tap_Panel) {
+            lv_obj_set_style_bg_opa(ui_FUEL_TRUST_Value_Tap_Panel, LV_OPA_TRANSP, 0);
+        }
+        g_fuel_panel_was_critical = false;
+
+        // Hide critical label immediately
+#if ENABLE_VALUE_CRITICAL
+        if (ui_FUEL_TRUST_VALUE_CRITICAL_Label) {
+            lv_obj_set_style_text_opa(ui_FUEL_TRUST_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(ui_FUEL_TRUST_VALUE_CRITICAL_Label, 0, LV_PART_MAIN);
+        }
+        fuel_trust_was_critical = false;
+        fuel_trust_visible = false;
+        fuel_trust_exit_time = 0;
+#endif
+
+#if ENABLE_LIGHTWEIGHT_BARS
+        // Reset bar to 0
+        updateLightweightBar(6, 0);
+#endif
+
+        // Reset smoothing + last display value
+        smooth_fuel_trust = -1.0f;
+        last_fuel_trust_display = -9999;
+    }
+    fuel_trust_was_data_valid = g_vehicle_data.fuel_trust_valid;
 }
 
 //=================================================================
@@ -8019,7 +8108,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v6.0 - Dual-Core + G-Sensor");
+    Serial.println("   370zMonitor v6.1 - Dual-Core + G-Sensor");
     Serial.println("========================================");
 
     if (psramFound()) {

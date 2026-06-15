@@ -773,6 +773,12 @@ void resetUIElements();
 #define PRESSURE_CURRENT_SPAN_UA  16000    // 20000 - 4000 = 16000 µA span
 #define PRESSURE_FS_PSI           150.0f   // Full-scale pressure at 20mA
 
+// --- TEMP TROUBLESHOOTING (v6.2 oil-pressure bring-up) ---
+// Set to 1 to stream CH1's raw loop current off the ESP32 so you can watch the
+// actual mA (and whether it moves when you apply pressure) without a meter in
+// mA mode. Set back to 0 once the P51 is validated.
+#define DEBUG_OIL_PRESSURE        1        // 1 = print [OILP] CH1 raw uA/mA at ~5 Hz
+
 // PRTXI Temperature Sensor Calibration (4-20mA output, loop-powered)
 // PRTXI-1/2N-1/4-4-IO outputs 4-20mA linear for -50°C to +200°C (250°C range)
 //
@@ -1235,6 +1241,12 @@ void initModbusSensors() {
                     Serial.printf("[MODBUS] WARNING: Failed to configure %s!\n", currentChannels[i].name);
                     Serial.println("[MODBUS]   Check: Is jumper set to 'I' or 'mA' position?");
                 }
+                // Read the mode back to confirm the write actually took (esp. CH1)
+                uint16_t verifyMode = 0xFFFF;
+                if (modbusReadHoldingRegister(MODBUS_SLAVE_ADDR, currentChannels[i].reg, &verifyMode)) {
+                    Serial.printf("[MODBUS] %s readback mode = %u %s\n", currentChannels[i].name,
+                                  verifyMode, (verifyMode == WAVESHARE_MODE_4_20MA) ? "(OK 4-20mA)" : "(NOT Mode 3!)");
+                }
                 delay(10);  // Small delay between writes
             }
             // ==============================================================
@@ -1309,6 +1321,21 @@ void readModbusSensors() {
         // Waveshare configured to Mode 3 (4-20mA) - returns µA directly
         uint16_t oil_press_uA = g_modbus_channel_values[MODBUS_CH_OIL_PRESSURE];
         bool sensor_connected = (oil_press_uA >= PRTXI_MIN_VALID_UA);
+
+#if DEBUG_OIL_PRESSURE
+        // Stream raw CH1 current so the actual loop mA is visible (pump test):
+        //   ~4 mA / ~0 PSI, rising with applied pressure = healthy sensor
+        //   pegged >20 mA / >150 PSI and NOT moving with pressure = not regulating (toast)
+        //   offline(<3mA) = open loop / wrong wires / no 24V
+        static uint32_t lastOilDbg = 0;
+        if (millis() - lastOilDbg >= 200) {   // ~5 Hz
+            lastOilDbg = millis();
+            float mA  = oil_press_uA / 1000.0f;
+            float psi = ((float)oil_press_uA - PRESSURE_MIN_CURRENT_UA) / PRESSURE_CURRENT_SPAN_UA * PRESSURE_FS_PSI;
+            Serial.printf("[OILP] CH1 raw=%u uA = %.2f mA -> %.1f PSI(unclamped) | %s\n",
+                          oil_press_uA, mA, psi, sensor_connected ? "in-loop" : "offline(<3mA)");
+        }
+#endif
         
         // Log sensor state changes
         if (sensor_connected != g_sensor_ch1_connected) {

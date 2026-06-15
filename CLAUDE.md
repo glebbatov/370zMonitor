@@ -287,23 +287,22 @@ Channel mode is written at startup via Modbus Function 0x06 to holding registers
    P51 Pin 2 = NC  ->  cut back, cap, heat-shrink
 ```
 
-**Wire colors on this unit: red / black / yellow.** (The SSI datasheet's generic table lists Pin 3 as *white*; this harness has *yellow* there.) Most likely mapping:
+**Wire colors on this unit: red / black / yellow. Bench-confirmed mapping (2026-06-14, by powered sweep):**
 
-- **Red -> +24V** (Pin 1, Vin)
-- **Yellow -> Waveshare AI1+** (Pin 3, loop return)
-- **Black -> UNUSED** (Pin 2, NC) — cap it. On the old PX3 black was GND and used; on the P51 it is **not connected**.
+- **Red -> +24V** (P51 Vin)
+- **Black -> Waveshare AI1+** (P51 loop return)
+- **Yellow -> UNUSED** — cap it (the old 3-wire *signal* lead; a 2-wire current loop has no use for it)
 - **Waveshare AI1- -> GND (24V-)**
 
-Versus the old PX3 harness, only two things change: Red now feeds from the 24V rail (not a 5V buck output), and **Black goes from GND to disconnected**. Yellow->AI1+ and AI1- ->GND are unchanged.
+Why it lands this way: a 2-wire 4-20mA loop uses only supply (+) and ground/return (-). On this Honeywell-spec pigtail ([Amazon B09G65X1YC](https://www.amazon.com/dp/B09G65X1YC)), red = supply = P51 Vin, black = ground = the loop return, and yellow = the old voltage *output* pin, which a current loop doesn't use. (Earlier datasheet-only guesses — first red=Vin/yellow=AI+, then black=Vin — were both wrong on the details; only the powered sweep settled it.)
 
-**Verify before power (this connector has no pin-number stamp — colors are the only field key):**
-- Unplugged, ohm each wire pair. On the 4-20mA variant the **NC pin (Pin 2 / black) reads OPEN to both others** — that uniquely identifies the unused wire. (Contrast the PX3, where black-to-yellow read ~49 kΩ; if black now reads open you've confirmed the 2-wire loop.)
-- The other two wires are Vin and return. Confirm which is Vin by bench-powering at **12V** (within the P51's +/-16V / 5-min reverse tolerance, so a wrong guess for a few seconds won't hurt) with a meter in mA series: ~4 mA at atmosphere = correct, that wire is Vin.
-- Shielded 2-conductor cable for the engine-bay run; shield to GND at the box end only.
+**Finding the pins on a replacement — the ohm test does NOT work here:** unpowered, a 4-20mA transmitter is high-impedance, so all three wires read open (useless for ID). Sweep *powered* instead, and **at 12V, not 24V** — reverse-polarity combinations in the sweep otherwise exceed the P51's +/-16V reverse limit and can damage the sensor. Cap one wire, try the other two as the loop in both polarities, and watch for ~4 mA (or a sane PSI on CH1); the combo that draws ~4 mA gives Vin (+) and the return. Once known, only ever wire it forward (red=+24V, black=AI1+) — never reverse it.
+
+Shielded 2-conductor cable for the engine-bay run; shield to GND at the box end only.
 
 ### Pressure Sensor Install Status (as of 2026-06-14)
 
-**Current state:** PX3 replaced by the **P51 4-20mA** sensor (ordered + received). Firmware updated to v6.2 (CH1 -> Mode 3, current-based `convertToPSI()`). Not yet flashed / bench-confirmed on the car.
+**Current state:** P51 wiring/pin mapping bench-confirmed 2026-06-14: **red=+24V (Vin), black=AI1+ (return), yellow=capped (NC)**. **First P51 CONFIRMED DEFECTIVE** — the raw-µA debug log shows CH1 railed at **20.00 mA (20000 µA), dead-steady, at atmospheric pressure** (0 psi should be 4 mA). A 4-20mA sensor can't sit at full-scale current with no pressure, so its output stage isn't regulating. Genuinely the sensor, not the box/firmware: the PRTXI temp loops read correct 4-20mA on the same Waveshare/Mode-3/firmware in the same window. Either a bad unit or stressed by ~24V reverse polarity during the pairing sweep (do future sweeps at 12V). **RMA/replace.** (The Waveshare caps reported current at 20000 µA, so the true draw could be higher — an inline mA meter shows the real number; verdict is already clear.) Firmware v6.2 (CH1 Mode 3) confirmed working. Also seen this session: intermittent RS485/Modbus dropouts (`Got 0 bytes` / garbled / `Communication LOST`) — a separate bus-level issue; check whether it steadies once the bad sensor is pulled (a shorted sensor can drag a current-limited supply).
 
 Why the PX3 died (historical): the JTAREA LM2596 buck module ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) had a broken feedback path and passed 8.5 V (near its 24 V input) straight to the sensor — 62 % over the PX3's 5.25 V absolute max — cooking its ASIC. The 4-20mA P51 removes this entire failure class: loop-powered off 24V, with no regulated-5V rail to fail.
 
@@ -311,7 +310,7 @@ Why the PX3 died (historical): the JTAREA LM2596 buck module ([Amazon B0D2TS7CBN
 1. ✅ Replaced PX3 with Amphenol SSI **P51-150-G-B-P-20MA-000-000** (150 PSI gauge, 4-20mA, 1/8" NPT, Packard / Metri-Pack 150).
 2. ✅ Dropped the buck converter entirely — P51 runs straight off the 24V rail (8-30V). The JTAREA LM2596 is out for good.
 3. ✅ Firmware v6.2: CH1 Mode 3; `convertToPSI()` = `((uA-4000)/16000)*150`; disconnect via `PRTXI_MIN_VALID_UA`.
-4. ⏳ Confirm wire->pin mapping (red/black/yellow; black / Pin 2 should read open — see wiring diagram).
+4. ✅ Bench-confirmed wire->pin mapping: red=Vin (+24V), black=loop return (AI1+), yellow=NC (cap). Found by powered sweep — the ohm test is useless on a 4-20mA sensor (high-Z unpowered, all read open).
 5. ⏳ Add 1.5KE36A TVS across the 24V rail (band -> +24V) for transient protection.
 6. ⏳ Bench-test, then install: read CH1 PSI directly off the ESP32.
 
@@ -900,7 +899,7 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 7. **PRTXI wiring is confirmed correct as documented** (Pin 1 = V+, Pin 2 = Signal). Do NOT flip these in docs even though some PRTXI datasheets diagram them differently.
 8. **CAN pins: GPIO20=CANTX, GPIO19=CANRX (do not swap), and they are MUXED with native USB.** Two things bit the June 2026 install and produced *zero* CAN data: (a) CH422G **EXIO5 (`EXIO_CAN_SEL`) was never driven HIGH**, so the FSUSB42UMX mux left GPIO19/20 on the native-USB port and the TJA1051T was disconnected from the MCU; (b) **TX/RX were swapped** in firmware (had TX=19/RX=20). Fixed in v6.0. Per Waveshare: GPIO20=CANTX, GPIO19=CANRX. Setting CAN mode disables native USB (USB-MSC can't run with CAN active) — use the separate UART USB-C port for flash/serial. Ignore any older "GPIO17/18" comments.
 9. **Oil pressure is now a P51 4-20mA current loop (v6.2), not the old PX3 voltage sensor.** 2-wire, loop-powered off the 24V rail (8-30V); CH1 is Waveshare Mode 3 like the temp channels. No buck converter, no 5V rail, no divider — which removes the regulated-5V overvoltage failure mode that killed the PX3. Function is set by connector PIN: Pin 1 = Vin, Pin 2 = NC (unused), Pin 3 = loop return -> AI1+.
-10. **P51 wire colors on this unit: red / black / yellow** (the SSI datasheet's generic table shows Pin 3 = *white*; this harness has *yellow*). Most likely mapping: **Red = Pin 1 (Vin -> +24V), Black = Pin 2 (NC — UNUSED, cap it), Yellow = Pin 3 (return -> AI1+)**. Trap vs. the old PX3: black was GND-and-used; on the P51 it is **not connected**. Verify unplugged — the NC pin (black) reads **open** to both others (PX3 black-to-yellow read ~49 kΩ); then bench-power at 12V and look for ~4 mA to confirm which wire is Vin. Pending bench confirmation on this unit.
+10. **Oil-pressure pigtail mapping is BENCH-CONFIRMED (2026-06-14): red=+24V (Vin), black=AI1+ (loop return), yellow=capped (unused).** It's a Honeywell-spec pigtail ([Amazon B09G65X1YC](https://www.amazon.com/dp/B09G65X1YC)) on an SSI P51; a 2-wire 4-20mA loop uses only supply (red) and ground/return (black), so the old 3-wire signal lead (yellow) is dead. The **ohm test can't ID the pins** on a 4-20mA sensor (unpowered = high-Z, all read open) — sweep powered, and do it at **12V** so reverse combos don't exceed the P51's +/-16V reverse limit. Never wire it reversed. (Earlier datasheet guesses red=Vin/yellow=AI+ and then black=Vin were both wrong.)
 11. **No buck converter in the oil-pressure circuit anymore.** The P51 is loop-powered off 24V directly. The JTAREA-branded LM2596 ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) that cooked the PX3 (broken feedback, passed ~8.5 V) is removed for good. If any *future* circuit needs regulated 5V, use a fixed-output industrial part (Recom R-78E5.0-1.0 / Murata OKI-78SR-5 / Pololu D24V5F5), never an adjustable Amazon-resold LM2596.
 12. **P51 supply range is 8-30V; the 24V rail is well within it.** Unlike the PX3 (5.25 V absolute max, easily exceeded), the P51 tolerates the raw rail, so there is no precise-supply check to get wrong. Add a **1.5KE36A TVS across the 24V rail** (band / cathode -> +24V) for load-dump / transient protection; one TVS on the rail covers the P51 and all four PRTXI loops.
 13. **P51 reverse-polarity tolerance is +/-16V for ~5 min (datasheet) — not unlimited.** A brief reversed bench hookup at <=16V won't kill it, but sustained reverse at 24V can. The rail TVS + fuse protect against a reversed *rail* (TVS forward-conducts, blows the fuse) but **not** against swapping the sensor's own two leads. Always confirm Red=Vin, Yellow=return before power.

@@ -4,7 +4,7 @@
 
 **370zMonitor** is a track car data logging and display system for a 2018 Nissan 370Z. It uses an ESP32-S3 microcontroller with a 7" touchscreen to display real-time sensor data during track days.
 
-- **Current Version:** v6.2
+- **Current Version:** v6.6
 - **Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (800x480) with onboard TJA1051T CAN transceiver and SP3485 RS485 transceiver
 - **Hardware:** Waveshare Industrial 8-Ch Analog Acquisition Module (Model B, 0-10V / 0-20mA / 4-20mA selectable)
 - **Hardware:** Crowtail I2C Hub 2.0 (for multiple I2C devices)
@@ -56,10 +56,11 @@
 
 ## Version Sync Checklist
 
-**When updating version number, change BOTH locations:**
+**When updating version number, change ALL THREE locations:**
 
-1. `Arduino/370zMonitor/370zMonitor.ino` - Header comment block at top (line ~4: `* 370zMonitor v5.8`)
+1. `Arduino/370zMonitor/370zMonitor.ino` - Header comment block at top (line ~4: `* 370zMonitor v6.3`)
 2. `Arduino/370zMonitor/ui_ScreenSplash.c` - `lv_label_set_text(version_label, "vX.X")` (~line 125)
+3. `Arduino/370zMonitor/370zMonitor.ino` - Serial boot banner (~line 8181: `Serial.println("   370zMonitor vX.X - Dual-Core + G-Sensor")`)
 
 ---
 
@@ -238,17 +239,21 @@ Transparent `Print` wrapper that mirrors all `Serial.print()` output to the per-
 - SP3485 transceiver on the Waveshare ESP32-S3 board (auto-direction, no DE/RE pin)
 - 9600 baud, 8N1, slave address 1
 
-### Channel Mapping (5 channels active as of v5.4)
+### Channel Mapping (as of v6.6 — ORIGINAL 5-channel layout restored)
 | Channel | Sensor | Signal | Waveshare Mode |
 |---------|--------|--------|----------------|
-| 0 (AI1) | Oil Pressure (P51-150-G-B-P-20MA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
+| 0 (AI1) | **Oil Pressure (P51-150-G-B-P-20MA)** — via isolated 24V DC-DC (see Install Status) | 4-20mA loop-powered | Mode 3 (4-20mA) |
 | 1 (AI2) | Oil Temperature (PRTXI 4-20mA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
 | 2 (AI3) | Transmission Temperature (PRTXI 4-20mA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
 | 3 (AI4) | Power Steering Temperature (PRTXI 4-20mA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
 | 4 (AI5) | Differential Temperature (PRTXI 4-20mA) | 4-20mA loop-powered | Mode 3 (4-20mA) |
-| 5-7 | Reserved for future sensors | - | - |
+| 5-7 (AI6-AI8) | Reserved for future sensors | - | - |
 
-Channel mode is written at startup via Modbus Function 0x06 to holding registers `0x1000` (CH1) through `0x1004` (CH5). **As of v6.2 all five channels (CH1-CH5) are 4-20mA loops, so every channel is auto-configured to Mode 3 on each boot** in `initModbusSensors()`. (CH1 was Mode 0 / 0-10V during the PX3 voltage era, through v6.1.)
+**v6.6 restores the clean original mapping.** The v6.3–v6.5 channel swaps (oil pressure shuffled CH1→CH6→CH2→CH3) were all chasing the oil-pressure dropout, which turned out to be a **grounding/isolation fault, not any bad channel** — see "Pressure Sensor Install Status" below and `oil_pressure_isolation_saga.md`. All five channels are good. Firmware: `MODBUS_CH_OIL_PRESSURE=0`, `OIL_TEMP=1`, `TRANS_TEMP=2`, `STEER_TEMP=3`, `DIFF_TEMP=4`; `MODBUS_NUM_CHANNELS=5`; boot configures CH1–CH5 for Mode 3.
+
+**All five channel jumpers must be ON (current mode)** — AI1 especially, which spent the saga in voltage mode (the original "CH1 dead" was that jumper-OFF mistake, not a dead channel). The Waveshare per-channel jumper selects **ON = current (sense resistor in) / OFF = voltage (high-Z)**; a 4-20mA sensor needs the jumper ON *and* software Mode 3. A 4-20mA loop into a voltage-mode (high-Z) input rails to full scale (20000 µA / 150 PSI), which is exactly what produced the bogus "dead CH1" read.
+
+**Physical wiring (v6.6):** oil pressure on **AI1**, fed from a dedicated **isolated 24V DC-DC** (converter +24V out → P51 Pin1; Pin3 → AI1+; AI1− → converter −out). The four PRTXI temps on AI2–AI5 wire as before (24V loop, return to their AI+). All AI1–AI5 jumpers ON.
 
 ### Pressure Sensor Calibration (CH1)
 ```cpp
@@ -269,6 +274,8 @@ Channel mode is written at startup via Modbus Function 0x06 to holding registers
 ### Wiring Diagram (P51 oil pressure — 4-20mA loop, v6.2+)
 
 **2-wire 4-20mA current loop, loop-powered. Function is fixed by connector PIN, not wire color: Pin 1 = Vin (8-30V), Pin 2 = NC (unused on the 4-20mA variant), Pin 3 = loop return.**
+
+> **v6.6 update — power the loop from an ISOLATED 24V DC-DC, not the shared 24V rail.** The "+24V rail" in the diagram below must be the output of a dedicated isolated DC-DC (Mean Well DDR-15G-24 / Traco TRN 3-1215) fed from car 12V, with its −out tied only to AI1−. Powering the loop from the box's shared rail is exactly what caused the long dropout saga (grounding/isolation fault). See "Pressure Sensor Install Status" and `oil_pressure_isolation_saga.md`.
 
 ```
    +24V rail --[fuse]--+-----------------> P51 Pin 1 (Vin, 8-30V)
@@ -300,27 +307,33 @@ Why it lands this way: a 2-wire 4-20mA loop uses only supply (+) and ground/retu
 
 Shielded 2-conductor cable for the engine-bay run; shield to GND at the box end only.
 
-### Pressure Sensor Install Status (as of 2026-06-14)
+### Pressure Sensor Install Status (RESOLVED 2026-06-20 — grounding/isolation, NOT the module)
 
-**Current state:** P51 wiring/pin mapping bench-confirmed 2026-06-14: **red=+24V (Vin), black=AI1+ (return), yellow=capped (NC)**. **First P51 CONFIRMED DEFECTIVE** — the raw-µA debug log shows CH1 railed at **20.00 mA (20000 µA), dead-steady, at atmospheric pressure** (0 psi should be 4 mA). A 4-20mA sensor can't sit at full-scale current with no pressure, so its output stage isn't regulating. Genuinely the sensor, not the box/firmware: the PRTXI temp loops read correct 4-20mA on the same Waveshare/Mode-3/firmware in the same window. Either a bad unit or stressed by ~24V reverse polarity during the pairing sweep (do future sweeps at 12V). **RMA/replace.** (The Waveshare caps reported current at 20000 µA, so the true draw could be higher — an inline mA meter shows the real number; verdict is already clear.) Firmware v6.2 (CH1 Mode 3) confirmed working. Also seen this session: intermittent RS485/Modbus dropouts (`Got 0 bytes` / garbled / `Communication LOST`) — a separate bus-level issue; check whether it steadies once the bad sensor is pulled (a shorted sensor can drag a current-limited supply).
+> **Both earlier verdicts were WRONG** — it was never a defective sensor ("RMA the P51") and never a bad module ("replace the Waveshare"). The real cause was a **grounding/isolation fault**: the P51's 4-20mA loop shared the electric box's power-and-ground, so its 4 mA had a sneak path *around* the Waveshare's 500 Ω sense resistor and the module read ≈0/`---`. **Fix = power the loop from an isolated 24V DC-DC.** Full narrative in **`oil_pressure_isolation_saga.md`**. (Old verdicts kept only in the version history.)
 
-Why the PX3 died (historical): the JTAREA LM2596 buck module ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) had a broken feedback path and passed 8.5 V (near its 24 V input) straight to the sensor — 62 % over the PX3's 5.25 V absolute max — cooking its ASIC. The 4-20mA P51 removes this entire failure class: loop-powered off 24V, with no regulated-5V rail to fail.
+**THE SENSOR IS GOOD — proven 2026-06-17.** With the P51 on a fully-verified loop, a voltmeter reads **2.074 V at AI+ (to GND)** at atmosphere. The Waveshare 4-20mA input uses a **500 Ω sense resistor** (its "2–10 V" range = 4–20 mA × 500 Ω), so 2.074 V = **~4.15 mA = ~0 PSI** — a textbook-correct zero reading. The sensor is regulating current correctly. It also responded to applied pressure (values changed) during an earlier bench test on CH6. **Do not RMA the sensor.**
 
-**Actions:**
-1. ✅ Replaced PX3 with Amphenol SSI **P51-150-G-B-P-20MA-000-000** (150 PSI gauge, 4-20mA, 1/8" NPT, Packard / Metri-Pack 150).
-2. ✅ Dropped the buck converter entirely — P51 runs straight off the 24V rail (8-30V). The JTAREA LM2596 is out for good.
-3. ✅ Firmware v6.2: CH1 Mode 3; `convertToPSI()` = `((uA-4000)/16000)*150`; disconnect via `PRTXI_MIN_VALID_UA`.
-4. ✅ Bench-confirmed wire->pin mapping: red=Vin (+24V), black=loop return (AI1+), yellow=NC (cap). Found by powered sweep — the ohm test is useless on a 4-20mA sensor (high-Z unpowered, all read open).
-5. ⏳ Add 1.5KE36A TVS across the 24V rail (band -> +24V) for transient protection.
-6. ⏳ Bench-test, then install: read CH1 PSI directly off the ESP32.
+**Why the early "dead CH1 / toast sensor" reads were bogus — the jumper.** The Waveshare has a **per-channel hardware jumper: ON = current mode (4-20mA sense resistor in circuit) / OFF = voltage mode (high-Z 0-10V input)**. A 4-20mA sensor needs the jumper **ON** *and* software Mode 3. **CH1's jumper was left OFF** (a leftover from the PX3 voltage sensor). A 4-20mA loop driven into a voltage-mode (high-Z) input has no sense resistor to flow through, so the sensor's current source rails the input → module reads **full scale = 20000 µA = 150 PSI**, dead-steady. That is exactly the "CH1 is dead / sensor is toast" symptom — but it was the jumper, not a dead channel or sensor. **CH1 was never retested with its jumper ON; it may be fine.** (The user later reproduced this: flipping a channel's jumper OFF → 150 PSI, back ON → real reading.)
 
-**Bench / install sequence:**
-1. Wire the loop: 24V+ -> P51 Pin 1 (Red); P51 Pin 3 (Yellow) -> Waveshare AI1+; AI1- -> GND. Pin 2 (Black) capped.
-2. Any 8-30V supply works on the bench (loop current is supply-independent). No precise-5V check needed — that risk is gone.
-3. Flash v6.2 over the UART USB-C port (native USB is off while CAN is active). Serial @ 115200.
-4. On boot: `[MODBUS] CH1 (Oil Pressure) configured for 4-20mA (Mode 3)`. When the loop is alive: `[MODBUS] CH1: Sensor CONNECTED (~4000 uA)` — ~4000 uA at atmosphere is the zero check.
-5. The 1-second summary shows `Oil-Press:0PSI` at rest, climbing with applied pressure (bike pump). `DISCONNECTED (<3000 uA)` = open loop / wrong pins / no 24V.
-6. Reinstall in the oil-filter sandwich plate; start engine; watch for a smooth ~30-60 PSI at idle, climbing with RPM.
+**The real problem = grounding/isolation (NOT the module).** The module is fine — a sibling 4-20mA channel (diff temp PRTXI) read rock-steady on it the whole time, and oil pressure read a clean 4 mA whenever its loop was on an *isolated* supply. The dropout followed the **sensor's loop**, never a channel. The defining test: the P51 works on an **isolated/floating** supply (a bench supply dedicated to just the loop) and fails on **box power** (the Victron rail or the car battery, both sharing the system ground). A 4-20mA loop must return its current through the module's sense resistor; sharing the box ground gave the 4 mA a parallel path that bypassed the resistor, so the module read ≈0. (Why the readings were binary 4.00-or-0: a diverted loop reads full current when the sneak path is open and ≈0 when it's active — never an in-between value. The chronic RS485 drops were a separate power-up artifact; the temps prove the bus is fine.)
+
+**Fix:** power the oil-pressure loop from an **ISOLATED 24V DC-DC** (Mean Well **DDR-15G-24** or Traco **TRN 3-1215**), input from **car 12V** (not the box 24V rail — that re-bonds the grounds across the converter and defeats it), output **+24V → P51 red, −out → AI1− only**. 24V output is required for headroom to full-scale 150 PSI through the 500 Ω burden. Do NOT RMA the sensor or replace the module.
+
+**Pin mapping (734-1165-ND harness, confirmed by PIN not color, 2026-06-17):** Pin 1 = +24V (Vin), Pin 2 = **NA / unused** (not a ground — leave open), Pin 3 = loop return → **AI+**; AI− → supply (−). Continuity verified: 12V+↔Pin1 0.1 Ω, Pin3↔AI+ 0.3 Ω, AI−↔12V− 0.2 Ω, Pin2 isolated.
+
+**Current firmware: v6.6** — original 5-channel mapping restored: oil pressure on **AI1** (via the isolated DC-DC), oil/trans/steer/diff temps on **AI2–AI5**. `MODBUS_CH_OIL_PRESSURE=0`, `OIL_TEMP=1`, `TRANS_TEMP=2`, `STEER_TEMP=3`, `DIFF_TEMP=4`. **Open item:** the isolated DC-DC ships ~late June 2026; until installed, oil pressure still reads `---` on box power (expected). Validate per the checklist in `oil_pressure_isolation_saga.md`.
+
+**How to measure a 4-20mA loop without an inline mA meter** (the user's KAIWEETS HT206D is a **clamp meter** — current only via the 60A/600A clamp jaw, no series mA mode, useless for 4-20mA):
+- **Voltmeter trick (no parts):** DC volts at **AI+ to GND ÷ 500 Ω = loop current.** 2.0 V = 4 mA (0 PSI), 10 V = 20 mA (150 PSI). (Cross-check the 500 Ω by measuring a known temp channel: V_AI+ ÷ its known mA.)
+- **Resistor substitution (bypass the module):** 24V+ → Pin1; Pin3 → [any 100–500 Ω resistor] → 24V−; measure V across the resistor; current = V ÷ R. Confirms the sensor independent of the Waveshare.
+
+**Open items / next steps:**
+1. ⏳ Reseat CH3 jumper (ON) + re-torque AI3+ terminal; re-test whether the module reports the ~4 mA that's present.
+2. ⏳ If it still won't report → **replace the Waveshare module** (CH1/CH6/CH3 all misbehave + chronic RS485 drops = damaged module). The P51 sensor and harness are good and can carry straight over.
+3. ⏳ Add 1.5KE36A TVS across the 24V rail (band → +24V) for transient protection.
+4. ⏳ After a new module reads steady 0 PSI / 4 mA at rest and climbs under a pump, reinstall in the oil-filter sandwich plate; expect ~30-60 PSI at idle, climbing with RPM.
+
+Why the PX3 died (historical): the JTAREA LM2596 buck module ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) had a broken feedback path and passed 8.5 V straight to the sensor — 62 % over the PX3's 5.25 V absolute max — cooking its ASIC. The 4-20mA P51 removes this entire failure class: loop-powered off 24V, no regulated-5V rail to fail.
 
 ### Buck Converter & Supply Notes (historical — no longer used)
 
@@ -908,6 +921,8 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 16. **LVGL v9 has its own set of traps** — wrong library version, v8 `lv_conf.h`, the `sizeof(lv_color_t)`=3 buffer trap (black screen), internal-RAM exhaustion (breaks touch/WiFi/SD), the `.S` assembler errors, and the `useBigEndian`/bounce-buffer constructor args (inverted colors / tearing). All are documented in the **"LVGL v9 / Display Stack"** section above. If the display, touch, or memory misbehaves after a library change, start there.
 17. **Modbus dropping out when the car key cycles is NOT a fault.** The electric box is powered from an ignition-switched wire, so it loses power with the car. Repeated `[MODBUS] Read failed` / `Communication LOST` after a key-off is expected; it recovers on the next power-up.
 18. **Every gauge in `updateUI()` needs BOTH a valid-update path and a "became-invalid → show `---`" path.** The `if (xxx_valid) { ... }` block only repaints while data is valid; without a matching transition-to-invalid block (using a `static bool xxx_was_data_valid`), the label latches its last value forever when the sensor drops. This bit OBD-fed **Water Temp** and **Fuel Trust** (they had no invalid path and stayed frozen on key-off / OBD unplug) — fixed in v6.1 by copying the Modbus gauges' pattern. When adding any new gauge, add both paths.
+19. **Waveshare has a PER-CHANNEL HARDWARE JUMPER (voltage vs current) — separate from the software Mode 3 register. Both must agree.** Jumper **ON = current mode** (4-20mA sense resistor in circuit) / **OFF = voltage mode** (high-Z 0-10V). A 4-20mA sensor needs the jumper **ON** *and* software Mode 3. If the jumper is **OFF** on a 4-20mA loop, the sensor's current source rails the high-Z input → module reads **full scale (20000 µA / 150 PSI), dead-steady**. **This — not a dead channel or sensor — is what produced the long "CH1 is dead / first P51 is toast" misdiagnosis (CH1's jumper was left OFF from the PX3 era).** When a 4-20mA channel reads pegged-150 or flat-0, check the jumper FIRST. Measure loop current with a voltmeter: **V(AI+ to GND) ÷ 500 Ω = mA** (the module's "2-10V" range is 4-20mA through a 500 Ω sense resistor; 2.0 V = 4 mA = 0 PSI).
+20. **Oil-pressure dropout = a GROUNDING/ISOLATION fault, not a bad sensor or module (RESOLVED v6.6).** Both P51 sensors are bench-good; the Waveshare module is good (a sibling 4-20mA channel ran clean on it the whole time). The P51's 4-20mA loop shared the electric box's power-and-ground, giving its 4 mA a sneak path around the module's 500 Ω sense resistor → reads ≈0/`---`. It works on an isolated/floating supply and dies on box power. **Fix: power the oil-pressure loop from an isolated 24V DC-DC (Mean Well DDR-15G-24 / Traco TRN 3-1215), input off car 12V, output− to AI1− only.** Do NOT RMA P51 sensors or replace the module. Full story: `oil_pressure_isolation_saga.md`.
 
 ---
 
@@ -915,6 +930,10 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 
 | Version | Key Changes |
 |---------|-------------|
+| v6.6 | **ROLLBACK — restored the original 5-channel mapping; real root cause found.** The oil-pressure dropout chased through v6.3–v6.5 was never a bad channel — it was a **grounding/isolation fault** (the P51 loop shared the box's power-and-ground, so its 4 mA bypassed the Waveshare's 500 Ω sense resistor and read ≈0/`---`). Proven on the bench: both P51 units read steady ~4 mA on an isolated supply and dropped out only on box power; a sibling 4-20mA channel (diff temp) was clean throughout. **Fix (hardware):** power the oil-pressure loop from an isolated 24V DC-DC (Mean Well DDR-15G-24 / Traco TRN 3-1215), input off car 12V, output− to AI1− only (24V out for full-scale headroom). **Firmware:** reverted all diagnostic swaps — `MODBUS_CH_OIL_PRESSURE` 2→0, `OIL_TEMP` 5→1, `TRANS_TEMP` 1→2; `MODBUS_NUM_CHANNELS` 6→5; boot configures CH1–CH5 Mode 3 (dead-CH1 skip + CH6 spare removed); labels + version (header/splash/banner) → v6.6. Full narrative: `oil_pressure_isolation_saga.md`. |
+| v6.5 | **DIAGNOSTIC A/B swap — oil pressure CH2 ↔ trans temp CH3.** On v6.4 the P51 read flat 0 µA on CH2 while CH3-CH5 temps read perfectly, so oil pressure is moved onto **CH3 (AI3)** — the proven-good trans-temp channel — and trans temp is moved to **CH2 (AI2)**. Physically swap the two loops between AI2/AI3 (jumpers stay ON). If the P51 reads steady 4 mA on CH3, the sensor's good and AI2/its wiring was the bad spot; if it still zeros/flickers on CH3 while trans temp is solid on CH2, the fault is the P51/harness, not the board. Firmware: `MODBUS_CH_OIL_PRESSURE` 1→2, `MODBUS_CH_TRANS_TEMP` 2→1; labels + version (header/splash/banner) → v6.5. **Also flagged:** the old "CH1 dead" reading was taken with CH1's jumper OFF (voltage mode) — likely a jumper mistake, not a dead channel; CH1 may be fine. |
+| v6.4 | **Oil pressure moved off INTERMITTENT CH6 -> CH2 (AI2).** CH6's current-sense path is flaky (reads clean 4.00 mA then drops to 0, repeatedly); a channel-swap test proved the P51 sensor + harness + wiring are good, so the fault is the CH6 jumper/terminal/front-end on the module. With CH1 already dead, this module has two bad channels (likely damaged — consider replacing). Firmware: `MODBUS_CH_OIL_PRESSURE` 5→1 (CH2/AI2, a proven-good channel); unused oil-temp slot parked on CH6 (`MODBUS_CH_OIL_TEMP` 1→5); read range unchanged (regs 0..5); boot still configures CH2-CH6 Mode 3, skips dead CH1; serial labels CH6→CH2; version→v6.4 (header + splash + banner). Wiring: move P51 loop to **AI2** (Pin1→24V, Pin3→AI2+, AI2-→GND) and set the **AI2 jumper to current mode**. |
+| v6.3 | **Oil pressure moved off DEAD Waveshare CH1 -> CH6 (AI6).** CH1's 4-20mA current input is stuck at full-scale (20000 µA / 150 PSI), dead-steady at atmosphere — confirmed with TWO different P51 sensors on the same module/firmware while CH2-CH5 read correctly (likely AI1 sense-circuit damage from the reverse-polarity event that killed the first P51). Firmware: `MODBUS_CH_OIL_PRESSURE` 0→5, `MODBUS_NUM_CHANNELS` 5→6 (reads regs `0..5`, index 0/CH1 ignored), added `WAVESHARE_CH6_MODE_REG 0x1005`; boot now configures **CH2-CH6** for Mode 3 and **skips the dead CH1**. Serial labels `[OILP]`/CONNECTED now say CH6. Wiring: move P51 loop return AI1+ → **AI6+** (AI6- → GND); leave AI1 unwired. CH1 is electrically dead — not a firmware/sensor issue. |
 | v6.2 | **Oil pressure sensor: PX3 voltage -> P51 4-20mA current loop.** Replaced PX3AN2BH150PSAAX (0.5-4.5V, needed a regulated 5V buck) with Amphenol SSI P51-150-G-B-P-20MA (4-20mA loop, loop-powered off the 24V rail, 8-30V) — eliminates the buck-converter overvoltage failure mode that killed the PX3. Firmware: Waveshare CH1 -> Mode 3 (4-20mA) at boot alongside CH2-CH5; `convertToPSI()` rewritten current-based (`PSI = ((uA-4000)/16000)*150`); CH1 disconnect via `PRTXI_MIN_VALID_UA`; var renamed oil_press_mV -> oil_press_uA. Wiring: 24V+ -> Red(Pin1); Yellow(Pin3) -> AI1+; AI1- -> GND; Black(Pin2) unused; 1.5KE36A TVS across the 24V rail. |
 | v6.1 | **OBD CAN operational on the car + stale-value UI fix.** Set `CAN_MUX_TO_CAN 1` (EXIO5 HIGH → FSUSB42UMX mux to the onboard TJA1051T); OBD CAN confirmed reading the 2018 370Z ECU (water temp / ECT) over a 2-wire CANH/CANL tap (OBD pins 6/14; ground shared via chassis) — see `obd_can_wiring.md` + `obd_can_harness_diagram.svg`. UI: Water Temp and Fuel Trust were latching their last value when OBD data went stale; added the per-gauge "became-invalid → show `---`" block the Modbus gauges already had, so both clear ~3 s (`OBD_PID_STALE_THRESHOLD_MS`) after the ECU stops responding. Fuel Trust still only shows once ECT ≥ 80 °C. |
 | v6.0 | **OBD CAN fix + LVGL v9 migration / display stabilization.** CAN: drive CH422G EXIO5 (`EXIO_CAN_SEL`) HIGH to route the FSUSB42UMX mux to the TJA1051T (GPIO19/20 shared with native USB); un-swapped CAN pins (now TX=GPIO20, RX=GPIO19) — see `obd_can_wiring.md`. (CAN was gated off via `CAN_MUX_TO_CAN 0` during this release while the display was stabilized; turned **on** in v6.1.) Display: migrated to LVGL 9.1.0 — fixed `lv_conf.h` (v9 template, PSRAM heap pool, fonts, color depth), fixed the `sizeof(lv_color_t)` draw-buffer trap, patched LVGL's ARM `.S` files for xtensa, restored `useBigEndian` + added bounce buffer (colors + tearing). Full detail in "LVGL v9 / Display Stack". Build: `USB CDC On Boot` Disabled; flash/monitor over the UART port. |

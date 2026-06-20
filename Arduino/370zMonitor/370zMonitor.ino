@@ -1,9 +1,60 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v6.2
+ * 370zMonitor v6.6
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v6.6 Changes (ROLLBACK: restore original 5-channel mapping; real root cause found):
+ * - The oil-pressure dropout chased through v6.3-v6.5 was NEVER a bad channel. It was a
+ *   grounding/isolation fault: the P51 loop shared the electric box's power-and-ground,
+ *   so its 4 mA had a sneak path around the Waveshare's sense resistor and read 0/---.
+ * - Proven on the bench: both P51 units read a rock-steady 4 mA on an isolated supply
+ *   (HANGELL), and dropped out only on box power. A sibling 4-20mA channel (diff temp)
+ *   ran fine on the same module/box the whole time.
+ * - FIX (hardware): power the oil-pressure loop from an ISOLATED 24V DC-DC (Mean Well
+ *   DDR-15G-24 or Traco TRN 3-1215) fed off car 12V; output- ties to AI1- only. This
+ *   gives the loop its own floating reference, exactly like the bench supply did.
+ * - FIRMWARE: reverted all diagnostic swaps to the clean original layout —
+ *   AI1 Oil Pressure, AI2 Oil Temp, AI3 Trans, AI4 Steer, AI5 Diff. NUM_CHANNELS 6->5,
+ *   boot configures CH1-CH5 Mode 3 (dead-CH1 skip + CH6 spare removed). All jumpers ON.
+ *
+ * v6.5 Changes (DIAGNOSTIC A/B swap: oil pressure CH2 <-> trans temp CH3):
+ * - On v6.4 (oil pressure on CH2) the P51 read a flat 0 uA while the temp
+ *   sensors on CH3-CH5 read perfectly. To isolate sensor-vs-channel, swap the
+ *   two loops: oil pressure -> CH3 (AI3, where trans temp just worked flawlessly),
+ *   trans temp -> CH2 (AI2, where oil pressure read flat 0).
+ *   MODBUS_CH_OIL_PRESSURE 1->2, MODBUS_CH_TRANS_TEMP 2->1.
+ * - Physically swap the loops between AI2 and AI3 (both jumpers already ON/current).
+ *   Expected: P51 steady ~4 mA on CH3 + trans temp fine on CH2 => sensor good,
+ *   AI2 wiring was the problem. P51 still flickers/0 on CH3 => P51/harness is bad.
+ * - Diagnostic config; revert (or keep, if CH3 proves good) after the test.
+ *
+ * v6.4 Changes (oil pressure moved off INTERMITTENT CH6 -> CH2):
+ * - CH6 (AI6) current-sense path is intermittent: reads a clean 4.00 mA then
+ *   drops to 0, repeatedly (jumper/terminal contact). Sensor + harness proven
+ *   good by a channel-swap test, so the fault is the CH6 channel on the module.
+ *   This module now has TWO bad channels: CH1 dead, CH6 intermittent.
+ * - Oil pressure (P51 4-20mA) relocated CH6 -> CH2 (AI2), a proven-good current
+ *   channel. MODBUS_CH_OIL_PRESSURE 5 -> 1. The unused oil-temp slot (no physical
+ *   sensor) is parked on the freed CH6 (MODBUS_CH_OIL_TEMP 1 -> 5).
+ * - Read range unchanged (regs 0..5). Boot still configures CH2-CH6 for Mode 3,
+ *   skips dead CH1. Serial labels updated CH6 -> CH2 for oil pressure.
+ * - Physical: move the P51 loop to AI2 (24V+ -> Pin1; Pin3 -> AI2+; AI2- -> GND)
+ *   and set the AI2 jumper to current mode (ON), like the temp channels.
+ *
+ * v6.3 Changes (oil pressure moved off DEAD Waveshare CH1 -> CH6):
+ * - The Waveshare CH1 (AI1) current input is DEAD: stuck at full-scale
+ *   (20000 uA / 150 PSI), dead-steady at atmosphere, confirmed with TWO
+ *   different P51 sensors on the same module/firmware (CH2-CH5 read fine).
+ *   Most likely collateral damage to AI1's sense circuit from the
+ *   reverse-polarity event that killed the first P51.
+ * - Oil pressure (P51 4-20mA) is now read from CH6 (AI6). MODBUS_CH_OIL_PRESSURE
+ *   = 5, MODBUS_NUM_CHANNELS = 6 (read registers 0..5, index 0/CH1 ignored).
+ * - CH1 is EXCLUDED from mode config: boot now configures CH2-CH6 for Mode 3
+ *   (4-20mA), not CH1-CH5. Nothing reads CH1's value.
+ * - Wiring change: move the P51 loop return from AI1+ to AI6+ (AI6- -> GND).
+ *   CH6 register/mode: data input reg 0x0005, mode reg 0x1005.
  *
  * v6.2 Changes (oil pressure: PX3 voltage sensor -> P51 4-20mA current loop):
  * - Replaced PX3AN2BH150PSAAX (0.5-4.5V ratiometric, needed a regulated 5V
@@ -736,14 +787,23 @@ void resetUIElements();
 #define MODBUS_READ_INTERVAL_MS 100 // How often to poll sensors (ms)
 
 // Sensor Channel Mapping on 8-Ch Module
-#define MODBUS_CH_OIL_PRESSURE  0   // Channel 1 (AI1) - PX3 pressure sensor (0-10V)
+// v6.6: ORIGINAL MAPPING RESTORED. The v6.3-v6.5 channel swaps were all chasing the
+// oil-pressure dropout, which turned out to be a grounding/isolation fault (the sensor
+// loop shared the electric box's power-and-ground), NOT any bad channel. Root cause and
+// fix proven on the bench: the P51 (both units) read a rock-steady 4 mA on an isolated
+// supply and dropped out on box power. Fix = power the oil-pressure loop from an
+// ISOLATED 24V DC-DC (Mean Well DDR-15G-24 / Traco TRN 3-1215) fed off car 12V, output-
+// to AI1- only. So every channel is good; we revert to the clean 5-channel layout.
+//   AI1 = Oil Pressure (P51, via isolated DC-DC) | AI2 = Oil Temp | AI3 = Trans Temp
+//   AI4 = Steer Temp | AI5 = Diff Temp.  All jumpers ON (current mode), all Mode 3.
+#define MODBUS_CH_OIL_PRESSURE  0   // Channel 1 (AI1) - P51 4-20mA loop (via isolated DC-DC)
 #define MODBUS_CH_OIL_TEMP      1   // Channel 2 (AI2) - PRTXI RTD transmitter (4-20mA)
 #define MODBUS_CH_TRANS_TEMP    2   // Channel 3 (AI3) - PRTXI RTD transmitter (4-20mA)
 #define MODBUS_CH_STEER_TEMP    3   // Channel 4 (AI4) - PRTXI RTD transmitter (4-20mA)
 #define MODBUS_CH_DIFF_TEMP     4   // Channel 5 (AI5) - PRTXI RTD transmitter (4-20mA)
 
-// Number of channels to read
-#define MODBUS_NUM_CHANNELS     5   // Oil pressure + 4 temperature sensors
+// Number of channels to read (registers 0..4 = CH1..CH5, all populated)
+#define MODBUS_NUM_CHANNELS     5   // oil pressure (CH1) + oil/trans/steer/diff temps (CH2-CH5)
 
 // Waveshare Channel Mode Configuration (Holding Registers)
 // Per wiki: Register 4x1000-4x1007 = Channels 1-8 data types
@@ -773,10 +833,10 @@ void resetUIElements();
 #define PRESSURE_CURRENT_SPAN_UA  16000    // 20000 - 4000 = 16000 µA span
 #define PRESSURE_FS_PSI           150.0f   // Full-scale pressure at 20mA
 
-// --- TEMP TROUBLESHOOTING (v6.2 oil-pressure bring-up) ---
+// --- OIL-PRESSURE DEBUG STREAM ---
 // Set to 1 to stream CH1's raw loop current off the ESP32 so you can watch the
 // actual mA (and whether it moves when you apply pressure) without a meter in
-// mA mode. Set back to 0 once the P51 is validated.
+// mA mode. Handy for validating the isolated-supply fix; set to 0 for production.
 #define DEBUG_OIL_PRESSURE        1        // 1 = print [OILP] CH1 raw uA/mA at ~5 Hz
 
 // PRTXI Temperature Sensor Calibration (4-20mA output, loop-powered)
@@ -1201,21 +1261,24 @@ void initModbusSensors() {
         // Check for valid Modbus response (01 04 02 XX XX CRC CRC)
         if (rxCount >= 7 && testResp[0] == 0x01 && testResp[1] == 0x04 && testResp[2] == 0x02) {
             uint16_t value = (testResp[3] << 8) | testResp[4];
-            Serial.printf("[MODBUS] SUCCESS! CH1 raw = %d (comms OK)\n", value);
+            // Liveness check reads register 0 (CH1 = oil pressure). It confirms the
+            // module is answering on the bus; real per-sensor state is set on the
+            // first poll in readModbusSensors().
+            Serial.printf("[MODBUS] SUCCESS! comms OK (reg0/CH1 raw=%d)\n", value);
             g_modbus_initialized = true;
             g_modbus_comm_ok = true;
-            
-            // CH1 is switched to 4-20mA (Mode 3) below; this test read may
-            // still be in the old mode, so don't classify it here. The real
-            // connected state is set on the first poll in readModbusSensors().
+
+            // Oil pressure lives on CH1; real connected state is set on the
+            // first poll in readModbusSensors().
             g_sensor_ch1_connected = false;
-            
-            // ========== CONFIGURE ALL CURRENT-LOOP CHANNELS FOR 4-20mA ==========
-            // v6.2: CH1 is now the P51 oil-pressure sensor (4-20mA), joining the
-            // four PRTXI temp sensors on CH2-CH5. All five are 4-20mA loops, so
-            // write Mode 3 (4-20mA) to every channel's mode register.
-            Serial.println("[MODBUS] Configuring CH1-CH5 for 4-20mA mode...");
-            
+
+            // ========== CONFIGURE CURRENT-LOOP CHANNELS FOR 4-20mA ==========
+            // v6.6: all five channels carry loop-powered 4-20mA sensors — oil pressure
+            // on CH1 (via the isolated DC-DC), oil/trans/steer/diff temps on CH2-CH5.
+            // Set every channel to Mode 3 (4-20mA) at boot. Each channel's jumper must
+            // be ON (current mode) for the reading to be valid.
+            Serial.println("[MODBUS] Configuring CH1-CH5 for 4-20mA mode (Mode 3)...");
+
             // Channel configuration array: {register, name}
             struct ChannelConfig {
                 uint16_t reg;
@@ -1228,8 +1291,8 @@ void initModbusSensors() {
                 {WAVESHARE_CH4_MODE_REG, "CH4 (Steer Temp)"},
                 {WAVESHARE_CH5_MODE_REG, "CH5 (Diff Temp)"}
             };
-            
-            for (int i = 0; i < 5; i++) {
+
+            for (int i = 0; i < (int)(sizeof(currentChannels) / sizeof(currentChannels[0])); i++) {
                 uint16_t currentMode = 0;
                 if (modbusReadHoldingRegister(MODBUS_SLAVE_ADDR, currentChannels[i].reg, &currentMode)) {
                     Serial.printf("[MODBUS] %s current mode: %d\n", currentChannels[i].name, currentMode);
@@ -1241,7 +1304,7 @@ void initModbusSensors() {
                     Serial.printf("[MODBUS] WARNING: Failed to configure %s!\n", currentChannels[i].name);
                     Serial.println("[MODBUS]   Check: Is jumper set to 'I' or 'mA' position?");
                 }
-                // Read the mode back to confirm the write actually took (esp. CH1)
+                // Read the mode back to confirm the write actually took
                 uint16_t verifyMode = 0xFFFF;
                 if (modbusReadHoldingRegister(MODBUS_SLAVE_ADDR, currentChannels[i].reg, &verifyMode)) {
                     Serial.printf("[MODBUS] %s readback mode = %u %s\n", currentChannels[i].name,
@@ -1317,7 +1380,7 @@ void readModbusSensors() {
             g_modbus_comm_ok = true;
         }
         
-        // Channel 1: Oil Pressure (P51 4-20mA transmitter)
+        // Channel 1: Oil Pressure (P51 4-20mA transmitter, via isolated DC-DC)
         // Waveshare configured to Mode 3 (4-20mA) - returns µA directly
         uint16_t oil_press_uA = g_modbus_channel_values[MODBUS_CH_OIL_PRESSURE];
         bool sensor_connected = (oil_press_uA >= PRTXI_MIN_VALID_UA);
@@ -1336,13 +1399,13 @@ void readModbusSensors() {
                           oil_press_uA, mA, psi, sensor_connected ? "in-loop" : "offline(<3mA)");
         }
 #endif
-        
+
         // Log sensor state changes
         if (sensor_connected != g_sensor_ch1_connected) {
             if (sensor_connected) {
-                Serial.printf("[MODBUS] CH1: Sensor CONNECTED (%d µA)\n", oil_press_uA);
+                Serial.printf("[MODBUS] CH1 (Oil Pressure): Sensor CONNECTED (%d µA)\n", oil_press_uA);
             } else {
-                Serial.printf("[MODBUS] CH1: Sensor DISCONNECTED (%d µA < %d µA threshold)\n", 
+                Serial.printf("[MODBUS] CH1 (Oil Pressure): Sensor DISCONNECTED (%d µA < %d µA threshold)\n",
                              oil_press_uA, PRTXI_MIN_VALID_UA);
             }
             g_sensor_ch1_connected = sensor_connected;
@@ -1364,14 +1427,14 @@ void readModbusSensors() {
         // Waveshare configured to Mode 3 (4-20mA) - returns µA directly
         uint16_t oil_temp_uA = g_modbus_channel_values[MODBUS_CH_OIL_TEMP];
         bool temp_sensor_connected = (oil_temp_uA >= PRTXI_MIN_VALID_UA);
-        
+
         // Log sensor state changes
         if (temp_sensor_connected != g_sensor_ch2_connected) {
             if (temp_sensor_connected) {
-                Serial.printf("[MODBUS] CH2: PRTXI Sensor CONNECTED (%d uA = %.2f mA)\n", 
+                Serial.printf("[MODBUS] CH2 (Oil Temp): PRTXI Sensor CONNECTED (%d uA = %.2f mA)\n",
                              oil_temp_uA, oil_temp_uA / 1000.0f);
             } else {
-                Serial.printf("[MODBUS] CH2: PRTXI Sensor DISCONNECTED (%d uA < %d uA threshold)\n", 
+                Serial.printf("[MODBUS] CH2 (Oil Temp): PRTXI Sensor DISCONNECTED (%d uA < %d uA threshold)\n",
                              oil_temp_uA, PRTXI_MIN_VALID_UA);
             }
             g_sensor_ch2_connected = temp_sensor_connected;
@@ -1406,10 +1469,10 @@ void readModbusSensors() {
         // Log sensor state changes
         if (trans_sensor_connected != g_sensor_ch3_connected) {
             if (trans_sensor_connected) {
-                Serial.printf("[MODBUS] CH3: Trans Temp Sensor CONNECTED (%d uA = %.2f mA)\n", 
+                Serial.printf("[MODBUS] CH3: Trans Temp Sensor CONNECTED (%d uA = %.2f mA)\n",
                              trans_temp_uA, trans_temp_uA / 1000.0f);
             } else {
-                Serial.printf("[MODBUS] CH3: Trans Temp Sensor DISCONNECTED (%d uA < %d uA)\n", 
+                Serial.printf("[MODBUS] CH3: Trans Temp Sensor DISCONNECTED (%d uA < %d uA)\n",
                              trans_temp_uA, PRTXI_MIN_VALID_UA);
             }
             g_sensor_ch3_connected = trans_sensor_connected;
@@ -8154,7 +8217,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v6.1 - Dual-Core + G-Sensor");
+    Serial.println("   370zMonitor v6.6 - Dual-Core + G-Sensor");
     Serial.println("========================================");
 
     if (psramFound()) {

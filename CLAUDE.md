@@ -878,7 +878,7 @@ Pump and fan get **separate relays and fuses** so a stuck pump motor or shorted 
 - **Power distribution at diff**: single 10 AWG +12 V trunk feed from engine-bay bus bar (25 A fused) to a Blue Sea 5025 mini fuse block at the diff. From there, 10 A → pump relay pin 30, **7.5 A slow-blow** → fan relay pin 30.
 - **Pump trigger (manual, OR logic)**: two SPST switches in parallel feed the +12 V ignition trigger (washer-tank fuse tap) to pump relay coil pin 86 at "node Y" — (a) Gardner Bender **GSW-49** illuminated rocker in the cabin dashboard (neon lamp stays dark on 12 V DC, switch contacts work fine) and (b) a DPST waterproof inline switch under the car at the diff (one pole wired, other capped). Either switch closes → pump runs. Driver watches diff temp on the 370zMonitor display and toggles manually.
 - **Fan trigger (auto)**: Setrab 31-TS200-08 (200 °F NO, opens at 185 °F) inline between the +12 V trigger and fan relay coil pin 86 — **high-side switching**, matches Setrab's own install diagram.
-- **Both Pico 5593PT relays**: pin 85 permanently grounded at the diff GND bolt, pin 87a (NC) capped and heat-shrunk.
+- **Both Pico 5593PT relays**: pin 85 (**white** lead) permanently grounded at the diff GND bolt, coil triggered via pin 86 (**black** lead), pin 87a (NC) capped and heat-shrunk. (Full Pico pigtail color map: see *Pico 5593PT Relay Reference* below.)
 - **No auto pump mode** — pump must be on for the cooler/fan to do useful work; this is a deliberate trust-the-driver decision (Tilton also warns against running pump on cold heavy gear oil).
 - **PRTXI temp sensor (CH5)**: 2-wire 4-20 mA loop from electric box to diff. Belden 8761 shielded twisted pair. Shield grounded at the Waveshare end only; diff end capped and heat-shrunk.
 
@@ -898,6 +898,14 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 - The **AN08 variant** (`31-TS200-08`, used on the Z1 diff cover via the SUSA AN-male-to-AN-female adapter) has **2 spade terminals, electrically isolated from the case** — non-polarity-sensitive, either terminal either direction
 - **Single-spade Type-22** housing variants ground through the threads into the fitting and need a clean metal-to-metal interface
 - **PTFE tape on the 1/8" NPT: 1.5–2 turns max** — more turns can distort the port and throw off the switching temperature
+
+### Pico 5593PT Relay Reference (all fan/pump relays + the cabin-accessory relay)
+
+**Pigtail lead colors — `black = pin 86` (coil **+**, trigger side), `white = pin 85` (coil **−**, ground side).** Confirmed on the engine + ATF-radiator fan relays, where black runs to the ignition-switched +12 V and white runs to the thermal switch on the coil-ground (low-side) leg. The diff-cooler relays use the **same** color↔pin map but switch high-side (white/85 is a permanent ground, black/86 is fed through the Setrab) — the mapping is a property of the pigtail, not the circuit.
+
+- Matches ISO convention (86 = coil +, 85 = coil −). The **"85"/"86" numbers are molded into the relay body** next to each lead — trust those over color if ever unsure. Colors for 30/87/87a weren't logged; read the molded numbers.
+- On a plain relay (no coil diode) 85/86 are electrically interchangeable; the color→number mapping only matters for documentation and for any diode/LED coil (where 85 must be − and 86 the + trigger — black=86/white=85 satisfies it).
+- **Plain ignition-switched circuit, no thermal switch (e.g. the cabin-accessory relay):** black (86) → ignition/ACC +12 V, white (85) → ground directly, pin 30 → constant fused 12 V, pin 87 → load. Same coil hookup as the fans, minus the thermal switch in the white leg.
 
 ---
 

@@ -1,9 +1,20 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v6.6
+ * 370zMonitor v6.7
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v6.7 Changes (track-day quick pass - smart oil-pressure monitor):
+ * - Logging raised to 10 Hz (SD_WRITE_INTERVAL_MS 1000->100, queue 16->40) to catch
+ *   sub-second oil-pressure dips.
+ * - isOilPressureCritical() is now RPM-aware (warm-oil floor ~10 psi/1000 rpm + idle
+ *   floor) instead of a fixed <10 psi trip; still drives the "Value Critical" label.
+ * - LIS3DH accelerometer calibrated from 55 mi of logs: raw axes rotated into car frame
+ *   (X=lateral, Y=longitudinal, Z=vertical). Vertical exact; lat/lon provisional (~+/-20deg).
+ * - Timestamps: system clock set from the DS3231 at boot (settimeofday) so SD file dates
+ *   are correct without WiFi; DST fixed (DAYLIGHT_OFFSET_SEC 0->3600).
+ * - Added a per-second [SESSION] summary line (min oil PSI >2k rpm, peak oil temp, max G).
  *
  * v6.6 Changes (ROLLBACK: restore original 5-channel mapping; real root cause found):
  * - The oil-pressure dropout chased through v6.3-v6.5 was NEVER a bad channel. It was a
@@ -262,6 +273,7 @@ extern "C" void lv_draw_sw_rgb565_swap(void * buf, uint32_t buf_size_px);
 #include <math.h>                   // For fabsf, fminf in Fuel Trust calculation
 #include <Adafruit_LIS3DH.h>         // LIS3DH accelerometer (ADA2809)
 #include <Adafruit_Sensor.h>         // Required by Adafruit LIS3DH
+#include <sys/time.h>                // v6.7: settimeofday() to set system clock from RTC
 
 //-----------------------------------------------------------------
 
@@ -1726,6 +1738,22 @@ bool initAccelerometer() {
     return true;
 }
 
+// v6.7: LIS3DH mounting calibration - rotate raw sensor axes into car frame.
+// Derived from 55 mi of 7/5 logs (gravity vector + rpm-correlated forward axis).
+// Vertical/level is EXACT; lateral & longitudinal are PROVISIONAL (~+/-20 deg) and
+// will be re-derived from the cleaner 10 Hz data. If a known hard brake or a steady
+// corner reads on the wrong axis or sign, flip the offending row. Set flag 0 for raw.
+#define ENABLE_ACCEL_CALIBRATION 1
+#define ACCEL_R_LAT_X   0.5296f
+#define ACCEL_R_LAT_Y   0.0450f
+#define ACCEL_R_LAT_Z  -0.8470f
+#define ACCEL_R_LON_X  -0.8471f
+#define ACCEL_R_LON_Y   0.0783f
+#define ACCEL_R_LON_Z  -0.5256f
+#define ACCEL_R_VRT_X   0.0427f
+#define ACCEL_R_VRT_Y   0.9959f
+#define ACCEL_R_VRT_Z   0.0796f
+
 // Read accelerometer values - updates g_vehicle_data
 void readAccelerometer() {
     if (!g_accel_initialized) {
@@ -1752,9 +1780,19 @@ void readAccelerometer() {
     // Convert from m/s² to g (divide by 9.80665)
     // The Adafruit library returns acceleration in m/s²
     const float GRAVITY = 9.80665f;
-    g_vehicle_data.accel_x_g = event.acceleration.x / GRAVITY;
-    g_vehicle_data.accel_y_g = event.acceleration.y / GRAVITY;
-    g_vehicle_data.accel_z_g = event.acceleration.z / GRAVITY;
+    float rax = event.acceleration.x / GRAVITY;
+    float ray = event.acceleration.y / GRAVITY;
+    float raz = event.acceleration.z / GRAVITY;
+#if ENABLE_ACCEL_CALIBRATION
+    // Rotate raw sensor axes into car frame: X=lateral(+right), Y=longitudinal(+fwd accel), Z=vertical(+up)
+    g_vehicle_data.accel_x_g = ACCEL_R_LAT_X * rax + ACCEL_R_LAT_Y * ray + ACCEL_R_LAT_Z * raz;
+    g_vehicle_data.accel_y_g = ACCEL_R_LON_X * rax + ACCEL_R_LON_Y * ray + ACCEL_R_LON_Z * raz;
+    g_vehicle_data.accel_z_g = ACCEL_R_VRT_X * rax + ACCEL_R_VRT_Y * ray + ACCEL_R_VRT_Z * raz;
+#else
+    g_vehicle_data.accel_x_g = rax;
+    g_vehicle_data.accel_y_g = ray;
+    g_vehicle_data.accel_z_g = raz;
+#endif
     g_vehicle_data.accel_valid = true;
     g_vehicle_data.has_received_data = true;
 }
@@ -1809,6 +1847,13 @@ int OIL_PRESS_Min_PSI = 0;
 int OIL_PRESS_Max_PSI = 150;
 int OIL_PRESS_ValueCriticalAbsolute = 120;
 int OIL_PRESS_ValueCriticalLow = 10;
+// v6.7: smart RPM-aware low-pressure floor (warm oil, track use). Critical when oil
+// PSI < max(RPM * PSI_PER_1000 / 1000, idle floor). ~10 psi/1000 rpm is the motorsport
+// minimum; VQ37 healthy warm sits well above it, so this flags genuine low pressure
+// (and hard corner-surge dips) without false-alarming in normal running.
+int OIL_PRESS_PSI_PER_1000RPM = 10;   // slope of the min-pressure floor
+int OIL_PRESS_IdleFloorPSI    = 10;   // floor at/below idle (factory warm min ~14 psi)
+int OIL_PRESS_RPM_ACTIVE      = 500;  // below this rpm, use the idle floor
 
 // OIL TEMP: 150-300°F, Critical: >=260°F
 int OIL_TEMP_Min_F = 150;
@@ -2081,7 +2126,7 @@ struct SDLogEntry {
     bool demo_mode;
     VehicleData data;
 };
-#define SD_QUEUE_SIZE 16
+#define SD_QUEUE_SIZE 40   // v6.7: deeper queue for 10 Hz logging (absorbs flush stalls, was 16)
 static QueueHandle_t g_sd_queue = NULL;
 static TaskHandle_t g_sd_task_handle = NULL;
 #endif
@@ -3328,7 +3373,7 @@ void updateOBDData() {
 #define SD_MOSI_PIN       11      // SPI MOSI (Master Out Slave In)  
 #define SD_CS_PIN         -1      // Use -1 for manual CS control via IO expander
 #define SD_SPI_FREQ       4000000 // 4MHz SPI (conservative for reliability)
-#define SD_WRITE_INTERVAL_MS 1000 // Write every 1 second (configurable)
+#define SD_WRITE_INTERVAL_MS 100  // v6.7: 10 Hz logging to catch sub-second oil-pressure dips (was 1000)
 #define SD_FLUSH_INTERVAL_MS 1000 // Flush to card every 1 second (not every write)
 #define SD_BUFFER_SIZE    256     // Smaller buffer for more frequent flushes
 #define SD_MAX_RETRIES    3       // Max retries on write failure
@@ -3347,7 +3392,7 @@ static char g_wifi_password[64] = ""; // Loaded from SD config
 #define NTP_SERVER_2 "time.nist.gov"
 #define NTP_SERVER_3 "time.google.com"
 #define GMT_OFFSET_SEC (-6 * 3600)       // CST = UTC-6 (adjust for your timezone)
-#define DAYLIGHT_OFFSET_SEC 0            // Set to 3600 if DST is active
+#define DAYLIGHT_OFFSET_SEC 3600         // v6.7: DST active (CDT). Set to 0 in winter (CST). Sync once on WiFi after flashing to rewrite the RTC.
 #define WIFI_CONNECT_TIMEOUT_MS 10000    // 10 second timeout for WiFi connection
 #define NTP_SYNC_TIMEOUT_MS 3000         // 3 second timeout per NTP server
 
@@ -3433,6 +3478,7 @@ bool tryNTPSync(const char* server);
 bool readRTC(struct tm* timeinfo);
 bool writeRTC(struct tm* timeinfo);
 bool isRTCTimeValid();
+void syncSystemTimeFromRTC();  // v6.7: set ESP32 clock from RTC for correct SD file timestamps
 void clearRTCOSFlag();
 void updateTime();
 uint8_t bcdToDec(uint8_t val);
@@ -3517,6 +3563,10 @@ bool sdInit() {
     Serial.printf("[SD] Boot count: %lu\n", g_sd_state.boot_count);
 
     g_sd_state.rtc_available = sdDetectRTC();
+
+    // v6.7: set the system clock from the RTC now, BEFORE the session file is created,
+    // so SD file timestamps are correct without needing WiFi/NTP.
+    syncSystemTimeFromRTC();
 
     sdCheckAndManageSpace();
 
@@ -3947,6 +3997,37 @@ void sdLogSerialWrite(const char* msg) {
     xQueueSend(g_serial_log_queue, &entry, 0);
 }
 
+// v6.7: lightweight running session summary (printed once/sec on the [SESSION] line).
+// Sampled every main-loop call so it catches peaks the 1 Hz status print would miss.
+struct SessionStats {
+    int   min_oil_psi;   // lowest oil PSI seen while rpm > 2000 (9999 = none yet)
+    int   peak_oil_f;    // highest oil temp seen
+    float max_lat_g;     // peak |lateral| g
+    float max_lon_g;     // peak |longitudinal| g
+    float max_vert_g;    // peak |vertical - 1g| (bump/load)
+};
+static SessionStats g_sess = { 9999, 0, 0.0f, 0.0f, 0.0f };
+
+static void updateSessionStats() {
+    if (g_vehicle_data.oil_pressure_valid && g_vehicle_data.rpm_valid &&
+        g_vehicle_data.rpm > 2000) {
+        if (g_vehicle_data.oil_pressure_psi < g_sess.min_oil_psi)
+            g_sess.min_oil_psi = g_vehicle_data.oil_pressure_psi;
+    }
+    if (g_vehicle_data.oil_temp_valid) {
+        int t = (int)g_vehicle_data.oil_temp_value_f;
+        if (t > g_sess.peak_oil_f) g_sess.peak_oil_f = t;
+    }
+    if (g_vehicle_data.accel_valid) {
+        float la = fabsf(g_vehicle_data.accel_x_g);
+        float lo = fabsf(g_vehicle_data.accel_y_g);
+        float ve = fabsf(g_vehicle_data.accel_z_g - 1.0f);
+        if (la > g_sess.max_lat_g)  g_sess.max_lat_g  = la;
+        if (lo > g_sess.max_lon_g)  g_sess.max_lon_g  = lo;
+        if (ve > g_sess.max_vert_g) g_sess.max_vert_g = ve;
+    }
+}
+
 // Queue data for SD logging - called from main loop (Core 1)
 // Non-blocking: if queue is full, data is dropped
 void sdLogData() {
@@ -3954,6 +4035,8 @@ void sdLogData() {
     if (!g_sd_queue) return;
 
     uint32_t now = millis();
+
+    updateSessionStats();  // v6.7: sample session peaks every loop
 
     // Check if it's time to log
     if ((now - g_sd_state.last_write_ms) < SD_WRITE_INTERVAL_MS) return;
@@ -4405,6 +4488,25 @@ void clearRTCOSFlag() {
     Wire.endTransmission();
     
     Serial.println("[RTC] OSF flag cleared");
+}
+
+// v6.7: Push the DS3231 RTC's local time into the ESP32 system clock so that SD/FAT file
+// timestamps (get_fattime) are correct even with NO WiFi/NTP. Without this, no-WiFi
+// sessions get 1979/1980 file dates while the in-log datetime (read from the RTC) is fine.
+void syncSystemTimeFromRTC() {
+    if (!g_sd_state.rtc_available || !isRTCTimeValid()) return;
+    struct tm timeinfo;
+    if (!readRTC(&timeinfo)) return;
+    timeinfo.tm_isdst = -1;
+    time_t t = mktime(&timeinfo);
+    if (t < 1735689600) return;  // sanity: reject anything before 2025-01-01
+    struct timeval tv;
+    tv.tv_sec = t;
+    tv.tv_usec = 0;
+    settimeofday(&tv, NULL);
+    Serial.printf("[TIME] System clock set from RTC (for file timestamps): %02d/%02d/%04d %02d:%02d:%02d\n",
+        timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_year + 1900,
+        timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 }
 
 // Try to sync time from a specific NTP server
@@ -5122,8 +5224,18 @@ static inline bool isOilPressureCriticalRPM() {
 // Check if oil pressure is in critical range (absolute)
 static inline bool isOilPressureCritical() {
     if (!g_vehicle_data.oil_pressure_valid) return false;
-    return (g_vehicle_data.oil_pressure_psi < OIL_PRESS_ValueCriticalLow) ||
-        (g_vehicle_data.oil_pressure_psi > OIL_PRESS_ValueCriticalAbsolute);
+    int psi = g_vehicle_data.oil_pressure_psi;
+    // Overpressure (blocked cooler / bad reading) - always critical.
+    if (psi > OIL_PRESS_ValueCriticalAbsolute) return true;
+    // v6.7: RPM-aware warm-oil low-pressure floor (replaces the fixed <10 psi trip).
+    // Assumes warm oil (track use); only armed while the engine is running.
+    if (g_vehicle_data.rpm_valid && g_vehicle_data.rpm >= OIL_PRESS_RPM_ACTIVE) {
+        int floor_psi = (g_vehicle_data.rpm * OIL_PRESS_PSI_PER_1000RPM) / 1000;
+        if (floor_psi < OIL_PRESS_IdleFloorPSI) floor_psi = OIL_PRESS_IdleFloorPSI;
+        return (psi < floor_psi);
+    }
+    // Engine idling / RPM unknown: fall back to the low absolute floor.
+    return (psi < OIL_PRESS_ValueCriticalLow);
 }
 
 // Shift history array left and add new value
@@ -8217,7 +8329,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v6.6 - Dual-Core + G-Sensor");
+    Serial.println("   370zMonitor v6.7 - Dual-Core + G-Sensor");
     Serial.println("========================================");
 
     if (psramFound()) {
@@ -8721,6 +8833,10 @@ void loop() {
         Serial.printf("[STATUS] fps=%d (frames=%u flushes=%u) cpu0=%d%% cpu1=%d%% idle0=%u idle1=%u heap=%u mode=%s\n",
             fps, frames, flushes, cpu0_percent, cpu1_percent, delta0, delta1,
             ESP.getFreeHeap(), g_demo_mode ? "DEMO" : "LIVE");
+        // v6.7: running session summary line
+        Serial.printf("[SESSION] min_oilP(>2k)=%dpsi peak_oilT=%dF maxG lat=%.2f lon=%.2f vert=%.2f\n",
+            (g_sess.min_oil_psi >= 9999) ? 0 : g_sess.min_oil_psi,
+            g_sess.peak_oil_f, g_sess.max_lat_g, g_sess.max_lon_g, g_sess.max_vert_g);
         cpu_busy_time = 0;
         last_status = now;
     }

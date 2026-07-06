@@ -32,3 +32,6 @@
 *.app
 
 .vs/
+
+# Agent scratch / log-share folder (working files for Claude to analyze; not part of the project)
+share/

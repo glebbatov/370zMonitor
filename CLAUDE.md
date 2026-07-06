@@ -4,7 +4,7 @@
 
 **370zMonitor** is a track car data logging and display system for a 2018 Nissan 370Z. It uses an ESP32-S3 microcontroller with a 7" touchscreen to display real-time sensor data during track days.
 
-- **Current Version:** v6.6
+- **Current Version:** v6.7
 - **Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (800x480) with onboard TJA1051T CAN transceiver and SP3485 RS485 transceiver
 - **Hardware:** Waveshare Industrial 8-Ch Analog Acquisition Module (Model B, 0-10V / 0-20mA / 4-20mA selectable)
 - **Hardware:** Crowtail I2C Hub 2.0 (for multiple I2C devices)
@@ -162,7 +162,7 @@ Defined in the "Gauges Configuration" region of the sketch:
 
 | Gauge | Min | Max | Critical |
 |-------|-----|-----|----------|
-| Oil Pressure | 0 PSI | 150 PSI | `<10` PSI or `>120` PSI (also RPM-based low-pressure check) |
+| Oil Pressure | 0 PSI | 150 PSI | v6.7: RPM-aware — critical below `max(10 psi/1000 rpm, 10 psi idle floor)` while running, or `>120` PSI overpressure (warm-oil assumption; drives Value Critical) |
 | Oil Temp | 150 F | 300 F | `>=260 F` |
 | Water Temp | 100 F | 260 F | `>=220 F` |
 | Trans Temp | 80 F | 280 F | `>=230 F` |
@@ -332,7 +332,7 @@ Shielded 2-conductor cable for the engine-bay run; shield to GND at the box end 
 **Open items / next steps:**
 1. ✅ **DONE** — oil-pressure loop on the isolated DDR-15G-24, validated on-car 2026-07-04 (99.7% valid, 37–112 PSI, stable engine on/off). Sensor and Waveshare module both confirmed good; the old "replace the module" plan was unnecessary — the real cause was grounding/isolation.
 2. ✅ **DONE** — P51 is plumbed in the oil-filter sandwich plate and reading real pressure (~37 PSI warm idle, up to 112 PSI, climbs with rpm).
-3. 🔧 **TODO (hardware) — replace the oil-temp PRTXI on AI2.** It has failed: reads open/offline (<3 mA, 0% valid) in every session while trans/steer/diff read clean ~8.8 mA and the module/bus are healthy. Swap in a new PRTXI on AI2 (jumper ON; 24V→Pin1, Pin2→AI2+, AI2−→GND per the PRTXI wiring diagram).
+3. 🔧 **TODO (hardware) — replace the oil-temp PRTXI on AI2.** It has failed: reads open/offline (<3 mA, 0% valid) in every session while trans/steer/diff read clean ~8.8 mA and the module/bus are healthy. Swap in a new PRTXI on AI2 (jumper ON; 24V→Pin1, Pin2→AI2+, AI2−→GND per the PRTXI wiring diagram). Interim: the car's **factory oil-temp gauge** covers oil-temp monitoring until the PRTXI is back, so this is not a track-day blocker.
 4. ⏳ **TODO** — add the 1.5KE36A TVS, band(cathode)→+24V, across the **Victron 24V OUTPUT** rail for transient protection (see `ddr_isolator_tvs_wiring.md`).
 
 Why the PX3 died (historical): the JTAREA LM2596 buck module ([Amazon B0D2TS7CBN](https://www.amazon.com/dp/B0D2TS7CBN)) had a broken feedback path and passed 8.5 V straight to the sensor — 62 % over the PX3's 5.25 V absolute max — cooking its ASIC. The 4-20mA P51 removes this entire failure class: loop-powered off 24V, no regulated-5V rail to fail.
@@ -475,10 +475,11 @@ ESP32-S3 (SDA=GPIO8, SCL=GPIO9)
 ### Data Output
 - **CSV columns:** `accel_x_g,accel_y_g,accel_z_g` plus `accel_valid` flag
 - **Units:** G-forces (1g = 9.80665 m/s²); library returns m/s², divided by GRAVITY constant
-- **Axes (as mounted):**
-  - X: Lateral (positive = right turn)
+- **Axes (car frame, after v6.7 calibration):**
+  - X: Lateral (positive = right)
   - Y: Longitudinal (positive = forward acceleration)
   - Z: Vertical (positive = upward, ~1.0g at rest)
+- **v6.7 mounting calibration:** the LIS3DH sits at an arbitrary angle, so `readAccelerometer()` rotates the raw sensor axes into the car frame with a fixed matrix (`ACCEL_R_*`, gated by `ENABLE_ACCEL_CALIBRATION`). Derived from 55 mi of 7/5 logs: the gravity vector fixes level/vertical **exactly**; the forward axis (rpm-correlated) is **provisional ~±20°**. Vertical and total-horizontal-G are trustworthy; the lateral-vs-longitudinal split may need a sign flip after an on-track hard-brake / steady-corner check. Re-derive from the 10 Hz data when convenient.
 
 ### Demo Mode
 In demo mode, accelerometer simulates driving motion (handled inside `provideDemoData()` / related functions).
@@ -525,7 +526,8 @@ Uses the NOAA Solar Calculator algorithm (same as Google Maps) to compute local 
 ### NTP Background Sync
 - Optional WiFi credentials loaded from `/wifi.cfg` on the SD card (`WIFI_CONFIG_FILE`)
 - NTP servers: `pool.ntp.org`, `time.nist.gov`, `time.google.com`
-- `GMT_OFFSET_SEC = -6 * 3600` (CST); `DAYLIGHT_OFFSET_SEC = 0` (set to 3600 when DST is active)
+- `GMT_OFFSET_SEC = -6 * 3600` (CST); `DAYLIGHT_OFFSET_SEC = 3600` (v6.7: DST/CDT active — set back to 0 in winter)
+- **v6.7 file-timestamp fix:** `syncSystemTimeFromRTC()` sets the ESP32 system clock from the DS3231 at boot via `settimeofday()`, so SD/FAT **file timestamps** are correct even with no WiFi/NTP (previously no-WiFi sessions got 1979/1980 file dates while the in-log datetime — read straight from the RTC — was fine). After changing the DST offset, do **one WiFi/NTP boot** to rewrite the RTC with corrected local time.
 - WiFi timeout: 10 s; NTP timeout: 3 s per server
 - After a successful NTP sync, RTC is updated with the synced time
 
@@ -583,8 +585,9 @@ Lightweight-bars use `0x32231E` (dark brown) background and `0xFF4500` (orange) 
 | `TARGET_FPS` | 50 | Loop pacing target (`FRAME_TIME_MS = 1000/TARGET_FPS`) |
 | `I2C_FREQ_HZ` | 400000 | Touch / RTC / G-sensor I2C speed |
 | `LVGL_BUFFER_SIZE` | `800 * 30` (~48KB) | Internal-DMA-RAM render buffer (prevents PSRAM contention) |
-| `SD_FLUSH_INTERVAL_MS` | 1000 | SD write/flush frequency |
-| `SD_WRITE_INTERVAL_MS` | 1000 | Data-row write cadence |
+| `SD_FLUSH_INTERVAL_MS` | 1000 | SD flush-to-card frequency (batched, not per row) |
+| `SD_WRITE_INTERVAL_MS` | 100 | v6.7: data-row write cadence — **10 Hz** (was 1000 / 1 Hz) to catch sub-second oil-pressure dips |
+| `SD_QUEUE_SIZE` | 40 | v6.7: raised from 16 to buffer 10 Hz logging against flush stalls |
 | `SD_SPI_FREQ` | 4 MHz | Conservative SPI clock for reliability |
 | `MODBUS_READ_INTERVAL_MS` | 100 | 10 Hz polling of Waveshare module |
 | `OBD_PID_REQUEST_PERIOD_MS` | 200 | 5 Hz round-robin per PID |
@@ -638,7 +641,9 @@ A `platformio.ini` is also present for PlatformIO users (it correctly sets `ARDU
 - PuTTY, TeraTerm, etc.: **115200, 8N1, no flow control**
 
 **Useful log tags** (for grep / filtering):
-`[MODBUS] [OBD] [SD] [RTC] [WIFI] [NTP] [G-SENSOR] [TOAST] [MONITOR] [SYSTEM CHECK] [AUTO-BRI] [PREFS] [CORE0/SD] [CORE1] [STATUS] [CHARTS]`
+`[MODBUS] [OBD] [SD] [RTC] [TIME] [WIFI] [NTP] [G-SENSOR] [TOAST] [MONITOR] [SYSTEM CHECK] [AUTO-BRI] [PREFS] [CORE0/SD] [CORE1] [STATUS] [SESSION] [CHARTS]`
+
+`[SESSION]` (v6.7): per-second running summary — `min_oilP(>2k)` (lowest oil PSI above 2000 rpm), `peak_oilT`, and `maxG lat/lon/vert`.
 
 ---
 
@@ -940,6 +945,7 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 
 | Version | Key Changes |
 |---------|-------------|
+| v6.7 | **Track-day "smart oil-pressure monitor" pass (compiled clean 54% flash / 24% RAM; on-car validation pending).** (1) **10 Hz logging** — `SD_WRITE_INTERVAL_MS` 1000→100, `SD_QUEUE_SIZE` 16→40, to catch sub-second oil-pressure/starvation dips (10 Hz is the RS485/Modbus ceiling, not the P51's — the sensor is analog/near-instant). (2) **RPM-aware oil-pressure alarm** — `isOilPressureCritical()` now trips below `max(10 psi/1000 rpm, 10 psi idle floor)` while the engine runs (warm-oil, always armed, no temp gating) plus the `>120` PSI overpressure trip; drives the existing **Value Critical** label (no buzzer, by request). The old fixed `<10` PSI trip is replaced; `isOilPressureCriticalRPM()` is now unused. (3) **Accelerometer calibration** — `readAccelerometer()` rotates raw axes into the car frame (`ACCEL_R_*`, `ENABLE_ACCEL_CALIBRATION`), derived from 55 mi of logs; vertical exact, lat/lon provisional ~±20°. (4) **Timestamp fixes** — `syncSystemTimeFromRTC()`/`settimeofday()` at boot fixes 1979 FAT file dates without WiFi; `DAYLIGHT_OFFSET_SEC` 0→3600 fixes the 1-hour-behind (needs one WiFi boot to rewrite the RTC). (5) **`[SESSION]` summary** — per-second log line (min oil PSI >2k rpm, peak oil temp, max lat/lon/vert G). Oil-temp PRTXI (AI2) still offline/being replaced; the car's factory oil-temp gauge covers it in the meantime. |
 | v6.6 | **ROLLBACK — restored the original 5-channel mapping; real root cause found.** The oil-pressure dropout chased through v6.3–v6.5 was never a bad channel — it was a **grounding/isolation fault** (the P51 loop shared the box's power-and-ground, so its 4 mA bypassed the Waveshare's 500 Ω sense resistor and read ≈0/`---`). Proven on the bench: both P51 units read steady ~4 mA on an isolated supply and dropped out only on box power; a sibling 4-20mA channel (diff temp) was clean throughout. **Fix (hardware):** power the oil-pressure loop from an isolated 24V DC-DC (Mean Well DDR-15G-24 / Traco TRN 3-1215), input off car 12V, output− to AI1− only (24V out for full-scale headroom). **Firmware:** reverted all diagnostic swaps — `MODBUS_CH_OIL_PRESSURE` 2→0, `OIL_TEMP` 5→1, `TRANS_TEMP` 1→2; `MODBUS_NUM_CHANNELS` 6→5; boot configures CH1–CH5 Mode 3 (dead-CH1 skip + CH6 spare removed); labels + version (header/splash/banner) → v6.6. **Validated on-car 2026-07-04** (isolated DDR-15G-24 installed; oil pressure 99.7% valid, 37–112 PSI, stable engine on/off; oil-temp PRTXI on AI2 failed, replacement pending). Full narrative: `oil_pressure_isolation_saga.md`. |
 | v6.5 | **DIAGNOSTIC A/B swap — oil pressure CH2 ↔ trans temp CH3.** On v6.4 the P51 read flat 0 µA on CH2 while CH3-CH5 temps read perfectly, so oil pressure is moved onto **CH3 (AI3)** — the proven-good trans-temp channel — and trans temp is moved to **CH2 (AI2)**. Physically swap the two loops between AI2/AI3 (jumpers stay ON). If the P51 reads steady 4 mA on CH3, the sensor's good and AI2/its wiring was the bad spot; if it still zeros/flickers on CH3 while trans temp is solid on CH2, the fault is the P51/harness, not the board. Firmware: `MODBUS_CH_OIL_PRESSURE` 1→2, `MODBUS_CH_TRANS_TEMP` 2→1; labels + version (header/splash/banner) → v6.5. **Also flagged:** the old "CH1 dead" reading was taken with CH1's jumper OFF (voltage mode) — likely a jumper mistake, not a dead channel; CH1 may be fine. |
 | v6.4 | **Oil pressure moved off INTERMITTENT CH6 -> CH2 (AI2).** CH6's current-sense path is flaky (reads clean 4.00 mA then drops to 0, repeatedly); a channel-swap test proved the P51 sensor + harness + wiring are good, so the fault is the CH6 jumper/terminal/front-end on the module. With CH1 already dead, this module has two bad channels (likely damaged — consider replacing). Firmware: `MODBUS_CH_OIL_PRESSURE` 5→1 (CH2/AI2, a proven-good channel); unused oil-temp slot parked on CH6 (`MODBUS_CH_OIL_TEMP` 1→5); read range unchanged (regs 0..5); boot still configures CH2-CH6 Mode 3, skips dead CH1; serial labels CH6→CH2; version→v6.4 (header + splash + banner). Wiring: move P51 loop to **AI2** (Pin1→24V, Pin3→AI2+, AI2-→GND) and set the **AI2 jumper to current mode**. |

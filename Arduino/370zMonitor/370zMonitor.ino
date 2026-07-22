@@ -1,9 +1,23 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v6.8
+ * 370zMonitor v6.9
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v6.9 Changes (automatic DST + expanded OBD logging):
+ * - AUTOMATIC DAYLIGHT SAVING (no more seasonal reflash). The DS3231 now stores UTC and local
+ *   time is derived from a POSIX TZ rule (POSIX_TZ = "CST6CDT,M3.2.0,M11.1.0"), so the
+ *   spring-forward (2nd Sun of March) / fall-back (1st Sun of November) hour is applied
+ *   automatically. NTP writes UTC to the RTC; readRTCLocal() converts UTC->local on read.
+ *   NOTE: after flashing, do ONE WiFi/NTP sync so the RTC is re-written in UTC (until then the
+ *   old local-time RTC value will read ~5-6 h off).
+ * - EXPANDED OBD-II LOGGING: added throttle(0x11), engine load(0x04), IAT(0x0F), ambient(0x46),
+ *   engine oil temp(0x5C), MAF(0x10), commanded lambda(0x44), module/battery voltage(0x42),
+ *   fuel level(0x2F), barometric pressure(0x33), fuel-system status(0x03). RPM/throttle are
+ *   oversampled to stay responsive; poll period 200->120ms, stale 3000->5000ms. New values are
+ *   logged to the CSV (22 appended columns) and printed on a new [OBD2] serial line. Any PID the
+ *   ECU doesn't support simply stays invalid/-1. Logging only — no new gauges.
  *
  * v6.8 Changes (post-track-day analysis follow-ups):
  * - TIME-SYNC FIX: tryNTPSync() no longer accepts the stale RTC-seeded system clock as a
@@ -668,6 +682,19 @@ struct VehicleData {
     float accel_y_g;        // Y-axis acceleration in g (longitudinal, positive = forward)
     float accel_z_g;        // Z-axis acceleration in g (vertical, positive = up)
     bool accel_valid;       // Accelerometer data validity flag
+
+    // v6.9 extended OBD-II data (logged to CSV; not shown on gauges) — value + valid each
+    int   throttle_pct;        bool throttle_valid;         // 0x11 [%]
+    int   engine_load_pct;     bool engine_load_valid;      // 0x04 [%]
+    int   intake_air_temp_f;   bool intake_air_temp_valid;  // 0x0F [°F]
+    int   ambient_temp_f;      bool ambient_temp_valid;     // 0x46 [°F]
+    int   obd_oil_temp_f;      bool obd_oil_temp_valid;     // 0x5C [°F] (separate from the Modbus oil-temp sensor)
+    float maf_gps;             bool maf_valid;              // 0x10 [g/s]
+    float commanded_lambda;    bool lambda_valid;           // 0x44 [lambda ratio]
+    float module_voltage;      bool module_voltage_valid;   // 0x42 [V]
+    int   fuel_level_pct;      bool fuel_level_valid;       // 0x2F [%]
+    int   baro_kpa;            bool baro_valid;             // 0x33 [kPa]
+    int   fuel_sys_status;     bool fuel_sys_valid;         // 0x03 [raw status byte]
 
     // Flag to track if ANY valid data has ever been received
     // Used to determine if UI should show "---" or actual values
@@ -2932,20 +2959,40 @@ void updateSensorData() {
 // For 10 PIDs at 200ms each = 2 seconds full cycle (~0.5 Hz per PID)
 //-----------------------------------------------------------------------------
 
-#define OBD_PID_REQUEST_PERIOD_MS  200   // Poll one PID every 200ms
-#define OBD_PID_STALE_THRESHOLD_MS 3000  // Mark data invalid if no update
+#define OBD_PID_REQUEST_PERIOD_MS  120   // v6.9: poll one PID every 120ms (bigger list now; ~3s full cycle)
+#define OBD_PID_STALE_THRESHOLD_MS 5000  // v6.9: raised from 3000 to cover the longer round-robin cycle
 #define OBD_WARMUP_TEMP_C          80    // ECT threshold before showing Fuel Trust
 
-// PIDs to poll (Mode 01 - Current Data)
+// PIDs to poll (Mode 01 - Current Data).
+// v6.9: expanded from 8 to a fuller set. The two fast-moving signals (RPM 0x0C, throttle 0x11)
+// appear multiple times so they refresh ~5x faster than the slow once-per-cycle PIDs.
+// Any PID the ECU doesn't support simply returns nothing and stays invalid (harmless).
 static const uint8_t OBD_PID_LIST[] = {
-    0x05,  // Engine Coolant Temperature (ECT): A - 40 [°C]
     0x0C,  // Engine RPM: ((A*256)+B)/4 [rpm]
+    0x11,  // Throttle position: A*100/255 [%]
+    0x05,  // Engine Coolant Temperature (ECT): A - 40 [°C]
     0x0D,  // Vehicle Speed: A [km/h]
-    0x0E,  // Timing Advance: (A - 64) / 2 [degrees BTDC]
+    0x0C,  // RPM (repeat — fast mover)
+    0x0E,  // Timing Advance: (A - 64) / 2 [° BTDC]
+    0x04,  // Calculated engine load: A*100/255 [%]
+    0x11,  // Throttle (repeat — fast mover)
     0x06,  // Short Term Fuel Trim Bank 1: (A-128)*100/128 [%]
     0x07,  // Long Term Fuel Trim Bank 1: (A-128)*100/128 [%]
+    0x0C,  // RPM (repeat)
     0x08,  // Short Term Fuel Trim Bank 2: (A-128)*100/128 [%]
     0x09,  // Long Term Fuel Trim Bank 2: (A-128)*100/128 [%]
+    0x0F,  // Intake air temp (IAT): A - 40 [°C]
+    0x0C,  // RPM (repeat)
+    0x10,  // MAF air flow: ((A*256)+B)/100 [g/s]
+    0x44,  // Commanded equivalence ratio (lambda): ((A*256)+B)/32768
+    0x11,  // Throttle (repeat)
+    0x42,  // Control module (battery) voltage: ((A*256)+B)/1000 [V]
+    0x03,  // Fuel system status (raw byte A: 1=OL, 2=CL, 4=OL-drive, 8=OL-fault, 16=CL-fault)
+    0x0C,  // RPM (repeat)
+    0x2F,  // Fuel level: A*100/255 [%]  (Nissan support varies)
+    0x5C,  // Engine oil temperature: A - 40 [°C]  (Nissan support varies — free oil-temp source if present)
+    0x46,  // Ambient air temp: A - 40 [°C]
+    0x33,  // Barometric pressure (absolute): A [kPa]
 };
 #define OBD_NUM_PIDS (sizeof(OBD_PID_LIST) / sizeof(OBD_PID_LIST[0]))
 
@@ -2991,6 +3038,19 @@ static struct {
     float ltft_b2;                    // Long Term Fuel Trim Bank 2 [%]
     uint32_t fuel_trim_timestamp;
     bool fuel_trim_valid;
+
+    // v6.9 extended PIDs — each value + its own timestamp + valid flag (independent staleness)
+    int      throttle_pct;      uint32_t throttle_ts;      bool throttle_valid;       // 0x11
+    int      load_pct;          uint32_t load_ts;          bool load_valid;           // 0x04
+    int      iat_c;             uint32_t iat_ts;           bool iat_valid;            // 0x0F
+    int      ambient_c;         uint32_t ambient_ts;       bool ambient_valid;        // 0x46
+    int      oil_temp_c;        uint32_t oil_temp_ts;      bool oil_temp_valid;       // 0x5C (may be unsupported)
+    float    maf_gps;           uint32_t maf_ts;           bool maf_valid;            // 0x10
+    float    lambda;            uint32_t lambda_ts;        bool lambda_valid;         // 0x44
+    float    module_voltage;    uint32_t module_voltage_ts;bool module_voltage_valid; // 0x42
+    int      fuel_level_pct;    uint32_t fuel_level_ts;    bool fuel_level_valid;     // 0x2F (may be unsupported)
+    int      baro_kpa;          uint32_t baro_ts;          bool baro_valid;           // 0x33
+    int      fuel_sys_status;   uint32_t fuel_sys_ts;      bool fuel_sys_valid;       // 0x03 (raw status byte A)
 } g_obd_data = {0};
 
 // Fuel Trust calculation state
@@ -3127,7 +3187,78 @@ static void decodeOBD_Mode01Reply(const twai_message_t& rx) {
                 g_obd_data.ltft_b2 = ((float)rx.data[3] - 128.0f) * 100.0f / 128.0f;
             }
         } break;
-        
+
+        // ---- v6.9 extended PIDs ----
+        case 0x11: {  // Throttle position: A*100/255 [%]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.throttle_pct = (int)((float)rx.data[3] * 100.0f / 255.0f + 0.5f);
+                g_obd_data.throttle_ts = now; g_obd_data.throttle_valid = true;
+            }
+        } break;
+        case 0x04: {  // Calculated engine load: A*100/255 [%]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.load_pct = (int)((float)rx.data[3] * 100.0f / 255.0f + 0.5f);
+                g_obd_data.load_ts = now; g_obd_data.load_valid = true;
+            }
+        } break;
+        case 0x0F: {  // Intake air temp: A - 40 [°C]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.iat_c = (int)rx.data[3] - 40;
+                g_obd_data.iat_ts = now; g_obd_data.iat_valid = true;
+            }
+        } break;
+        case 0x46: {  // Ambient air temp: A - 40 [°C]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.ambient_c = (int)rx.data[3] - 40;
+                g_obd_data.ambient_ts = now; g_obd_data.ambient_valid = true;
+            }
+        } break;
+        case 0x5C: {  // Engine oil temp: A - 40 [°C]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.oil_temp_c = (int)rx.data[3] - 40;
+                g_obd_data.oil_temp_ts = now; g_obd_data.oil_temp_valid = true;
+            }
+        } break;
+        case 0x10: {  // MAF air flow: ((A*256)+B)/100 [g/s]
+            if (rx.data_length_code >= 5) {
+                uint16_t A = rx.data[3], B = rx.data[4];
+                g_obd_data.maf_gps = (float)((A << 8) | B) / 100.0f;
+                g_obd_data.maf_ts = now; g_obd_data.maf_valid = true;
+            }
+        } break;
+        case 0x44: {  // Commanded equivalence ratio (lambda): ((A*256)+B)/32768
+            if (rx.data_length_code >= 5) {
+                uint16_t A = rx.data[3], B = rx.data[4];
+                g_obd_data.lambda = (float)((A << 8) | B) / 32768.0f;
+                g_obd_data.lambda_ts = now; g_obd_data.lambda_valid = true;
+            }
+        } break;
+        case 0x42: {  // Control module (battery) voltage: ((A*256)+B)/1000 [V]
+            if (rx.data_length_code >= 5) {
+                uint16_t A = rx.data[3], B = rx.data[4];
+                g_obd_data.module_voltage = (float)((A << 8) | B) / 1000.0f;
+                g_obd_data.module_voltage_ts = now; g_obd_data.module_voltage_valid = true;
+            }
+        } break;
+        case 0x2F: {  // Fuel level: A*100/255 [%]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.fuel_level_pct = (int)((float)rx.data[3] * 100.0f / 255.0f + 0.5f);
+                g_obd_data.fuel_level_ts = now; g_obd_data.fuel_level_valid = true;
+            }
+        } break;
+        case 0x33: {  // Barometric pressure (absolute): A [kPa]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.baro_kpa = (int)rx.data[3];
+                g_obd_data.baro_ts = now; g_obd_data.baro_valid = true;
+            }
+        } break;
+        case 0x03: {  // Fuel system status: raw status byte A
+            if (rx.data_length_code >= 4) {
+                g_obd_data.fuel_sys_status = (int)rx.data[3];
+                g_obd_data.fuel_sys_ts = now; g_obd_data.fuel_sys_valid = true;
+            }
+        } break;
+
         default:
             break;
     }
@@ -3225,10 +3356,25 @@ static void checkOBDDataStaleness() {
         g_obd_data.timing_valid = false;
     }
     
-    if (g_obd_data.fuel_trim_valid && 
+    if (g_obd_data.fuel_trim_valid &&
         (now - g_obd_data.fuel_trim_timestamp > OBD_PID_STALE_THRESHOLD_MS)) {
         g_obd_data.fuel_trim_valid = false;
     }
+
+    // v6.9 extended PIDs — independent staleness
+    #define OBD_STALE(v, ts) if (g_obd_data.v && (now - g_obd_data.ts > OBD_PID_STALE_THRESHOLD_MS)) g_obd_data.v = false;
+    OBD_STALE(throttle_valid,       throttle_ts)
+    OBD_STALE(load_valid,           load_ts)
+    OBD_STALE(iat_valid,            iat_ts)
+    OBD_STALE(ambient_valid,        ambient_ts)
+    OBD_STALE(oil_temp_valid,       oil_temp_ts)
+    OBD_STALE(maf_valid,            maf_ts)
+    OBD_STALE(lambda_valid,         lambda_ts)
+    OBD_STALE(module_voltage_valid, module_voltage_ts)
+    OBD_STALE(fuel_level_valid,     fuel_level_ts)
+    OBD_STALE(baro_valid,           baro_ts)
+    OBD_STALE(fuel_sys_valid,       fuel_sys_ts)
+    #undef OBD_STALE
 }
 
 #endif // ENABLE_OBD_CAN
@@ -3245,7 +3391,8 @@ void initOBD() {
         g_obd_initialized = true;
         g_obd_last_request_ms = millis();
         Serial.println("[OBD] CAN bus initialized successfully");
-        Serial.println("[OBD] Polling: ECT, RPM, Speed, Timing, STFT/LTFT B1/B2");
+        Serial.println("[OBD] Polling: ECT, RPM, Speed, Timing, STFT/LTFT B1/B2,");
+        Serial.println("[OBD]   +v6.9: Throttle, Load, IAT, Ambient, OilTemp(0x5C), MAF, Lambda, Voltage, FuelLevel, Baro, FuelSys");
     } else {
         g_obd_initialized = false;
         Serial.println("[OBD] CAN bus initialization FAILED!");
@@ -3333,7 +3480,34 @@ void updateOBDData() {
     } else {
         g_vehicle_data.fuel_trust_valid = false;
     }
-    
+
+    // 6b. v6.9 extended OBD PIDs -> vehicle data (for CSV logging). Any PID the ECU
+    //     doesn't answer simply stays invalid. Temperatures convert °C -> °F.
+    #define OBD_COPY(dst, dvalid, src, svalid)  do { \
+        if (g_obd_data.svalid) { g_vehicle_data.dst = g_obd_data.src; g_vehicle_data.dvalid = true; } \
+        else { g_vehicle_data.dvalid = false; } } while(0)
+    OBD_COPY(throttle_pct,     throttle_valid,        throttle_pct,   throttle_valid);
+    OBD_COPY(engine_load_pct,  engine_load_valid,     load_pct,       load_valid);
+    OBD_COPY(maf_gps,          maf_valid,             maf_gps,        maf_valid);
+    OBD_COPY(commanded_lambda, lambda_valid,          lambda,         lambda_valid);
+    OBD_COPY(module_voltage,   module_voltage_valid,  module_voltage, module_voltage_valid);
+    OBD_COPY(fuel_level_pct,   fuel_level_valid,      fuel_level_pct, fuel_level_valid);
+    OBD_COPY(baro_kpa,         baro_valid,            baro_kpa,       baro_valid);
+    OBD_COPY(fuel_sys_status,  fuel_sys_valid,        fuel_sys_status,fuel_sys_valid);
+    #undef OBD_COPY
+    if (g_obd_data.iat_valid) {
+        g_vehicle_data.intake_air_temp_f = (int)(celsiusToFahrenheit((float)g_obd_data.iat_c) + 0.5f);
+        g_vehicle_data.intake_air_temp_valid = true;
+    } else g_vehicle_data.intake_air_temp_valid = false;
+    if (g_obd_data.ambient_valid) {
+        g_vehicle_data.ambient_temp_f = (int)(celsiusToFahrenheit((float)g_obd_data.ambient_c) + 0.5f);
+        g_vehicle_data.ambient_temp_valid = true;
+    } else g_vehicle_data.ambient_temp_valid = false;
+    if (g_obd_data.oil_temp_valid) {
+        g_vehicle_data.obd_oil_temp_f = (int)(celsiusToFahrenheit((float)g_obd_data.oil_temp_c) + 0.5f);
+        g_vehicle_data.obd_oil_temp_valid = true;
+    } else g_vehicle_data.obd_oil_temp_valid = false;
+
     // 7. Periodic logging (ALWAYS logs status, even when no ECU data received)
     static uint32_t lastOBDLog = 0;
     if (now - lastOBDLog > 5000) {  // Log every 5 seconds
@@ -3348,6 +3522,19 @@ void updateOBDData() {
                 g_obd_data.fuel_trim_valid ? g_obd_data.stft_b1 : 0,
                 g_obd_data.fuel_trim_valid ? g_obd_data.ltft_b1 : 0,
                 g_vehicle_data.fuel_trust_valid ? g_vehicle_data.fuel_trust_percent : -1);
+            // v6.9 extended PIDs. A real value = ECU supports it; -1 = unsupported/no-response yet.
+            Serial.printf("[OBD2] Thr:%d%% Load:%d%% IATf:%d Ambf:%d OilTf:%d MAF:%.1f Lam:%.3f Volt:%.2f Fuel:%d%% Baro:%d FSys:0x%02X\n",
+                g_obd_data.throttle_valid      ? g_obd_data.throttle_pct : -1,
+                g_obd_data.load_valid          ? g_obd_data.load_pct : -1,
+                g_obd_data.iat_valid           ? (int)(celsiusToFahrenheit((float)g_obd_data.iat_c) + 0.5f) : -1,
+                g_obd_data.ambient_valid       ? (int)(celsiusToFahrenheit((float)g_obd_data.ambient_c) + 0.5f) : -1,
+                g_obd_data.oil_temp_valid      ? (int)(celsiusToFahrenheit((float)g_obd_data.oil_temp_c) + 0.5f) : -1,
+                g_obd_data.maf_valid           ? g_obd_data.maf_gps : -1.0f,
+                g_obd_data.lambda_valid        ? g_obd_data.lambda : -1.0f,
+                g_obd_data.module_voltage_valid? g_obd_data.module_voltage : -1.0f,
+                g_obd_data.fuel_level_valid    ? g_obd_data.fuel_level_pct : -1,
+                g_obd_data.baro_valid          ? g_obd_data.baro_kpa : -1,
+                g_obd_data.fuel_sys_valid      ? g_obd_data.fuel_sys_status : 0);
         } else {
             // No valid data from ECU - log bus state so SD logs show OBD is alive but silent
             Serial.printf("[OBD] CAN active, no ECU response (TX=GPIO%d RX=GPIO%d) pid_idx=%d\n",
@@ -3401,8 +3588,14 @@ static char g_wifi_password[64] = ""; // Loaded from SD config
 #define NTP_SERVER_1 "pool.ntp.org"
 #define NTP_SERVER_2 "time.nist.gov"
 #define NTP_SERVER_3 "time.google.com"
-#define GMT_OFFSET_SEC (-6 * 3600)       // CST = UTC-6 (adjust for your timezone)
-#define DAYLIGHT_OFFSET_SEC 3600         // v6.7: DST active (CDT). Set to 0 in winter (CST). Sync once on WiFi after flashing to rewrite the RTC.
+#define GMT_OFFSET_SEC (-6 * 3600)       // CST = UTC-6 (now only used by the sunrise/sunset calc)
+#define DAYLIGHT_OFFSET_SEC 3600         // (legacy, no longer used for the clock — DST is automatic, see POSIX_TZ)
+// v6.9: AUTOMATIC US-Central daylight saving. The RTC now stores UTC; local time — including
+// the spring-forward / fall-back hour — is derived from this POSIX TZ rule, so no seasonal
+// reflash is needed. "CST6CDT" = std UTC-6 / daylight UTC-5; "M3.2.0" = 2nd Sunday of March
+// 02:00 (spring forward), "M11.1.0" = 1st Sunday of November 02:00 (fall back). Only change
+// this string if you move to a different timezone.
+#define POSIX_TZ "CST6CDT,M3.2.0,M11.1.0"
 #define WIFI_CONNECT_TIMEOUT_MS 10000    // 10 second timeout for WiFi connection
 #define NTP_SYNC_TIMEOUT_MS 3000         // 3 second timeout per NTP server
 
@@ -3705,7 +3898,13 @@ bool sdStartSession() {
         "rpm_valid,oil_press_valid,oil_temp_valid,"
         "water_temp_valid,trans_temp_valid,steer_temp_valid,diff_temp_valid,"
         "fuel_trust_valid,accel_valid,"
-        "timestamp_ms,elapsed_s,cpu_percent,mode\n";
+        "timestamp_ms,elapsed_s,cpu_percent,mode,"
+        // v6.9 extended OBD-II columns (appended so existing column positions are unchanged)
+        "throttle_pct,throttle_valid,engine_load_pct,engine_load_valid,"
+        "intake_air_temp_f,intake_air_temp_valid,ambient_temp_f,ambient_temp_valid,"
+        "obd_oil_temp_f,obd_oil_temp_valid,maf_gps,maf_valid,"
+        "commanded_lambda,lambda_valid,module_voltage,module_voltage_valid,"
+        "fuel_level_pct,fuel_level_valid,baro_kpa,baro_valid,fuel_sys_status,fuel_sys_valid\n";
 
     size_t written = g_sd_state.data_file.print(header);
     if (written == 0) {
@@ -3807,7 +4006,7 @@ void sdWriteTask(void* parameter) {
     
     SDLogEntry entry;
     SerialLogEntry logEntry;
-    char line[300];  // Increased for datetime column
+    char line[512];  // v6.9: widened for datetime + extended OBD columns
     
     // Debug counter for periodic status
     uint32_t loop_counter = 0;
@@ -3913,7 +4112,11 @@ void sdWriteTask(void* parameter) {
                 "%d,%d,%d,"
                 "%d,%d,%d,%d,"
                 "%d,%d,"
-                "%lu,%.2f,%.1f,%s\n",
+                "%lu,%.2f,%.1f,%s,"
+                // v6.9 extended OBD columns (11 value+valid pairs = 22 fields)
+                "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,"
+                "%.2f,%d,%.3f,%d,%.2f,%d,"
+                "%d,%d,%d,%d,%d,%d\n",
                 datetime_copy, entry.data.rpm,  // datetime, rpm
                 entry.data.oil_pressure_psi, oil_press_crit,  // oil pressure + critical
                 entry.data.oil_temp_value_f, oil_temp_crit,  // oil temp + critical
@@ -3928,7 +4131,19 @@ void sdWriteTask(void* parameter) {
                 entry.data.steer_temp_valid ? 1 : 0, entry.data.diff_temp_valid ? 1 : 0,  // validity flags part 2
                 entry.data.fuel_trust_valid ? 1 : 0, entry.data.accel_valid ? 1 : 0,  // fuel_trust_valid, accel_valid
                 entry.timestamp_ms, entry.elapsed_s, entry.cpu_pct,
-                entry.demo_mode ? "DEMO" : "LIVE"  // metadata at end
+                entry.demo_mode ? "DEMO" : "LIVE",  // metadata
+                // v6.9 extended OBD columns (value, valid) — order matches the header exactly
+                entry.data.throttle_pct,      entry.data.throttle_valid ? 1 : 0,
+                entry.data.engine_load_pct,   entry.data.engine_load_valid ? 1 : 0,
+                entry.data.intake_air_temp_f, entry.data.intake_air_temp_valid ? 1 : 0,
+                entry.data.ambient_temp_f,    entry.data.ambient_temp_valid ? 1 : 0,
+                entry.data.obd_oil_temp_f,    entry.data.obd_oil_temp_valid ? 1 : 0,
+                entry.data.maf_gps,           entry.data.maf_valid ? 1 : 0,
+                entry.data.commanded_lambda,  entry.data.lambda_valid ? 1 : 0,
+                entry.data.module_voltage,    entry.data.module_voltage_valid ? 1 : 0,
+                entry.data.fuel_level_pct,    entry.data.fuel_level_valid ? 1 : 0,
+                entry.data.baro_kpa,          entry.data.baro_valid ? 1 : 0,
+                entry.data.fuel_sys_status,   entry.data.fuel_sys_valid ? 1 : 0
             );
             
             // Write with retry
@@ -4391,9 +4606,46 @@ uint8_t decToBcd(uint8_t val) {
 }
 
 // Read time from DS3231 RTC
+// v6.9: timezone / DST helpers ------------------------------------------------
+// Install the POSIX TZ rule once so localtime_r()/getLocalTime() apply US-Central DST
+// automatically (spring-forward / fall-back). Idempotent — safe to call from anywhere.
+static void ensureTimezone() {
+    static bool tz_done = false;
+    if (tz_done) return;
+    setenv("TZ", POSIX_TZ, 1);
+    tzset();
+    tz_done = true;
+}
+
+// Portable "UTC broken-down time -> epoch seconds" (a timegm() that doesn't rely on the
+// platform providing timegm). Howard Hinnant's days-from-civil algorithm. The DS3231 now
+// stores UTC, so this turns an RTC read into a real time_t that localtime_r() can localize.
+static time_t utcTmToEpoch(const struct tm* t) {
+    int year  = t->tm_year + 1900;
+    int month = t->tm_mon + 1;            // 1..12
+    int day   = t->tm_mday;
+    int y = year - (month <= 2 ? 1 : 0);
+    int era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153u * (unsigned)(month + (month > 2 ? -3 : 9)) + 2u) / 5u + (unsigned)(day - 1);
+    unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+    long long days = (long long)era * 146097LL + (long long)doe - 719468LL;
+    return (time_t)(days * 86400LL + t->tm_hour * 3600 + t->tm_min * 60 + t->tm_sec);
+}
+
+// Read RTC (UTC since v6.9) and return LOCAL broken-down time with automatic DST applied.
+bool readRTCLocal(struct tm* local_out) {
+    struct tm utc;
+    if (!readRTC(&utc)) return false;
+    ensureTimezone();
+    time_t epoch = utcTmToEpoch(&utc);
+    localtime_r(&epoch, local_out);
+    return true;
+}
+
 bool readRTC(struct tm* timeinfo) {
     if (!g_sd_state.rtc_available) return false;
-    
+
     Wire.beginTransmission(DS3231_ADDR);
     Wire.write(0x00);  // Start at register 0 (seconds)
     if (Wire.endTransmission() != 0) {
@@ -4505,18 +4757,21 @@ void clearRTCOSFlag() {
 // sessions get 1979/1980 file dates while the in-log datetime (read from the RTC) is fine.
 void syncSystemTimeFromRTC() {
     if (!g_sd_state.rtc_available || !isRTCTimeValid()) return;
-    struct tm timeinfo;
-    if (!readRTC(&timeinfo)) return;
-    timeinfo.tm_isdst = -1;
-    time_t t = mktime(&timeinfo);
+    ensureTimezone();
+    struct tm utc;
+    if (!readRTC(&utc)) return;                  // v6.9: RTC stores UTC
+    time_t t = utcTmToEpoch(&utc);
     if (t < 1735689600) return;  // sanity: reject anything before 2025-01-01
     struct timeval tv;
     tv.tv_sec = t;
     tv.tv_usec = 0;
-    settimeofday(&tv, NULL);
-    Serial.printf("[TIME] System clock set from RTC (for file timestamps): %02d/%02d/%04d %02d:%02d:%02d\n",
-        timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_year + 1900,
-        timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    settimeofday(&tv, NULL);                      // system clock = UTC; TZ (POSIX_TZ) applies DST on read
+    struct tm local;
+    localtime_r(&t, &local);                      // for the log line only
+    Serial.printf("[TIME] System clock set from RTC (UTC, local=%s): %02d/%02d/%04d %02d:%02d:%02d\n",
+        local.tm_isdst > 0 ? "CDT" : "CST",
+        local.tm_mon + 1, local.tm_mday, local.tm_year + 1900,
+        local.tm_hour, local.tm_min, local.tm_sec);
 }
 
 // Try to sync time from a specific NTP server.
@@ -4535,7 +4790,8 @@ bool tryNTPSync(const char* server) {
     sentinel.tv_sec = 1704067200;
     sentinel.tv_usec = 0;
     settimeofday(&sentinel, NULL);           // force clock "old" until SNTP lands
-    configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, server);
+    ensureTimezone();
+    configTzTime(POSIX_TZ, server);          // v6.9: TZ-aware — SNTP sets UTC, POSIX_TZ applies DST
 
     struct tm timeinfo;
     uint32_t start_ms = millis();
@@ -4638,15 +4894,19 @@ void timeSyncTask(void* parameter) {
         struct tm timeinfo;
         // v6.8: guard — only trust/write a genuinely fresh NTP time (year >= 2025).
         if (getLocalTime(&timeinfo) && (timeinfo.tm_year + 1900) >= 2025) {
-            Serial.printf("[TIME/CORE0] NTP time: %02d/%02d/%04d %02d:%02d:%02d\n",
+            Serial.printf("[TIME/CORE0] NTP time (local %s): %02d/%02d/%04d %02d:%02d:%02d\n",
+                timeinfo.tm_isdst > 0 ? "CDT" : "CST",
                 timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_year + 1900,
                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-            
-            // *** WRITE NTP TIME TO RTC ***
+
+            // *** WRITE NTP TIME TO RTC AS UTC (v6.9: RTC stores UTC, DST applied on read) ***
             if (g_sd_state.rtc_available) {
-                if (writeRTC(&timeinfo)) {
+                time_t now_utc = time(NULL);
+                struct tm utc;
+                gmtime_r(&now_utc, &utc);
+                if (writeRTC(&utc)) {
                     clearRTCOSFlag();  // Mark time as valid
-                    Serial.println("[TIME/CORE0] RTC updated from NTP");
+                    Serial.println("[TIME/CORE0] RTC updated from NTP (stored as UTC)");
                     g_time_state.rtc_active = true;
                 } else {
                     Serial.println("[TIME/CORE0] Failed to write to RTC");
@@ -4695,9 +4955,9 @@ void updateTime() {
         bool success = false;
         struct tm timeinfo;
         
-        // Priority 1: DS3231 RTC
+        // Priority 1: DS3231 RTC (stores UTC since v6.9; readRTCLocal applies POSIX_TZ + DST)
         if (g_sd_state.rtc_available) {
-            if (readRTC(&timeinfo)) {
+            if (readRTCLocal(&timeinfo)) {
                 g_time_state.current_time = timeinfo;
                 g_time_state.rtc_active = true;
                 success = true;
@@ -4770,10 +5030,10 @@ void initTimeKeeping() {
         Serial.println("[TIME] DS3231 RTC detected on I2C");
         
         if (isRTCTimeValid()) {
-            // RTC has valid time - use it immediately
+            // RTC has valid time - use it immediately (RTC is UTC; convert to local w/ DST)
             // WiFi sync will run in background and update if successful
             struct tm timeinfo;
-            if (readRTC(&timeinfo)) {
+            if (readRTCLocal(&timeinfo)) {
                 g_time_state.current_time = timeinfo;
                 g_time_state.time_available = true;
                 g_time_state.rtc_active = true;
@@ -5580,9 +5840,10 @@ bool autoBrightnessUpdate() {
             &sunset_utc
         );
         
-        // Apply timezone offset (CST = UTC-6)
-        float tz_hours = (float)GMT_OFFSET_SEC / 3600.0f;
-        
+        // Apply timezone offset (CST = UTC-6), + 1h automatically while DST is active (CDT)
+        // so sunrise/sunset brightness transitions track wall-clock time year-round.
+        float tz_hours = (float)GMT_OFFSET_SEC / 3600.0f + (timeinfo.tm_isdst > 0 ? 1.0f : 0.0f);
+
         g_auto_brightness.sunrise_hours = applyTimezoneOffset(sunrise_utc, tz_hours);
         g_auto_brightness.sunset_hours = applyTimezoneOffset(sunset_utc, tz_hours);
         
@@ -8360,7 +8621,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v6.8 - Dual-Core + G-Sensor");
+    Serial.println("   370zMonitor v6.9 - Dual-Core + G-Sensor");
     Serial.println("========================================");
 
     if (psramFound()) {

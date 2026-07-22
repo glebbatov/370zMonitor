@@ -4,7 +4,7 @@
 
 **370zMonitor** is a track car data logging and display system for a 2018 Nissan 370Z. It uses an ESP32-S3 microcontroller with a 7" touchscreen to display real-time sensor data during track days.
 
-- **Current Version:** v6.7
+- **Current Version:** v6.9
 - **Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (800x480) with onboard TJA1051T CAN transceiver and SP3485 RS485 transceiver
 - **Hardware:** Waveshare Industrial 8-Ch Analog Acquisition Module (Model B, 0-10V / 0-20mA / 4-20mA selectable)
 - **Hardware:** Crowtail I2C Hub 2.0 (for multiple I2C devices)
@@ -421,19 +421,28 @@ The system reads live data from the vehicle ECU over the OBD-II port using the E
 //   ECU responses:      0x7E8 - 0x7EF
 ```
 
-### Polled PIDs (round-robin, one PID every 200ms)
-| PID | Meaning | Formula |
-|-----|---------|---------|
-| 0x05 | Engine Coolant Temp (ECT) | `A - 40` [°C] |
-| 0x0C | Engine RPM | `((A*256)+B)/4` |
-| 0x0D | Vehicle Speed | `A` [km/h] |
-| 0x0E | Timing Advance | `(A - 64) / 2` [°BTDC] |
-| 0x06 | STFT Bank 1 | `(A-128)*100/128` [%] |
-| 0x07 | LTFT Bank 1 | `(A-128)*100/128` [%] |
-| 0x08 | STFT Bank 2 | `(A-128)*100/128` [%] |
-| 0x09 | LTFT Bank 2 | `(A-128)*100/128` [%] |
+### Polled PIDs (round-robin, one PID every 120ms as of v6.9)
+| PID | Meaning | Formula | Since |
+|-----|---------|---------|-------|
+| 0x05 | Engine Coolant Temp (ECT) | `A - 40` [°C] | — |
+| 0x0C | Engine RPM | `((A*256)+B)/4` | — (oversampled ×5) |
+| 0x0D | Vehicle Speed | `A` [km/h] | — |
+| 0x0E | Timing Advance | `(A - 64) / 2` [°BTDC] | — |
+| 0x06/0x07 | STFT/LTFT Bank 1 | `(A-128)*100/128` [%] | — |
+| 0x08/0x09 | STFT/LTFT Bank 2 | `(A-128)*100/128` [%] | — |
+| 0x11 | Throttle position | `A*100/255` [%] | v6.9 (oversampled ×3) |
+| 0x04 | Calculated engine load | `A*100/255` [%] | v6.9 |
+| 0x0F | Intake air temp (IAT) | `A - 40` [°C] | v6.9 |
+| 0x46 | Ambient air temp | `A - 40` [°C] | v6.9 |
+| 0x5C | Engine oil temp | `A - 40` [°C] (Nissan support varies) | v6.9 |
+| 0x10 | MAF air flow | `((A*256)+B)/100` [g/s] | v6.9 |
+| 0x44 | Commanded lambda | `((A*256)+B)/32768` | v6.9 |
+| 0x42 | Module/battery voltage | `((A*256)+B)/1000` [V] | v6.9 |
+| 0x2F | Fuel level | `A*100/255` [%] (support varies) | v6.9 |
+| 0x33 | Barometric pressure | `A` [kPa] | v6.9 |
+| 0x03 | Fuel system status | raw byte A | v6.9 |
 
-8 PIDs at 200ms = ~1.6s full cycle. Stale threshold: 3 seconds.
+**v6.9:** poll period **120ms** (was 200), stale threshold **5s** (was 3), ~25-slot sequence (RPM ×5, throttle ×3) = ~3s full cycle. Unsupported PIDs stay invalid. New values decode into `g_obd_data` + `g_vehicle_data`, log to the CSV (22 appended columns: `throttle_pct…fuel_sys_valid`), and print on a new `[OBD2]` serial line (value = supported, `-1` = not). OBD oil temp (0x5C) is logged as `obd_oil_temp_f`, **separate** from the (dead) Modbus oil-temp sensor. Logging only — no gauges.
 
 ### Fuel Trust Calculation (`computeFuelTrust()`)
 A 0-100% confidence score for fuel quality / tune. Starts at 100 and subtracts penalties:
@@ -526,8 +535,9 @@ Uses the NOAA Solar Calculator algorithm (same as Google Maps) to compute local 
 ### NTP Background Sync
 - Optional WiFi credentials loaded from `/wifi.cfg` on the SD card (`WIFI_CONFIG_FILE`)
 - NTP servers: `pool.ntp.org`, `time.nist.gov`, `time.google.com`
-- `GMT_OFFSET_SEC = -6 * 3600` (CST); `DAYLIGHT_OFFSET_SEC = 3600` (v6.7: DST/CDT active — set back to 0 in winter)
-- **v6.7 file-timestamp fix:** `syncSystemTimeFromRTC()` sets the ESP32 system clock from the DS3231 at boot via `settimeofday()`, so SD/FAT **file timestamps** are correct even with no WiFi/NTP (previously no-WiFi sessions got 1979/1980 file dates while the in-log datetime — read straight from the RTC — was fine). After changing the DST offset, do **one WiFi/NTP boot** to rewrite the RTC with corrected local time.
+- **v6.9: AUTOMATIC DST — no more seasonal reflash.** The DS3231 now stores **UTC**; local time (incl. the spring/fall hour) is derived from a POSIX TZ rule `POSIX_TZ = "CST6CDT,M3.2.0,M11.1.0"` via `readRTCLocal()` / `getLocalTime()`. `GMT_OFFSET_SEC`/`DAYLIGHT_OFFSET_SEC` are now legacy (GMT_OFFSET is used only by the sunrise/sunset calc, which adds the DST hour itself). To move timezones, change only `POSIX_TZ`. **After flashing v6.9, do ONE WiFi/NTP boot** so the RTC is rewritten in UTC — until then the old local-time RTC value reads ~5–6 h off. Helpers: `ensureTimezone()`, `utcTmToEpoch()`, `readRTCLocal()`.
+- **v6.8 NTP-sync fix:** `tryNTPSync()` no longer accepts the stale RTC-seeded system clock as a "successful" sync (it seeds an old sentinel and waits for a genuinely fresh SNTP result, year≥2025), so NTP actually corrects the clock instead of re-cementing the RTC's error. Root cause of the old days-behind/non-monotonic timestamps. Also check the DS3231 coin cell.
+- **v6.7 file-timestamp fix:** `syncSystemTimeFromRTC()` sets the ESP32 system clock from the DS3231 at boot via `settimeofday()` (now with UTC), so SD/FAT **file timestamps** are correct even with no WiFi/NTP.
 - WiFi timeout: 10 s; NTP timeout: 3 s per server
 - After a successful NTP sync, RTC is updated with the synced time
 
@@ -945,6 +955,8 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 
 | Version | Key Changes |
 |---------|-------------|
+| v6.9 | **Automatic DST + expanded OBD logging (2026-07-21; g++/host-verified, NOT flash-tested; not committed).** (1) **Automatic daylight saving** — DS3231 now stores **UTC**; local time (incl. the spring/fall hour) derives from `POSIX_TZ = "CST6CDT,M3.2.0,M11.1.0"` via new `readRTCLocal()`/`utcTmToEpoch()`/`ensureTimezone()`. NTP writes UTC (`gmtime_r`), `configTzTime()` replaces `configTime()`. **No more seasonal reflash.** After flashing, do ONE WiFi/NTP boot to rewrite the RTC in UTC (until then it reads ~5–6 h off). Host-tested: epoch math vs `timegm`, both 2026 transitions (Mar 8 / Nov 1). (2) **Expanded OBD-II** — added 11 PIDs (throttle 0x11, load 0x04, IAT 0x0F, ambient 0x46, oil temp 0x5C, MAF 0x10, lambda 0x44, module voltage 0x42, fuel level 0x2F, baro 0x33, fuel-sys 0x03); poll 200→120ms, stale 3→5s, RPM/throttle oversampled; +22 CSV columns (appended, so old column positions unchanged → 54 total) + `[OBD2]` serial line. Logging only, no gauges. Sunrise/sunset calc now DST-aware. |
+| v6.8 | **NTP time-sync fix (superseded by v6.9's DST work but the sync fix carries forward).** `tryNTPSync()` was accepting the stale RTC-seeded system clock as a "successful" sync (getLocalTime returns true once year>2016, and the clock was already seeded from the wrong RTC), then writing that stale time back to the RTC — so NTP re-cemented the error instead of fixing it (root cause of the days-behind/non-monotonic clock). Fix: seed an old sentinel, only accept a fresh SNTP result (year≥2025), restore the clock on failure. Also flagged the DS3231 coin cell. A coolant Value-Critical bump 220→235°F was made then reverted (stays 220). |
 | v6.7 | **Track-day "smart oil-pressure monitor" pass (compiled clean 54% flash / 24% RAM; on-car validation pending).** (1) **10 Hz logging** — `SD_WRITE_INTERVAL_MS` 1000→100, `SD_QUEUE_SIZE` 16→40, to catch sub-second oil-pressure/starvation dips (10 Hz is the RS485/Modbus ceiling, not the P51's — the sensor is analog/near-instant). (2) **RPM-aware oil-pressure alarm** — `isOilPressureCritical()` now trips below `max(10 psi/1000 rpm, 10 psi idle floor)` while the engine runs (warm-oil, always armed, no temp gating) plus the `>120` PSI overpressure trip; drives the existing **Value Critical** label (no buzzer, by request). The old fixed `<10` PSI trip is replaced; `isOilPressureCriticalRPM()` is now unused. (3) **Accelerometer calibration** — `readAccelerometer()` rotates raw axes into the car frame (`ACCEL_R_*`, `ENABLE_ACCEL_CALIBRATION`), derived from 55 mi of logs; vertical exact, lat/lon provisional ~±20°. (4) **Timestamp fixes** — `syncSystemTimeFromRTC()`/`settimeofday()` at boot fixes 1979 FAT file dates without WiFi; `DAYLIGHT_OFFSET_SEC` 0→3600 fixes the 1-hour-behind (needs one WiFi boot to rewrite the RTC). (5) **`[SESSION]` summary** — per-second log line (min oil PSI >2k rpm, peak oil temp, max lat/lon/vert G). Oil-temp PRTXI (AI2) still offline/being replaced; the car's factory oil-temp gauge covers it in the meantime. |
 | v6.6 | **ROLLBACK — restored the original 5-channel mapping; real root cause found.** The oil-pressure dropout chased through v6.3–v6.5 was never a bad channel — it was a **grounding/isolation fault** (the P51 loop shared the box's power-and-ground, so its 4 mA bypassed the Waveshare's 500 Ω sense resistor and read ≈0/`---`). Proven on the bench: both P51 units read steady ~4 mA on an isolated supply and dropped out only on box power; a sibling 4-20mA channel (diff temp) was clean throughout. **Fix (hardware):** power the oil-pressure loop from an isolated 24V DC-DC (Mean Well DDR-15G-24 / Traco TRN 3-1215), input off car 12V, output− to AI1− only (24V out for full-scale headroom). **Firmware:** reverted all diagnostic swaps — `MODBUS_CH_OIL_PRESSURE` 2→0, `OIL_TEMP` 5→1, `TRANS_TEMP` 1→2; `MODBUS_NUM_CHANNELS` 6→5; boot configures CH1–CH5 Mode 3 (dead-CH1 skip + CH6 spare removed); labels + version (header/splash/banner) → v6.6. **Validated on-car 2026-07-04** (isolated DDR-15G-24 installed; oil pressure 99.7% valid, 37–112 PSI, stable engine on/off; oil-temp PRTXI on AI2 failed, replacement pending). Full narrative: `oil_pressure_isolation_saga.md`. |
 | v6.5 | **DIAGNOSTIC A/B swap — oil pressure CH2 ↔ trans temp CH3.** On v6.4 the P51 read flat 0 µA on CH2 while CH3-CH5 temps read perfectly, so oil pressure is moved onto **CH3 (AI3)** — the proven-good trans-temp channel — and trans temp is moved to **CH2 (AI2)**. Physically swap the two loops between AI2/AI3 (jumpers stay ON). If the P51 reads steady 4 mA on CH3, the sensor's good and AI2/its wiring was the bad spot; if it still zeros/flickers on CH3 while trans temp is solid on CH2, the fault is the P51/harness, not the board. Firmware: `MODBUS_CH_OIL_PRESSURE` 1→2, `MODBUS_CH_TRANS_TEMP` 2→1; labels + version (header/splash/banner) → v6.5. **Also flagged:** the old "CH1 dead" reading was taken with CH1's jumper OFF (voltage mode) — likely a jumper mistake, not a dead channel; CH1 may be fine. |

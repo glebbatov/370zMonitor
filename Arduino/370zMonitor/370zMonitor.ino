@@ -1,9 +1,19 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v6.7
+ * 370zMonitor v6.8
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v6.8 Changes (post-track-day analysis follow-ups):
+ * - TIME-SYNC FIX: tryNTPSync() no longer accepts the stale RTC-seeded system clock as a
+ *   successful sync. It seeds an old sentinel, waits for SNTP to push the clock to a real
+ *   date (year>=2025), and restores the prior clock on failure. Root cause of the
+ *   "clock is days behind / non-monotonic" problem: getLocalTime() returned the wrong RTC
+ *   time before the real NTP response landed, then that wrong time was written back to the
+ *   RTC — so NTP re-cemented the error instead of fixing it. (Also verify the DS3231 coin
+ *   cell; do one WiFi/NTP boot near a known network to rewrite the RTC after flashing.)
+ *   (Coolant Value-Critical threshold left at 220F — a 235F bump was considered then reverted.)
  *
  * v6.7 Changes (track-day quick pass - smart oil-pressure monitor):
  * - Logging raised to 10 Hz (SD_WRITE_INTERVAL_MS 1000->100, queue 16->40) to catch
@@ -4509,21 +4519,41 @@ void syncSystemTimeFromRTC() {
         timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 }
 
-// Try to sync time from a specific NTP server
+// Try to sync time from a specific NTP server.
+// v6.8 FIX: the old version called getLocalTime() right after configTime() and returned
+// true as soon as the clock read any year > 2016 — but the system clock was already seeded
+// from the (possibly wrong) RTC at boot, so getLocalTime() handed back the STALE RTC time
+// before the real SNTP response ever arrived. That stale time was then written back to the
+// RTC, so NTP could never actually correct the clock (it just re-cemented the RTC's error).
+// Fix: seed the clock to an old sentinel, then only accept the sync once SNTP has pushed the
+// clock forward to a genuinely fresh date (year >= 2025). Restore the prior clock on failure
+// so SD/FAT file timestamps stay correct when NTP is unavailable.
 bool tryNTPSync(const char* server) {
     Serial.printf("[TIME] Trying NTP server: %s\n", server);
+    time_t before = time(nullptr);           // current (RTC-seeded) clock
+    struct timeval sentinel;                 // 2024-01-01 UTC sentinel
+    sentinel.tv_sec = 1704067200;
+    sentinel.tv_usec = 0;
+    settimeofday(&sentinel, NULL);           // force clock "old" until SNTP lands
     configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, server);
-    
+
     struct tm timeinfo;
     uint32_t start_ms = millis();
     while ((millis() - start_ms) < NTP_SYNC_TIMEOUT_MS) {
-        if (getLocalTime(&timeinfo, 100)) {  // 100ms timeout per attempt
+        // A real SNTP response lands at 2025+; the sentinel is 2024, so year>=2025 proves the
+        // clock was actually updated by NTP rather than left at the seed (or the stale RTC time).
+        if (getLocalTime(&timeinfo, 100) && (timeinfo.tm_year + 1900) >= 2025) {
             Serial.printf("[TIME] NTP sync successful from %s\n", server);
             return true;
         }
-        vTaskDelay(pdMS_TO_TICKS(200));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
-    Serial.printf("[TIME] NTP server %s timeout\n", server);
+    // No fresh response — restore the pre-sync clock so file timestamps remain sane.
+    struct timeval restore;
+    restore.tv_sec = before;
+    restore.tv_usec = 0;
+    settimeofday(&restore, NULL);
+    Serial.printf("[TIME] NTP server %s timeout (no fresh SNTP response)\n", server);
     return false;
 }
 
@@ -4606,7 +4636,8 @@ void timeSyncTask(void* parameter) {
     // Handle NTP result
     if (synced) {
         struct tm timeinfo;
-        if (getLocalTime(&timeinfo)) {
+        // v6.8: guard — only trust/write a genuinely fresh NTP time (year >= 2025).
+        if (getLocalTime(&timeinfo) && (timeinfo.tm_year + 1900) >= 2025) {
             Serial.printf("[TIME/CORE0] NTP time: %02d/%02d/%04d %02d:%02d:%02d\n",
                 timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_year + 1900,
                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
@@ -8329,7 +8360,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v6.7 - Dual-Core + G-Sensor");
+    Serial.println("   370zMonitor v6.8 - Dual-Core + G-Sensor");
     Serial.println("========================================");
 
     if (psramFound()) {

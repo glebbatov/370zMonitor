@@ -4,7 +4,7 @@
 
 **370zMonitor** is a track car data logging and display system for a 2018 Nissan 370Z. It uses an ESP32-S3 microcontroller with a 7" touchscreen to display real-time sensor data during track days.
 
-- **Current Version:** v6.9
+- **Current Version:** v6.13
 - **Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (800x480) with onboard TJA1051T CAN transceiver and SP3485 RS485 transceiver
 - **Hardware:** Waveshare Industrial 8-Ch Analog Acquisition Module (Model B, 0-10V / 0-20mA / 4-20mA selectable)
 - **Hardware:** Crowtail I2C Hub 2.0 (for multiple I2C devices)
@@ -219,8 +219,19 @@ accel_x_g,accel_y_g,accel_z_g,
 rpm_valid,oil_press_valid,oil_temp_valid,
 water_temp_valid,trans_temp_valid,steer_temp_valid,diff_temp_valid,
 fuel_trust_valid,accel_valid,
-timestamp_ms,elapsed_s,cpu_percent,mode
+timestamp_ms,elapsed_s,cpu_percent,mode,
+[v6.9 appended, 22 cols] throttle_pct,throttle_valid,engine_load_pct,engine_load_valid,
+  intake_air_temp_f,intake_air_temp_valid,ambient_temp_f,ambient_temp_valid,
+  obd_oil_temp_f,obd_oil_temp_valid,maf_gps,maf_valid,commanded_lambda,lambda_valid,
+  module_voltage,module_voltage_valid,fuel_level_pct,fuel_level_valid,baro_kpa,baro_valid,
+  fuel_sys_status,fuel_sys_valid,
+[v6.10 appended, 12 cols] stft_b1,stft_b2,ltft_b1,ltft_b2,fuel_trim_valid,
+  ft_timing_deg,pen_stft,pen_ltft,pen_bank,pen_timing,mil_on,dtc_count
 ```
+Columns are only ever **appended** (v6.9, then v6.10), so every pre-existing column keeps its
+position — old parsers still work. Total = 32 base + 22 (v6.9) + 12 (v6.10) = **66 columns**.
+A `# 370zMonitor FW vX.Y` comment line is written just under the header (v6.10), and the
+actual DTC code strings go to the `.log` on a `[DTC]` line (the CSV logs only `mil_on`/`dtc_count`).
 
 ### Free-space Management
 - `SD_FREE_SPACE_PERCENT 5` — keep at least 5% free
@@ -441,8 +452,12 @@ The system reads live data from the vehicle ECU over the OBD-II port using the E
 | 0x2F | Fuel level | `A*100/255` [%] (support varies) | v6.9 |
 | 0x33 | Barometric pressure | `A` [kPa] | v6.9 |
 | 0x03 | Fuel system status | raw byte A | v6.9 |
+| 0x01 | Monitor status (MIL + DTC count) | `A` bit7=MIL, bits0-6=count | v6.10 |
 
 **v6.9:** poll period **120ms** (was 200), stale threshold **5s** (was 3), ~25-slot sequence (RPM ×5, throttle ×3) = ~3s full cycle. Unsupported PIDs stay invalid. New values decode into `g_obd_data` + `g_vehicle_data`, log to the CSV (22 appended columns: `throttle_pct…fuel_sys_valid`), and print on a new `[OBD2]` serial line (value = supported, `-1` = not). OBD oil temp (0x5C) is logged as `obd_oil_temp_f`, **separate** from the (dead) Modbus oil-temp sensor. Logging only — no gauges.
+
+### OBD Mode 03 — Trouble Codes (DTCs) (v6.10)
+Beyond the round-robin Mode 01 PIDs, v6.10 also issues a **Mode 03** ("read stored DTCs") request every `DTC_READ_INTERVAL_MS = 15000` (and on-demand when the Fuel Trust popup opens). The reply (service byte `0x43`) is reassembled via ISO-TP in `handleDTCFrame()` — single-frame directly, multi-frame with a Flow-Control frame to the ECU's physical address (`resp_id − 8`), timeout `DTC_ASM_TIMEOUT_MS = 200`. Each 2-byte DTC is decoded to a `Pxxxx/Cxxxx/Bxxxx/Uxxxx` string by `dtcToString()` and stored in `g_dtc_list[]`. Codes print on a `[DTC]` serial line and show in the Fuel Trust popup; the CSV logs only `mil_on` + `dtc_count` (from PID 0x01, single-frame and always reliable). **Assumes the ISO 15765-4 CAN Mode-03 count byte** (`0x43,count,pairs…`) — verify the decoded codes against a scanner on first flash. Failure is benign (empty/partial list; MIL+count still show).
 
 ### Fuel Trust Calculation (`computeFuelTrust()`)
 A 0-100% confidence score for fuel quality / tune. Starts at 100 and subtracts penalties:
@@ -556,9 +571,10 @@ Uses the NOAA Solar Calculator algorithm (same as Google Maps) to compute local 
 | Gesture | Action |
 |---------|--------|
 | Single tap on gauge value | Cycle display units (°F/°C; PSI/Bar/kPa/ATM) |
+| Single tap on **Fuel Trust** value | Open the Fuel Trust breakdown popup (both banks' STFT/LTFT, the 4 penalties, meaning, + active DTCs). Tap anywhere to close. (v6.10) |
 | Single tap on utility-box brightness button | Manual override (flip to opposite brightness) |
 | Double-tap anywhere | Show utility box |
-| 5-second hold on utility box | Toggle Demo / Live mode (`DEMO_MODE_TOGGLE_HOLD_MS`) |
+| 5-second hold on utility box | Toggle Demo / Live mode (`DEMO_MODE_TOGGLE_HOLD_MS`). v6.13: LIVE→DEMO is **blocked while the engine is running** (rpm>300) to stop phantom-touch triggers; DEMO→LIVE always allowed. A full-width "DEMO - SIMULATED DATA" banner shows whenever demo is active. |
 | Tap FILES button (in utility box) | Enter file browser |
 | Tap AUTO BRI button (in utility box) | Toggle auto-brightness ON/OFF |
 
@@ -955,6 +971,10 @@ Detailed wire-by-wire plan and SVG schematic: see `diff_cooler_wiring.md` in the
 
 | Version | Key Changes |
 |---------|-------------|
+| v6.13 | **Demo-mode phantom-touch guard + WiFi diagnostics (2026-07-30; host-verified logic only, NOT flash-tested; not committed).** On-car, a stray capacitive 5-s touch dropped the display into DEMO mid-drive (session 597, ~5 min in: `[MODE] Demo mode ENABLED (5-second hold)`); the simulated temps climbed to "critical" and the user thought it was real — the old "DEMO" marker lives inside the hidden utility box, so nothing warned them. Fix: (1) `checkUtilityLongPress()` now blocks LIVE→DEMO while `g_vehicle_data.rpm_valid && rpm>300` (engine running), logging `[MODE] Demo toggle IGNORED`; DEMO→LIVE still allowed. (2) New `updateDemoBanner()` shows a full-width always-on-top magenta "DEMO - SIMULATED DATA" banner (top layer) whenever `g_demo_mode`, called from `updateModeIndicator()`. Plus **WiFi diagnostics**: `logWifiScanDiag()` on connect-timeout logs `WiFi.status()` + a 2.4 GHz scan (is the SSID visible? RSSI/ch/enc) to separate band-steering/range from a bad password. Context: user's `NETGEAR68` is one SSID for both bands; ESP32 is 2.4-only. Verified: braces/parens/#if balanced, CSV still 66 cols. |
+| v6.12 | **Local WiFi file page (2026-07-30; host-verified logic only, NOT flash-tested; not committed).** Redundancy for v6.11's cloud upload + a no-external-service fallback. The box serves its SD logs over WiFi as a plain web page: `serveFilesWindow()` (in `timeSyncTask`, Core 0, after the cloud upload and before WiFi power-off) starts `WebServer(80)` + mDNS (`z370.local`) and loops `handleClient()` for `FILE_SERVER_MINUTES` (default 15, set in `/wifi.cfg`, 0=off), then stops and lets WiFi power down so its RAM is reclaimed. `fsHandleRoot()` chunk-streams a `SESS_*` listing (name/size/download link); `fsHandleDownload()` validates the name (`fsValidName()` — `SESS_*.csv/.log` only, blocks path traversal) and `streamFile()`s it off the card. SD reads bracketed with `g_fb_pause_sd_writes` (same as the file browser) so they can't collide with the writer. New includes `WebServer.h`/`ESPmDNS.h`; flag `ENABLE_FILE_SERVER`; `[FILESRV]` serial tag. **Design note: bounded window (not always-on) on purpose — holding WiFi all drive would keep ~tens of KB of internal RAM (the board's tightest resource). First-flash risk = RAM while WiFi + full UI coexist; if it glitches, lower `FILE_SERVER_MINUTES`.** |
+| v6.11 | **Cloud auto-upload of session logs (2026-07-30; host-verified logic only, NOT flash-tested; not committed).** Kills the pull-the-SD/USB chore. At boot, inside `timeSyncTask` (Core 0) while WiFi is already up for NTP, `uploadPendingSessions()` scans the card and streams any completed `SESS_*.csv/.log` not in `/CLOUDUP.DAT` to a configurable HTTPS endpoint (`cloudUploadFile()` — file streamed as the POST body, metadata `secret`/`folder`/`name` in the query string), records them in the manifest, then WiFi powers off as before. Endpoint-agnostic; bundled **`cloud/CloudUpload.gs`** Apps Script receives them into **Google Drive** (folder `CLOUD_FOLDER`) so they sync to PC/phone. Config in the **same `/wifi.cfg`**: `CLOUD_URL`/`CLOUD_SECRET`/`CLOUD_FOLDER` (template updated). Current (open) session uploads next boot; capped at `CLOUD_MAX_PER_BOOT=8`/boot; idempotent (dedupe by name both ends). `TimeSyncTask` stack **4096→16384** for the TLS handshake; `WiFiClientSecure.setInsecure()`; follows the Apps Script 302 (`HTTPC_STRICT_FOLLOW_REDIRECTS`, accepts 200/301/302). New `[CLOUD]` serial tag. **On first flash verify:** the 302 redirect follows, and TLS fits in RAM/stack. Feature flag `ENABLE_CLOUD_UPLOAD`. |
+| v6.10 | **Fuel-trust transparency + OBD trouble-code reading (2026-07-30; host-verified logic only, NOT flash-tested; not committed).** Motivated by a real low-fuel-trust day: LTFT pegged at −13.3% (−20 pts) + high idle STFT (−10) floored the score at 70%, and the pre-v6.9 logs only stored the final % — not the inputs. (1) **CSV now logs the 4 inputs** — `stft_b1/b2, ltft_b1/b2, fuel_trim_valid, ft_timing_deg` + the 4 deductions `pen_stft/pen_ltft/pen_bank/pen_timing` + `mil_on, dtc_count` (12 appended cols → 66 total; positions unchanged). `[OBD]` serial line prints **Bank 2** (ST2/LT2) again. `computeFuelTrust()` publishes the breakdown to global `g_ft`. (2) **FUEL TRUST tap popup** — `ui_FUEL_TRUST_Value_Tap_Panel` → `showFuelTrustPopup()`: both banks' trims, per-penalty points, plain-English meaning, and active DTCs; tap to dismiss. (3) **DTC reading** — Mode 01 PID **0x01** (MIL + count) + a **Mode 03** ISO-TP reader (`sendOBD_Mode03`/`handleDTCFrame`/`finalizeDTCs`/`dtcToString`) that decodes stored codes to `Pxxxx` strings, prints `[DTC]`, and shows them in the popup. Assumes the ISO 15765-4 CAN count-byte format — **verify against a scanner on first flash.** (4) **Firmware version** now stamped into the `.log` header and a `# 370zMonitor FW` CSV comment line (was in neither); new `FW_VERSION` macro is the single source of truth for the banner + logs. Host-tested: `dtcToString` byte-decode + penalty exposure. **TODO: flash + verify DTC decode on-car.** |
 | v6.9 | **Automatic DST + expanded OBD logging (2026-07-21; g++/host-verified, NOT flash-tested; not committed).** (1) **Automatic daylight saving** — DS3231 now stores **UTC**; local time (incl. the spring/fall hour) derives from `POSIX_TZ = "CST6CDT,M3.2.0,M11.1.0"` via new `readRTCLocal()`/`utcTmToEpoch()`/`ensureTimezone()`. NTP writes UTC (`gmtime_r`), `configTzTime()` replaces `configTime()`. **No more seasonal reflash.** After flashing, do ONE WiFi/NTP boot to rewrite the RTC in UTC (until then it reads ~5–6 h off). Host-tested: epoch math vs `timegm`, both 2026 transitions (Mar 8 / Nov 1). (2) **Expanded OBD-II** — added 11 PIDs (throttle 0x11, load 0x04, IAT 0x0F, ambient 0x46, oil temp 0x5C, MAF 0x10, lambda 0x44, module voltage 0x42, fuel level 0x2F, baro 0x33, fuel-sys 0x03); poll 200→120ms, stale 3→5s, RPM/throttle oversampled; +22 CSV columns (appended, so old column positions unchanged → 54 total) + `[OBD2]` serial line. Logging only, no gauges. Sunrise/sunset calc now DST-aware. |
 | v6.8 | **NTP time-sync fix (superseded by v6.9's DST work but the sync fix carries forward).** `tryNTPSync()` was accepting the stale RTC-seeded system clock as a "successful" sync (getLocalTime returns true once year>2016, and the clock was already seeded from the wrong RTC), then writing that stale time back to the RTC — so NTP re-cemented the error instead of fixing it (root cause of the days-behind/non-monotonic clock). Fix: seed an old sentinel, only accept a fresh SNTP result (year≥2025), restore the clock on failure. Also flagged the DS3231 coin cell. A coolant Value-Critical bump 220→235°F was made then reverted (stays 220). |
 | v6.7 | **Track-day "smart oil-pressure monitor" pass (compiled clean 54% flash / 24% RAM; on-car validation pending).** (1) **10 Hz logging** — `SD_WRITE_INTERVAL_MS` 1000→100, `SD_QUEUE_SIZE` 16→40, to catch sub-second oil-pressure/starvation dips (10 Hz is the RS485/Modbus ceiling, not the P51's — the sensor is analog/near-instant). (2) **RPM-aware oil-pressure alarm** — `isOilPressureCritical()` now trips below `max(10 psi/1000 rpm, 10 psi idle floor)` while the engine runs (warm-oil, always armed, no temp gating) plus the `>120` PSI overpressure trip; drives the existing **Value Critical** label (no buzzer, by request). The old fixed `<10` PSI trip is replaced; `isOilPressureCriticalRPM()` is now unused. (3) **Accelerometer calibration** — `readAccelerometer()` rotates raw axes into the car frame (`ACCEL_R_*`, `ENABLE_ACCEL_CALIBRATION`), derived from 55 mi of logs; vertical exact, lat/lon provisional ~±20°. (4) **Timestamp fixes** — `syncSystemTimeFromRTC()`/`settimeofday()` at boot fixes 1979 FAT file dates without WiFi; `DAYLIGHT_OFFSET_SEC` 0→3600 fixes the 1-hour-behind (needs one WiFi boot to rewrite the RTC). (5) **`[SESSION]` summary** — per-second log line (min oil PSI >2k rpm, peak oil temp, max lat/lon/vert G). Oil-temp PRTXI (AI2) still offline/being replaced; the car's factory oil-temp gauge covers it in the meantime. |

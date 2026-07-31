@@ -976,5 +976,13 @@
 
 /*Widget transformation demo*/
 #define LV_USE_DEMO_TRANSFORM       0
+/*Demonstrate scroll settings*/
+#define LV_USE_DEMO_SCROLL          0
 
-/*Demonstrate scro
+/*Vector graphic demo*/
+#define LV_USE_DEMO_VECTOR_GRAPHIC  0
+/*--END OF LV_CONF_H--*/
+
+#endif /*LV_CONF_H*/
+
+#endif /*End of "Content enable"*/

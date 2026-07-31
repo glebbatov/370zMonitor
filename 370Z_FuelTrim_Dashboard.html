@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>370Z Fuel Trust &amp; Trims — Session Explorer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0a0a0a; --panel:#151515; --panel2:#1c1c1c; --line:#2a2a2a;
+    --red:#d41f2d; --red2:#a31621; --text:#eaeaea; --dim:#9a9a9a;
+    --amber:#ffc04d; --blue:#4da6ff; --green:#37c46a; --orange:#ff7a3c; --purple:#b98cff;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.45}
+  header{padding:22px 26px 14px;border-bottom:1px solid var(--line);
+         background:linear-gradient(180deg,#181010,#0a0a0a)}
+  h1{margin:0;font-size:22px;letter-spacing:.5px}
+  h1 .z{color:var(--red)}
+  .sub{color:var(--dim);font-size:13px;margin-top:4px}
+  main{max-width:1180px;margin:0 auto;padding:20px 22px 60px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:16px 0}
+  .card h2{margin:0 0 12px;font-size:15px;color:#fff;letter-spacing:.3px;
+           display:flex;align-items:center;gap:8px}
+  .card h2 .tag{font-size:11px;color:var(--dim);font-weight:400;border:1px solid var(--line);
+                border-radius:20px;padding:2px 9px}
+  /* drop zone */
+  #drop{border:1.5px dashed #3a3a3a;border-radius:10px;padding:20px;text-align:center;color:var(--dim);
+        cursor:pointer;transition:.15s;background:var(--panel2)}
+  #drop.hover{border-color:var(--red);color:var(--text);background:#201414}
+  #drop b{color:var(--text)}
+  #drop input{display:none}
+  .banner{font-size:12.5px;padding:8px 12px;border-radius:7px;margin-top:10px}
+  .banner.demo{background:#20180a;border:1px solid #4a3714;color:var(--amber)}
+  .banner.info{background:#0f1a24;border:1px solid #1d3a52;color:#bfe0ff}
+  /* controls */
+  .row{display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+  select,button{background:var(--panel2);color:var(--text);border:1px solid var(--line);
+                border-radius:7px;padding:7px 11px;font-size:13px;cursor:pointer}
+  button:hover,select:hover{border-color:var(--red)}
+  label.lbl{font-size:12px;color:var(--dim)}
+  /* table */
+  table{width:100%;border-collapse:collapse;font-size:12.5px;font-family:var(--mono)}
+  th,td{padding:7px 9px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--dim);font-weight:600;text-align:right;position:sticky;top:0;background:var(--panel)}
+  th:first-child,td:first-child{text-align:left}
+  tr:hover td{background:#1a1a1a}
+  td.good{color:var(--green)} td.warn{color:var(--amber)} td.bad{color:var(--red)}
+  .mil-on{color:var(--red);font-weight:700} .mil-off{color:var(--dim)}
+  .tablewrap{max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+  /* chart layout */
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:860px){.grid2{grid-template-columns:1fr}}
+  .chartbox{position:relative;height:260px}
+  .chartbox.tall{height:300px}
+  .note{font-size:12px;color:var(--dim);margin-top:8px}
+  .dtcgrid{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+  .dtc{font-family:var(--mono);font-size:13px;background:#241a0c;border:1px solid #4a3714;
+       color:var(--amber);border-radius:6px;padding:6px 10px}
+  .dtc .d{color:var(--dim);font-size:11px;margin-left:6px}
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--line);color:var(--dim)}
+  .kpis{display:flex;flex-wrap:wrap;gap:18px;margin:2px 0 6px}
+  .kpi{min-width:120px}
+  .kpi .v{font-size:20px;font-family:var(--mono)} .kpi .k{font-size:11px;color:var(--dim)}
+  .legendhint{font-size:11.5px;color:var(--dim);margin-top:6px}
+  code{background:#000;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px}
+  a{color:var(--blue)}
+</style>
+</head>
+<body>
+<header>
+  <h1>370<span class="z">Z</span> Fuel Trust &amp; Trims — Session Explorer</h1>
+  <div class="sub">Drop your <code>SESS_*.csv</code> and/or <code>SESS_*.log</code> files to watch fuel-trim relearn, bank imbalance, the score breakdown, and stored trouble codes across sessions. Works with v6.10 CSVs and with older <code>.log</code> files (parses the <code>[OBD]</code>/<code>[DTC]</code> lines).</div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Load sessions <span class="tag">.csv + .log</span></h2>
+    <div id="drop">
+      <b>Drop files here</b> or click to choose &nbsp;—&nbsp; select many at once (CSV, LOG, or both)
+      <input id="file" type="file" multiple accept=".csv,.log,text/plain">
+    </div>
+    <div id="loadmsg" class="banner demo">Showing <b>DEMO data</b> — a simulated relearn (LTFT drifting to −13.3% after a code clear) with a MAF&nbsp;'B' fault. Drop your real files to replace it.</div>
+  </div>
+
+  <div class="card">
+    <h2>Sessions <span class="tag" id="sesscount"></span></h2>
+    <div class="tablewrap">
+      <table id="summary"><thead></thead><tbody></tbody></table>
+    </div>
+    <div class="note">“Settled LTFT” = median of valid long-term trims (the value the ECU learned). Rows turn <span style="color:var(--red)">red</span> when avg |LTFT| &gt; 10% or the MIL is on.</div>
+  </div>
+
+  <div class="card">
+    <h2>Per-session detail</h2>
+    <div class="row" style="margin-bottom:12px">
+      <label class="lbl">Session</label>
+      <select id="picker"></select>
+      <span id="detailflags"></span>
+    </div>
+    <div class="kpis" id="kpis"></div>
+
+    <div class="grid2">
+      <div>
+        <div class="chartbox"><canvas id="cTrust"></canvas></div>
+        <div class="legendhint">Fuel Trust % over the drive (100 = perfect).</div>
+      </div>
+      <div>
+        <div class="chartbox"><canvas id="cTrims"></canvas></div>
+        <div class="legendhint">Fuel trims — watch LTFT (solid) migrate as the ECU relearns; STFT (dashed) is the fast correction.</div>
+      </div>
+      <div>
+        <div class="chartbox"><canvas id="cPenalty"></canvas></div>
+        <div class="legendhint">Where the points go: the four penalties stacked (needs v6.10 CSV).</div>
+      </div>
+      <div>
+        <div class="chartbox"><canvas id="cImbalance"></canvas></div>
+        <div class="legendhint">Bank imbalance |B1−B2|. A persistent gap points at one bank (e.g. a MAF 'B' fault).</div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px">
+      <div class="pill">Trouble codes</div>
+      <div id="dtcpanel" class="dtcgrid"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Across sessions <span class="tag">relearn trend</span></h2>
+    <div class="chartbox tall"><canvas id="cTrend"></canvas></div>
+    <div class="legendhint">Each point = one session’s settled LTFT (B1/B2) and average Fuel Trust, in load order. If LTFT trends back toward 0 the relearn is recovering; if it stays down near −13%, the underlying fault (airflow/fuel) persists.</div>
+  </div>
+
+  <div class="card" style="color:var(--dim);font-size:12.5px">
+    Reads columns by header name, so appended v6.10 columns are picked up automatically. Old logs without trim columns still show Fuel Trust %, and their <code>.log</code> yields Bank-1 trims from the <code>[OBD]</code> lines. Trouble-code strings come from the <code>.log</code> <code>[DTC]</code> line (the CSV stores only <code>mil_on</code>/<code>dtc_count</code>). Chart library loaded from cdnjs (needs internet).
+  </div>
+</main>
+
+<script>
+"use strict";
+/* ---------------------------------------------------------------------------
+   370Z Fuel Trust & Trims — Session Explorer
+   Self-contained. Parses SESS_*.csv (v6.10 fuel-trust columns) and SESS_*.log
+   ([OBD]/[DTC] serial lines), groups by session id, and charts the results.
+--------------------------------------------------------------------------- */
+const DTC_DESC = {
+  P010B:"MAF 'B' range/perf", P0101:"MAF range/perf", P0102:"MAF flow low", P0103:"MAF flow high",
+  P0171:"Sys too lean B1", P0174:"Sys too lean B2", P0172:"Sys too rich B1", P0175:"Sys too rich B2",
+  P0037:"O2 htr low B1S2", P0038:"O2 htr high B1S2", P0057:"O2 htr low B2S2", P0058:"O2 htr high B2S2",
+  P0130:"O2 circuit B1S1", P0150:"O2 circuit B2S1", P0138:"O2 high B1S2", P0158:"O2 high B2S2",
+  P2096:"Post-cat lean B1", P2098:"Post-cat lean B2", P2097:"Post-cat rich B1", P2099:"Post-cat rich B2",
+  P0420:"Catalyst eff B1", P0430:"Catalyst eff B2"
+};
+const num = x => { const v = parseFloat(x); return Number.isFinite(v) ? v : null; };
+const median = a => { const b=a.filter(v=>v!=null).sort((x,y)=>x-y); if(!b.length)return null;
+  const m=b.length>>1; return b.length%2?b[m]:(b[m-1]+b[m])/2; };
+const avg = a => { const b=a.filter(v=>v!=null); return b.length?b.reduce((s,v)=>s+v,0)/b.length:null; };
+const sessionId = name => { const m=/SESS[_-]?(\d+)/i.exec(name||""); return m?("SESS_"+m[1].padStart(8,"0")):(name||"session"); };
+
+/* ---- CSV parser: skip #-comment lines, map by header name ---- */
+function parseCSV(text){
+  const lines = text.split(/\r?\n/).filter(l=>l.length);
+  let fw=null, header=null, rows=[];
+  for(const line of lines){
+    if(line[0]==='#'){ const m=/FW\s+(v[\d.]+)/i.exec(line); if(m)fw=m[1]; continue; }
+    if(!header){ header=line.split(',').map(s=>s.trim()); continue; }
+    const parts=line.split(',');
+    if(parts.length<2) continue;
+    const o={}; for(let i=0;i<header.length;i++) o[header[i]]=parts[i];
+    rows.push(o);
+  }
+  return {fw,header:header||[],rows};
+}
+
+/* ---- LOG parser: extract [OBD] time series + [DTC] codes ---- */
+function parseLog(text){
+  const obd=[]; let dtc=null, fw=null;
+  const fwm=/370zMonitor\s+(v[\d.]+)/i.exec(text); if(fwm)fw=fwm[1];
+  const reMs   = /\[(\d+)\]\s*\[OBD\]/;
+  const g=(re,l)=>{const m=re.exec(l);return m?parseFloat(m[1]):null;};
+  for(const line of text.split(/\r?\n/)){
+    if(line.indexOf('[OBD]')>-1 && line.indexOf('ST1:')>-1){
+      const ms=(reMs.exec(line)||[])[1];
+      obd.push({
+        ms: ms!=null?parseFloat(ms):obd.length*1000,
+        ect:g(/ECT:(-?\d+)/,line), rpm:g(/RPM:(-?[\d.]+)/,line),
+        timing:g(/Tim:(-?[\d.]+)/,line),
+        st1:g(/ST1:(-?[\d.]+)/,line), lt1:g(/LT1:(-?[\d.]+)/,line),
+        st2:g(/ST2:(-?[\d.]+)/,line), lt2:g(/LT2:(-?[\d.]+)/,line),
+        trust:g(/Trust:(-?\d+)/,line)
+      });
+    }
+    if(line.indexOf('[DTC]')>-1){
+      const mil=/MIL:(\w+)/i.exec(line), cnt=/stored=(\d+)/i.exec(line);
+      const codes=(line.split(/codes:/i)[1]||"").match(/[PCBU][0-9A-F]{4}/gi)||[];
+      dtc={mil: mil?/on/i.test(mil[1]):false, count: cnt?parseInt(cnt[1]):codes.length,
+           codes: codes.map(c=>c.toUpperCase())};
+    }
+  }
+  return {fw,obd,dtc};
+}
+
+/* ---- Merge CSV + LOG for one session into a normalized model ---- */
+function buildSession(id, csv, log){
+  const s={id, fw:(csv&&csv.fw)||(log&&log.fw)||null, date:null,
+    t:[], trust:[], st1:[], st2:[], lt1:[], lt2:[], timing:[],
+    penST:[], penLT:[], penBank:[], penTiming:[],
+    hasTrims:false, hasPenalties:false, source:[],
+    mil:null, dtcCount:null, codes:[]};
+
+  if(csv && csv.rows.length){
+    s.source.push('csv');
+    const has = n => csv.header.includes(n);
+    s.hasTrims = has('ltft_b1');
+    s.hasPenalties = has('pen_ltft');
+    const t0 = num(csv.rows[0].elapsed_s);
+    csv.rows.forEach((r,i)=>{
+      if(!s.date && r.datetime) s.date=r.datetime;
+      const t = num(r.elapsed_s); s.t.push(t!=null?t:i);
+      s.trust.push(num(r.fuel_trust_valid)==1 ? num(r.fuel_trust_percent) : null);
+      if(s.hasTrims){
+        const ok = num(r.fuel_trim_valid)==1;
+        s.st1.push(ok?num(r.stft_b1):null); s.st2.push(ok?num(r.stft_b2):null);
+        s.lt1.push(ok?num(r.ltft_b1):null); s.lt2.push(ok?num(r.ltft_b2):null);
+        s.timing.push(num(r.ft_timing_deg));
+      }
+      if(s.hasPenalties){
+        s.penST.push(num(r.pen_stft)); s.penLT.push(num(r.pen_ltft));
+        s.penBank.push(num(r.pen_bank)); s.penTiming.push(num(r.pen_timing));
+      }
+      if(has('mil_on')) s.mil = num(r.mil_on)==1 || s.mil===true;
+      if(has('dtc_count')){ const d=num(r.dtc_count); if(d!=null && d>=0) s.dtcCount=d; }
+    });
+  }
+
+  // If CSV had no trims but a .log is present, pull Bank-1(+2) trims from [OBD] lines
+  if((!s.hasTrims) && log && log.obd.length){
+    s.source.push('log');
+    const t0 = log.obd[0].ms;
+    log.obd.forEach((o,i)=>{
+      s.t.push((o.ms-t0)/1000);
+      s.trust.push(o.trust!=null?o.trust:null);
+      s.st1.push(o.st1); s.st2.push(o.st2); s.lt1.push(o.lt1); s.lt2.push(o.lt2);
+      s.timing.push(o.timing);
+    });
+    s.hasTrims = log.obd.some(o=>o.lt1!=null);
+    s._logOnlyTrims = true;
+  } else if(log){ s.source.push('log'); }
+
+  if(log && log.dtc){ s.mil = log.dtc.mil; if(s.dtcCount==null)s.dtcCount=log.dtc.count; s.codes=log.dtc.codes; }
+
+  // summaries
+  s.trustAvg = avg(s.trust); s.trustMin = Math.min(...s.trust.filter(v=>v!=null).concat([Infinity]));
+  if(!isFinite(s.trustMin)) s.trustMin=null;
+  s.medLT1 = median(s.lt1); s.medLT2 = median(s.lt2);
+  s.medST1 = median(s.st1); s.medST2 = median(s.st2);
+  s.imbalance = s.t.map((_,i)=> (s.lt1[i]!=null&&s.lt2[i]!=null)?Math.abs(s.lt1[i]-s.lt2[i]):null);
+  s.maxImb = Math.max(...s.imbalance.filter(v=>v!=null).concat([-Infinity]));
+  if(!isFinite(s.maxImb)) s.maxImb=null;
+  s.durS = s.t.length? (s.t[s.t.length-1]-s.t[0]) : 0;
+  return s;
+}
+
+/* ------------------------------ state ------------------------------ */
+let SESSIONS=[]; const charts={};
+
+/* group loaded files by session id, parsing each once */
+function ingestFiles(files){
+  const byId={};
+  const readAll = files.map(f=>f.text().then(txt=>({name:f.name, txt})));
+  return Promise.all(readAll).then(list=>{
+    for(const {name,txt} of list){
+      const id=sessionId(name);
+      byId[id]=byId[id]||{id};
+      if(/\.log$/i.test(name) || (/\[OBD\]/.test(txt)&&!/^datetime,/m.test(txt))) byId[id].log=parseLog(txt);
+      else byId[id].csv=parseCSV(txt);
+    }
+    const built=Object.values(byId).map(o=>buildSession(o.id,o.csv,o.log))
+                 .filter(s=>s.t.length).sort((a,b)=>a.id.localeCompare(b.id));
+    if(built.length){ SESSIONS=built; render(false); }
+    return built.length;
+  });
+}
+
+/* ------------------------------ rendering ------------------------------ */
+function fmt(v,d=1){ return v==null?"—":(v>=0&&d>0?"+":"")+v.toFixed(d); }
+function cls(cond){ return cond?"bad":""; }
+
+function render(isDemo){
+  document.getElementById('sesscount').textContent = SESSIONS.length+" loaded";
+  renderTable();
+  const picker=document.getElementById('picker');
+  picker.innerHTML = SESSIONS.map((s,i)=>`<option value="${i}">${s.id}${s.date?"  ·  "+s.date:""}</option>`).join('');
+  picker.onchange = ()=>renderDetail(+picker.value);
+  renderDetail(SESSIONS.length-1);   // default: newest
+  renderTrend();
+}
+
+function renderTable(){
+  const th=`<tr><th>Session</th><th>FW</th><th>Dur (s)</th><th>Trust avg</th><th>Trust min</th>
+    <th>LTFT B1</th><th>LTFT B2</th><th>Max |imb|</th><th>MIL</th><th>DTCs</th><th>src</th></tr>`;
+  document.querySelector('#summary thead').innerHTML=th;
+  document.querySelector('#summary tbody').innerHTML = SESSIONS.map(s=>{
+    const richBad = (s.medLT1!=null&&Math.abs(s.medLT1)>10)||(s.medLT2!=null&&Math.abs(s.medLT2)>10);
+    return `<tr>
+      <td>${s.id}</td><td>${s.fw||"—"}</td><td>${s.durS?s.durS.toFixed(0):"—"}</td>
+      <td class="${s.trustAvg!=null&&s.trustAvg<80?'warn':''}">${s.trustAvg!=null?s.trustAvg.toFixed(0)+"%":"—"}</td>
+      <td class="${s.trustMin!=null&&s.trustMin<75?'bad':''}">${s.trustMin!=null?s.trustMin.toFixed(0)+"%":"—"}</td>
+      <td class="${cls(s.medLT1!=null&&Math.abs(s.medLT1)>10)}">${fmt(s.medLT1)}</td>
+      <td class="${cls(s.medLT2!=null&&Math.abs(s.medLT2)>10)}">${fmt(s.medLT2)}</td>
+      <td class="${cls(s.maxImb!=null&&s.maxImb>5)}">${s.maxImb!=null?s.maxImb.toFixed(1):"—"}</td>
+      <td class="${s.mil?'mil-on':'mil-off'}">${s.mil==null?"?":(s.mil?"ON":"off")}</td>
+      <td class="${s.dtcCount?'warn':''}">${s.dtcCount==null?"—":s.dtcCount}</td>
+      <td style="color:var(--dim)">${s.source.join('+')}</td>
+    </tr>`;
+  }).join('');
+}
+
+function line(id,cfg){ if(charts[id])charts[id].destroy(); charts[id]=new Chart(document.getElementById(id),cfg); }
+const gridClr="#242424", tickClr="#888";
+const axes=(y2=false)=>({
+  x:{grid:{color:gridClr},ticks:{color:tickClr,maxTicksLimit:8,callback:function(v){return this.getLabelForValue(v);}},title:{display:true,text:'time (s)',color:tickClr}},
+  y:{grid:{color:gridClr},ticks:{color:tickClr}}
+});
+const baseOpts=(title)=>({responsive:true,maintainAspectRatio:false,animation:false,
+  interaction:{mode:'index',intersect:false},
+  plugins:{legend:{labels:{color:'#cfcfcf',boxWidth:12,font:{size:11}}},
+           title:{display:!!title,text:title,color:'#fff',font:{size:13}},
+           tooltip:{enabled:true}},
+  scales:axes()});
+
+function renderDetail(i){
+  const s=SESSIONS[i]; if(!s)return;
+  const L=s.t.map(t=>t.toFixed(0));
+  // flags
+  document.getElementById('detailflags').innerHTML =
+    `<span class="pill">${s.source.join(' + ')}</span> ` +
+    (s._logOnlyTrims?`<span class="pill">trims from .log (Bank 1${s.lt2.some(v=>v!=null)?'+2':' only'})</span>`:``) +
+    (s.fw?` <span class="pill">${s.fw}</span>`:``);
+  // KPIs
+  document.getElementById('kpis').innerHTML = [
+    ['Trust avg', s.trustAvg!=null?s.trustAvg.toFixed(0)+'%':'—'],
+    ['Trust min', s.trustMin!=null?s.trustMin.toFixed(0)+'%':'—'],
+    ['Settled LTFT B1', fmt(s.medLT1)+'%'],
+    ['Settled LTFT B2', fmt(s.medLT2)+'%'],
+    ['Max bank imb', s.maxImb!=null?s.maxImb.toFixed(1)+'%':'—'],
+    ['MIL', s.mil==null?'?':(s.mil?'ON':'off')]
+  ].map(([k,v])=>`<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+
+  // Trust
+  line('cTrust',{type:'line',data:{labels:L,datasets:[
+    {label:'Fuel Trust %',data:s.trust,borderColor:'#d41f2d',backgroundColor:'rgba(212,31,45,.12)',
+     fill:true,tension:.25,pointRadius:0,spanGaps:true,borderWidth:2}
+  ]},options:Object.assign(baseOpts('Fuel Trust %'),{scales:{x:axes().x,y:{min:0,max:100,grid:{color:gridClr},ticks:{color:tickClr}}}})});
+
+  // Trims
+  const ds=(lbl,d,c,dash)=>({label:lbl,data:d,borderColor:c,borderDash:dash||[],borderWidth:2,
+    pointRadius:0,tension:.2,spanGaps:true,fill:false});
+  line('cTrims',{type:'line',data:{labels:L,datasets:[
+    ds('LTFT B1',s.lt1,'#4da6ff'), ds('LTFT B2',s.lt2,'#b98cff'),
+    ds('STFT B1',s.st1,'#37c46a',[5,4]), ds('STFT B2',s.st2,'#ffc04d',[5,4])
+  ]},options:baseOpts('Fuel trims %  (solid = LTFT, dashed = STFT)')});
+
+  // Penalty stack
+  if(s.hasPenalties){
+    const pd=(lbl,d,c)=>({label:lbl,data:d,borderColor:c,backgroundColor:c+'88',fill:true,
+      pointRadius:0,tension:.2,stack:'p',borderWidth:1});
+    line('cPenalty',{type:'line',data:{labels:L,datasets:[
+      pd('LTFT −',s.penLT,'#4da6ff'), pd('STFT −',s.penST,'#37c46a'),
+      pd('Bank −',s.penBank,'#ffc04d'), pd('Timing −',s.penTiming,'#ff7a3c')
+    ]},options:Object.assign(baseOpts('Penalty points (stacked, = 100 − Trust)'),
+      {scales:{x:axes().x,y:{stacked:true,min:0,grid:{color:gridClr},ticks:{color:tickClr}}}})});
+  } else {
+    if(charts['cPenalty'])charts['cPenalty'].destroy();
+    const ctx=document.getElementById('cPenalty').getContext('2d');
+    ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+    ctx.fillStyle='#888';ctx.font='13px system-ui';ctx.textAlign='center';
+    ctx.fillText('Penalty breakdown needs a v6.10 CSV (pen_* columns).',ctx.canvas.width/2,ctx.canvas.height/2);
+  }
+
+  // Imbalance
+  line('cImbalance',{type:'line',data:{labels:L,datasets:[
+    {label:'|LTFT B1 − B2|',data:s.imbalance,borderColor:'#ff7a3c',
+     backgroundColor:'rgba(255,122,60,.12)',fill:true,pointRadius:0,tension:.2,spanGaps:true,borderWidth:2}
+  ]},options:baseOpts('Bank imbalance % (LTFT)')});
+
+  // DTCs
+  const dp=document.getElementById('dtcpanel');
+  if(s.codes && s.codes.length){
+    dp.innerHTML = s.codes.map(c=>`<div class="dtc">${c}<span class="d">${DTC_DESC[c]||''}</span></div>`).join('');
+  } else if(s.dtcCount===0){
+    dp.innerHTML = `<div class="note">No stored codes ${s.mil===false?'(MIL off)':''}.</div>`;
+  } else if(s.dtcCount>0){
+    dp.innerHTML = `<div class="note">${s.dtcCount} code(s) stored${s.mil?' · MIL ON':''}. Load this session's <code>.log</code> to see the code strings.</div>`;
+  } else {
+    dp.innerHTML = `<div class="note">No DTC data in these files.</div>`;
+  }
+}
+
+function renderTrend(){
+  const L=SESSIONS.map(s=>s.id.replace(/^SESS_0*/,'#'));
+  const pts=k=>SESSIONS.map(s=>s[k]);
+  line('cTrend',{type:'line',data:{labels:L,datasets:[
+    {label:'Settled LTFT B1',data:pts('medLT1'),borderColor:'#4da6ff',pointRadius:4,tension:.2,spanGaps:true,yAxisID:'y'},
+    {label:'Settled LTFT B2',data:pts('medLT2'),borderColor:'#b98cff',pointRadius:4,tension:.2,spanGaps:true,yAxisID:'y'},
+    {label:'Trust avg %',data:pts('trustAvg'),borderColor:'#d41f2d',borderDash:[6,4],pointRadius:4,tension:.2,spanGaps:true,yAxisID:'y1'}
+  ]},options:{responsive:true,maintainAspectRatio:false,animation:false,
+    plugins:{legend:{labels:{color:'#cfcfcf',font:{size:11}}}},
+    scales:{x:{grid:{color:gridClr},ticks:{color:tickClr}},
+      y:{position:'left',grid:{color:gridClr},ticks:{color:tickClr},title:{display:true,text:'LTFT %',color:tickClr}},
+      y1:{position:'right',min:0,max:100,grid:{drawOnChartArea:false},ticks:{color:tickClr},title:{display:true,text:'Trust %',color:tickClr}}}}});
+}
+
+/* ------------------------------ demo data ------------------------------ */
+/* Simulated relearn: LTFT drifts 0 -> -13.3% after a code clear while STFT
+   compensates, mirroring the real 7/24 data; MAF 'B' + O2 codes, MIL on. */
+function makeDemo(){
+  const N=48, hdr=["datetime","rpm","fuel_trust_percent","fuel_trust_valid","elapsed_s",
+    "stft_b1","stft_b2","ltft_b1","ltft_b2","fuel_trim_valid","ft_timing_deg",
+    "pen_stft","pen_ltft","pen_bank","pen_timing","mil_on","dtc_count"];
+  let rows=[];
+  for(let i=0;i<N;i++){
+    const f=i/(N-1);
+    const lt = -13.3*Math.min(1,f*1.6);                     // learns down to -13.3
+    const st = (12 - 9*Math.min(1,f*1.4)) + (Math.sin(i*1.3)*2.5); // swings, settles ~+3..+9
+    const lt2 = lt + (f>0.5? -1.2:0);                        // bank 2 a touch richer late (imbalance)
+    const avgAbsST=Math.abs(st), avgAbsLT=Math.abs((lt+lt2)/2);
+    const pST = avgAbsST<=5?0:avgAbsST<=8?(avgAbsST-5):10;
+    const pLT = avgAbsLT<=5?0:avgAbsLT<=10?(avgAbsLT-5)*1.5:20;
+    const pBank = Math.abs(lt-lt2)>5?5:0;
+    const pTim = (f>0.6 && i%7===0)?3:0;
+    const trust=Math.max(0,Math.round(100-(pST+pLT+pBank+pTim)));
+    rows.push([ "07/30/2026 08:1"+(i%6)+":0"+(i%6), 820+Math.round(Math.sin(i)*40),
+      trust,1,(i*12).toString(),
+      st.toFixed(1),(st-1).toFixed(1),lt.toFixed(1),lt2.toFixed(1),1,(40+Math.sin(i)*4).toFixed(1),
+      pST.toFixed(1),pLT.toFixed(1),pBank.toFixed(1),pTim.toFixed(1),1,3 ]);
+  }
+  const csv = "# 370zMonitor FW v6.10\n"+hdr.join(',')+"\n"+rows.map(r=>r.join(',')).join('\n');
+  const log = "=== 370zMonitor v6.10 - Serial Log - Session 601 ===\n"+
+    "[07/30/2026 08:10:00] [15000] [DTC] MIL:ON stored=3 codes: P010B P0037 P0138\n";
+  return [{name:"SESS_00000601.csv",txt:csv},{name:"SESS_00000601.log",txt:log}];
+}
+
+/* ------------------------------ wiring ------------------------------ */
+const drop=document.getElementById('drop'), fileInput=document.getElementById('file'), loadmsg=document.getElementById('loadmsg');
+drop.onclick=()=>fileInput.click();
+fileInput.onchange=e=>handleFiles([...e.target.files]);
+['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hover');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hover');}));
+drop.addEventListener('drop',e=>handleFiles([...e.dataTransfer.files]));
+
+function handleFiles(files){
+  files=files.filter(f=>/\.(csv|log|txt)$/i.test(f.name));
+  if(!files.length){ loadmsg.className="banner info"; loadmsg.innerHTML="No .csv/.log files found in that drop."; return; }
+  ingestFiles(files).then(n=>{
+    loadmsg.className="banner info";
+    loadmsg.innerHTML = `Loaded <b>${n}</b> session(s) from ${files.length} file(s). Newest shown below.`;
+  });
+}
+
+/* boot with demo */
+(function(){
+  const d=makeDemo();
+  const byId={SESS_00000601:{id:"SESS_00000601"}};
+  byId.SESS_00000601.csv=parseCSV(d[0].txt);
+  byId.SESS_00000601.log=parseLog(d[1].txt);
+  SESSIONS=[buildSession("SESS_00000601",byId.SESS_00000601.csv,byId.SESS_00000601.log)];
+  render(true);
+})();
+</script>
+</body>
+</html>

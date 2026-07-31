@@ -1,9 +1,63 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v6.9
+ * 370zMonitor v6.13
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v6.13 Changes (demo-mode phantom-touch guard + WiFi diagnostics):
+ * - DEMO-MODE SAFETY. A stray capacitive touch once held the utility box for 5 s mid-drive and
+ *   dropped the display into DEMO, whose simulated temps climbed to "critical" and looked like a
+ *   real emergency (the old DEMO marker lived inside the hidden utility box, so nothing showed).
+ *   Now: (1) LIVE->DEMO is blocked whenever the engine is running (rpm_valid && rpm>300) — blocked
+ *   attempts log "[MODE] Demo toggle IGNORED"; DEMO->LIVE is always allowed. (2) A full-width
+ *   always-on-top "DEMO - SIMULATED DATA" banner shows whenever demo is active, so it can never be
+ *   mistaken for live readings again.
+ * - WIFI DIAGNOSTICS. On a connection timeout the box now logs WiFi.status() and scans 2.4 GHz,
+ *   reporting whether the configured SSID is even visible (RSSI/channel/enc) — distinguishing a
+ *   5 GHz-only / band-steering / out-of-range problem from a wrong password. Helps pin down why
+ *   NTP/cloud/file-page WiFi won't connect.
+ *
+ * v6.12 Changes (local WiFi file page — download logs from a browser):
+ * - LOCAL FILE SERVER. The box now also serves its SD logs over WiFi as a simple web page, so you
+ *   can browse and download SESS_*.csv/.log from a laptop/phone on the same network — redundancy for
+ *   the v6.11 cloud upload, and a no-external-service fallback. Reach it at http://<box-ip>/ or
+ *   http://z370.local/ (mDNS). SD reads are bracketed with the same g_fb_pause_sd_writes flag the
+ *   file browser uses, so they can't collide with the logging writer; downloads stream straight off
+ *   the card. Filenames are validated (SESS_*.csv/.log only) to block path traversal.
+ * - BOUNDED SERVE WINDOW. To avoid holding WiFi's RAM for the whole drive (internal RAM is the
+ *   tightest resource), it serves for FILE_SERVER_MINUTES after boot (default 15, set in /wifi.cfg,
+ *   0 = off) inside timeSyncTask, then powers WiFi down and reclaims the RAM exactly as before.
+ *   NOT flash-tested — main risk is internal RAM while WiFi + the full UI run together.
+ *
+ * v6.11 Changes (cloud auto-upload of session logs):
+ * - CLOUD UPLOAD. At boot, while WiFi is already up for NTP, the box now streams any completed
+ *   SESS_*.csv/.log that haven't been uploaded yet to a configurable HTTPS endpoint, then powers
+ *   WiFi off as before. With the bundled Google Apps Script (cloud/CloudUpload.gs) the files land
+ *   in your Google Drive (folder CLOUD_FOLDER), so they sync to your PC/phone — no more pulling the
+ *   SD card or plugging in USB. Endpoint-agnostic: point CLOUD_URL at Dropbox/S3/your own server
+ *   and only /wifi.cfg changes. Uploaded sessions are tracked in /CLOUDUP.DAT (never re-sent),
+ *   capped at CLOUD_MAX_PER_BOOT per boot; the current (open) session uploads on the next boot.
+ * - Config via the SAME /wifi.cfg: CLOUD_URL / CLOUD_SECRET / CLOUD_FOLDER (added to the template).
+ *   The TimeSyncTask stack was raised 4096->16384 for the TLS handshake. NOT flash-tested: verify
+ *   the Apps Script 302 redirect follows and that TLS fits in RAM on first flash.
+ *
+ * v6.10 Changes (fuel-trust transparency + OBD trouble-code reading):
+ * - FUEL-TRUST BREAKDOWN LOGGED. The four inputs to the Fuel Trust score are now written to the
+ *   CSV (12 appended columns): stft_b1/b2, ltft_b1/b2, fuel_trim_valid, ft_timing_deg, and the
+ *   four deductions pen_stft/pen_ltft/pen_bank/pen_timing, plus mil_on + dtc_count. The [OBD]
+ *   serial line now prints Bank 2 (ST2/LT2) again, so the .log shows both banks.
+ * - FUEL TRUST TAP POPUP. Tapping the Fuel Trust value opens a breakdown panel: both banks'
+ *   STFT/LTFT, timing, each of the four penalties, a plain-English "what it means" line, and the
+ *   active trouble codes. Tap anywhere to close.
+ * - OBD TROUBLE-CODE (DTC) READING. Added Mode 01 PID 0x01 (MIL lamp + stored count) and a
+ *   Mode 03 reader (ISO-TP single- and multi-frame) that decodes stored DTCs to Pxxxx strings,
+ *   prints a [DTC] serial line, and shows them in the popup — no scanner needed.
+ * - FIRMWARE VERSION now stamped into both logs: the .log header line and a "# 370zMonitor FW"
+ *   comment line at the top of each CSV (previously the version was in neither).
+ * - HOST-VERIFIED logic only (DTC byte decode, penalty exposure). NOT flash-tested yet. On first
+ *   flash, verify the popup's decoded DTCs against your scanner (the Mode 03 count-byte format is
+ *   assumed per ISO 15765-4).
  *
  * v6.9 Changes (automatic DST + expanded OBD logging):
  * - AUTOMATIC DAYLIGHT SAVING (no more seasonal reflash). The DS3231 now stores UTC and local
@@ -290,6 +344,10 @@ extern "C" void lv_draw_sw_rgb565_swap(void * buf, uint32_t buf_size_px);
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include <WiFi.h>                   // WiFi for NTP time sync
+#include <WiFiClientSecure.h>        // v6.11: HTTPS client for cloud log upload
+#include <HTTPClient.h>              // v6.11: HTTP(S) POST for cloud log upload
+#include <WebServer.h>              // v6.12: local WiFi file page (browse/download logs)
+#include <ESPmDNS.h>                // v6.12: advertise http://z370.local for the file page
 #include <time.h>                   // Time functions
 #include <stdarg.h>                 // For va_list in SerialLogf
 #include <vector>                   // For file browser
@@ -491,6 +549,9 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_USB_MSC                  1       // Enable USB Mass Storage mode (hold BOOT at startup)
 #define ENABLE_MODBUS_SENSORS           1       // Enable Modbus RS485 sensor reading (8-Ch Analog Module)
 #define ENABLE_OBD_CAN                  1       // Enable OBD-II via CAN bus (TWAI)
+#ifndef FW_VERSION
+#define FW_VERSION                      "v6.13" // single source of truth for the serial banner + .log/.csv stamps
+#endif
 #define UPDATE_INTERVAL_MS              25      // default 250ms
 
 // USB MSC Configuration
@@ -695,6 +756,14 @@ struct VehicleData {
     int   fuel_level_pct;      bool fuel_level_valid;       // 0x2F [%]
     int   baro_kpa;            bool baro_valid;             // 0x33 [kPa]
     int   fuel_sys_status;     bool fuel_sys_valid;         // 0x03 [raw status byte]
+
+    // v6.10 fuel-trust transparency: raw trims, the four score deductions, and DTC status
+    float stft_b1, stft_b2, ltft_b1, ltft_b2; bool fuel_trim_valid;  // live trims [%]
+    float ft_timing_deg;                                             // timing advance [°]
+    float ft_pen_stft, ft_pen_ltft, ft_pen_bank, ft_pen_timing;      // deductions from 100
+    bool  mil_on;              // MIL (check-engine) lamp commanded on (PID 0x01)
+    int   dtc_count;           // stored DTC count (PID 0x01; -1 = unknown)
+    bool  dtc_valid;           // PID 0x01 answered
 
     // Flag to track if ANY valid data has ever been received
     // Used to determine if UI should show "---" or actual values
@@ -2214,7 +2283,8 @@ static lv_obj_t* files_btn = NULL;         // FILES button at top of utility box
 #define UTIL_IDX_BRI   5
 #define UTIL_LABEL_COUNT 6
 #endif
-static lv_obj_t* mode_indicator = NULL;  // Shows "DEMO" or "LIVE"
+static lv_obj_t* mode_indicator = NULL;  // Shows "DEMO" or "LIVE" (inside the hidden utility box)
+static lv_obj_t* g_demo_banner = NULL;   // v6.13: always-visible DEMO banner (top layer)
 static lv_obj_t* auto_bri_btn = NULL;      // Auto Brightness toggle button
 static lv_obj_t* auto_bri_lbl = NULL;      // Label inside auto brightness button
 static bool utilities_visible = false;  // Start hidden, double-tap to reveal
@@ -2970,6 +3040,7 @@ void updateSensorData() {
 static const uint8_t OBD_PID_LIST[] = {
     0x0C,  // Engine RPM: ((A*256)+B)/4 [rpm]
     0x11,  // Throttle position: A*100/255 [%]
+    0x01,  // v6.10: Monitor status — MIL lamp + stored DTC count (once/cycle)
     0x05,  // Engine Coolant Temperature (ECT): A - 40 [°C]
     0x0D,  // Vehicle Speed: A [km/h]
     0x0C,  // RPM (repeat — fast mover)
@@ -3059,6 +3130,50 @@ static unsigned g_obd_timing_pull_count = 0;     // Timing pull event counter
 static uint32_t g_obd_timing_pull_reset_ms = 0;  // Reset counter periodically
 #define FUEL_TRUST_TIMING_RESET_INTERVAL_MS 10000 // Reset timing pulls every 10s
 
+// ---------------------------------------------------------------------------
+// v6.10: Fuel-Trust transparency + OBD trouble-code (DTC) reading
+// (FW_VERSION is defined unconditionally near the top with the feature flags,
+//  because the .log/.csv/banner use it even when ENABLE_OBD_CAN is 0.)
+// ---------------------------------------------------------------------------
+
+// Live breakdown of the Fuel Trust score, populated at the end of
+// computeFuelTrust(). Read by the SD logger (via the g_vehicle_data copy) and
+// by the FUEL TRUST tap popup so the number is never a black box.
+struct FuelTrustBreakdown {
+    float st1, st2, lt1, lt2;                 // live trims [%] (0 when OBD invalid)
+    float timing_deg;                         // live timing advance [°]
+    float avgAbsST, avgAbsLT;                 // averaged magnitudes actually penalized
+    float deltaST, deltaLT;                   // bank-to-bank spreads
+    float penST, penLT, penBank, penTiming;   // the four deductions from 100
+    int   timingPulls;                        // timing-pull events in the window
+    int   score;                              // resulting 0-100
+    bool  valid;                              // true when trims were valid at compute
+};
+static FuelTrustBreakdown g_ft = {0};
+
+// MIL lamp + DTC count from Mode 01 PID 0x01 (single-frame, always reliable)
+static bool g_mil_on       = false;
+static int  g_dtc_count_01 = 0;
+static bool g_dtc01_valid  = false;
+
+// Stored trouble codes from Mode 03 (ISO-TP; may span multiple CAN frames)
+#define MAX_STORED_DTCS 12
+static char     g_dtc_list[MAX_STORED_DTCS][6];   // decoded strings, e.g. "P010B"
+static int      g_dtc_list_count = 0;
+static bool     g_dtc_list_valid = false;
+static uint32_t g_dtc_last_read_ms = 0;
+#define DTC_READ_INTERVAL_MS 15000                // re-read stored codes every 15 s
+
+// ISO-TP reassembly state for the Mode 03 (0x43) response
+static bool     g_dtc_asm_active   = false;
+static uint8_t  g_dtc_asm_buf[2 + MAX_STORED_DTCS * 2 + 8];
+static int      g_dtc_asm_len      = 0;   // total payload bytes expected
+static int      g_dtc_asm_got      = 0;   // payload bytes collected so far
+static uint8_t  g_dtc_asm_next_sn  = 1;   // next expected consecutive-frame seq #
+static uint32_t g_dtc_asm_start_ms = 0;   // start time (for timeout)
+static uint32_t g_dtc_asm_txid     = 0;   // ECU physical addr for the flow-control frame
+#define DTC_ASM_TIMEOUT_MS 200                    // give up on a stuck reassembly
+
 //-----------------------------------------------------------------------------
 // startCAN() - Initialize ESP32 TWAI driver
 //-----------------------------------------------------------------------------
@@ -3117,6 +3232,125 @@ static void sendOBD_Mode01(uint8_t pid) {
 }
 
 //-----------------------------------------------------------------------------
+// v6.10: OBD Mode 03 — read stored Diagnostic Trouble Codes (DTCs)
+//-----------------------------------------------------------------------------
+// The Mode 03 reply (service byte 0x43) can arrive as one CAN frame or as an
+// ISO-TP multi-frame sequence, so frames are reassembled in handleDTCFrame()
+// and turned into strings by finalizeDTCs(). Failure is benign: the worst case
+// is an empty/partial list, and the popup still shows MIL + count from PID 0x01.
+//
+// CAN Mode 03 payload is assumed to be: [0x43][count][DTC1_hi][DTC1_lo]...
+// (the ISO 15765-4 count byte). Verify the decoded codes against a scanner on
+// first flash; if they are off by one byte, the count-byte assumption is wrong.
+static void sendOBD_Mode03() {
+    twai_message_t tx = {};
+    tx.identifier = OBD_FUNCTIONAL_REQ_ID;   // 0x7DF functional request
+    tx.extd = 0; tx.rtr = 0; tx.data_length_code = 8;
+    tx.data[0] = 0x01;   // 1 data byte follows
+    tx.data[1] = 0x03;   // Mode 03 (request stored DTCs)
+    g_obd_tx_total_count++;
+    twai_transmit(&tx, pdMS_TO_TICKS(10));
+    // Reset reassembly state for this new request
+    g_dtc_asm_active = false;
+    g_dtc_asm_len = g_dtc_asm_got = 0;
+    g_dtc_asm_next_sn = 1;
+}
+
+// ISO-TP Flow Control (Clear-To-Send) to a specific ECU physical address.
+static void sendFlowControl(uint32_t txid) {
+    twai_message_t tx = {};
+    tx.identifier = txid;
+    tx.extd = 0; tx.rtr = 0; tx.data_length_code = 8;
+    tx.data[0] = 0x30;   // FC: ContinueToSend
+    tx.data[1] = 0x00;   // Block size: all remaining frames
+    tx.data[2] = 0x00;   // STmin: 0 ms
+    twai_transmit(&tx, pdMS_TO_TICKS(10));
+}
+
+// Decode a 2-byte DTC into a 5-char string (e.g. 0x01,0x0B -> "P010B").
+static void dtcToString(uint8_t b1, uint8_t b2, char* out /* buffer >= 6 */) {
+    static const char sysLetter[4] = {'P', 'C', 'B', 'U'};
+    static const char* hex = "0123456789ABCDEF";
+    out[0] = sysLetter[(b1 >> 6) & 0x03];   // 2 MSB pick P/C/B/U
+    out[1] = (char)('0' + ((b1 >> 4) & 0x03)); // next 2 bits: 0-3
+    out[2] = hex[b1 & 0x0F];
+    out[3] = hex[(b2 >> 4) & 0x0F];
+    out[4] = hex[b2 & 0x0F];
+    out[5] = '\0';
+}
+
+// Convert the reassembled payload ([0x43][count][pairs...]) into strings.
+static void finalizeDTCs() {
+    g_dtc_list_count = 0;
+    if (g_dtc_asm_got >= 2 && g_dtc_asm_buf[0] == 0x43) {
+        int count = g_dtc_asm_buf[1];
+        for (int i = 0; i < count && g_dtc_list_count < MAX_STORED_DTCS; i++) {
+            int off = 2 + i * 2;
+            if (off + 1 >= g_dtc_asm_got) break;      // ran out of bytes
+            uint8_t b1 = g_dtc_asm_buf[off], b2 = g_dtc_asm_buf[off + 1];
+            if (b1 == 0 && b2 == 0) continue;          // padding / empty slot
+            dtcToString(b1, b2, g_dtc_list[g_dtc_list_count]);
+            g_dtc_list_count++;
+        }
+    }
+    g_dtc_list_valid = true;
+    // Human-readable summary into the .log
+    char codes[MAX_STORED_DTCS * 7 + 1]; codes[0] = '\0';
+    for (int i = 0; i < g_dtc_list_count; i++) {
+        strncat(codes, g_dtc_list[i], sizeof(codes) - strlen(codes) - 1);
+        if (i < g_dtc_list_count - 1) strncat(codes, " ", sizeof(codes) - strlen(codes) - 1);
+    }
+    Serial.printf("[DTC] MIL:%s stored=%d codes: %s\n",
+                  g_mil_on ? "ON" : "off", g_dtc_list_count,
+                  g_dtc_list_count ? codes : "(none)");
+}
+
+// Feed one CAN frame belonging to a Mode 03 (0x43) reply into the ISO-TP
+// reassembler. Returns true if the frame was consumed as DTC data (so the
+// caller should NOT hand it to the Mode 01 decoder).
+static bool handleDTCFrame(const twai_message_t& rx) {
+    if (rx.data_length_code < 2) return false;
+    uint8_t pci = rx.data[0] & 0xF0;
+
+    if (pci == 0x00) {                         // Single Frame
+        if (rx.data[1] != 0x43) return false;
+        int len = rx.data[0] & 0x0F;           // payload byte count
+        if (len < 1) len = 1;
+        g_dtc_asm_got = 0;
+        for (int i = 0; i < len && g_dtc_asm_got < (int)sizeof(g_dtc_asm_buf); i++)
+            g_dtc_asm_buf[g_dtc_asm_got++] = rx.data[1 + i];
+        g_dtc_asm_active = false;
+        finalizeDTCs();
+        return true;
+    }
+    else if (pci == 0x10) {                    // First Frame (multi-frame reply)
+        if (rx.data_length_code < 3 || rx.data[2] != 0x43) return false;
+        g_dtc_asm_len = ((rx.data[0] & 0x0F) << 8) | rx.data[1];  // total payload len
+        g_dtc_asm_got = 0;
+        for (int i = 0; i < 6 && g_dtc_asm_got < (int)sizeof(g_dtc_asm_buf); i++)
+            g_dtc_asm_buf[g_dtc_asm_got++] = rx.data[2 + i];       // 0x43,count,4 bytes
+        g_dtc_asm_active   = true;
+        g_dtc_asm_next_sn  = 1;
+        g_dtc_asm_start_ms = millis();
+        g_dtc_asm_txid     = rx.identifier - 8;   // 0x7E8 -> 0x7E0 physical addr
+        sendFlowControl(g_dtc_asm_txid);
+        return true;
+    }
+    else if (pci == 0x20) {                    // Consecutive Frame
+        if (!g_dtc_asm_active) return false;
+        for (int i = 1; i < 8 && g_dtc_asm_got < g_dtc_asm_len &&
+                        g_dtc_asm_got < (int)sizeof(g_dtc_asm_buf); i++)
+            g_dtc_asm_buf[g_dtc_asm_got++] = rx.data[i];
+        if (g_dtc_asm_got >= g_dtc_asm_len) {
+            g_dtc_asm_active = false;
+            finalizeDTCs();
+        }
+        return true;
+    }
+    return false;
+}
+
+//-----------------------------------------------------------------------------
 // decodeOBD_Mode01Reply() - Parse Mode 01 response and update values
 //-----------------------------------------------------------------------------
 static void decodeOBD_Mode01Reply(const twai_message_t& rx) {
@@ -3127,6 +3361,16 @@ static void decodeOBD_Mode01Reply(const twai_message_t& rx) {
     uint32_t now = millis();
     
     switch (pid) {
+        case 0x01: {  // Monitor status since DTCs cleared: MIL lamp + stored DTC count
+            if (rx.data_length_code >= 4) {
+                uint8_t A = rx.data[3];
+                g_mil_on = (A & 0x80) != 0;   // bit 7 = MIL commanded on
+                g_dtc_count_01 = A & 0x7F;    // bits 0-6 = number of stored DTCs
+                g_dtc01_valid = true;
+                g_obd_success_count++;
+            }
+        } break;
+
         case 0x05: {  // Engine Coolant Temperature: A - 40 [°C]
             if (rx.data_length_code >= 4) {
                 g_obd_data.coolant_c = (int)rx.data[3] - 40;
@@ -3319,7 +3563,18 @@ static float computeFuelTrust() {
     float score = 100.0f - (pST + pLT + pDelta + pTiming);
     if (score < 0.0f) score = 0.0f;
     if (score > 100.0f) score = 100.0f;
-    
+
+    // v6.10: publish the full breakdown so the CSV and the FUEL TRUST popup
+    // can show exactly how the score was reached (transparency).
+    g_ft.st1 = st1; g_ft.st2 = st2; g_ft.lt1 = lt1; g_ft.lt2 = lt2;
+    g_ft.timing_deg = g_obd_data.timing_valid ? g_obd_data.timing_deg : NAN;
+    g_ft.avgAbsST = avgAbsST; g_ft.avgAbsLT = avgAbsLT;
+    g_ft.deltaST = deltaBanksST; g_ft.deltaLT = deltaBanksLT;
+    g_ft.penST = pST; g_ft.penLT = pLT; g_ft.penBank = pDelta; g_ft.penTiming = pTiming;
+    g_ft.timingPulls = (int)g_obd_timing_pull_count;
+    g_ft.score = (int)(score + 0.5f);
+    g_ft.valid = g_obd_data.fuel_trim_valid;
+
     // Periodic reset of timing pull counter (keeps display responsive)
     uint32_t now = millis();
     if (now - g_obd_timing_pull_reset_ms > FUEL_TRUST_TIMING_RESET_INTERVAL_MS) {
@@ -3435,13 +3690,27 @@ void updateOBDData() {
         sendOBD_Mode01(OBD_PID_LIST[g_obd_pid_index]);
         g_obd_pid_index = (g_obd_pid_index + 1) % OBD_NUM_PIDS;
     }
-    
+
+    // 1b. v6.10: periodically read stored trouble codes (Mode 03), and give up
+    //     on any ISO-TP reassembly that stalls (benign — leaves the last list).
+    if (now - g_dtc_last_read_ms >= DTC_READ_INTERVAL_MS) {
+        g_dtc_last_read_ms = now;
+        sendOBD_Mode03();
+    }
+    if (g_dtc_asm_active && (now - g_dtc_asm_start_ms > DTC_ASM_TIMEOUT_MS)) {
+        g_dtc_asm_active = false;
+    }
+
     // 2. Receive any pending CAN frames (non-blocking)
     twai_message_t rx;
     while (twai_receive(&rx, pdMS_TO_TICKS(1)) == ESP_OK) {
         // Filter for OBD-II responses (0x7E8-0x7EF)
         if (!rx.extd && rx.identifier >= OBD_MIN_RESP_ID && rx.identifier <= OBD_MAX_RESP_ID) {
-            decodeOBD_Mode01Reply(rx);
+            // Mode 03 (DTC) frames are ISO-TP framed; route them to the
+            // reassembler first. Anything it doesn't claim is a Mode 01 reply.
+            if (!handleDTCFrame(rx)) {
+                decodeOBD_Mode01Reply(rx);
+            }
         }
     }
     
@@ -3508,19 +3777,40 @@ void updateOBDData() {
         g_vehicle_data.obd_oil_temp_valid = true;
     } else g_vehicle_data.obd_oil_temp_valid = false;
 
+    // 6c. v6.10: copy fuel-trim, score-breakdown, and DTC status for CSV logging.
+    //     Raw trims are copied whenever valid (even before warm-up gating), so the
+    //     log captures the relearn even while the on-screen Fuel Trust is hidden.
+    g_vehicle_data.fuel_trim_valid = g_obd_data.fuel_trim_valid;
+    if (g_obd_data.fuel_trim_valid) {
+        g_vehicle_data.stft_b1 = g_obd_data.stft_b1;
+        g_vehicle_data.stft_b2 = g_obd_data.stft_b2;
+        g_vehicle_data.ltft_b1 = g_obd_data.ltft_b1;
+        g_vehicle_data.ltft_b2 = g_obd_data.ltft_b2;
+    }
+    g_vehicle_data.ft_timing_deg = g_obd_data.timing_valid ? g_obd_data.timing_deg : 0.0f;
+    g_vehicle_data.ft_pen_stft   = g_ft.penST;      // 0 unless computeFuelTrust ran this cycle
+    g_vehicle_data.ft_pen_ltft   = g_ft.penLT;
+    g_vehicle_data.ft_pen_bank   = g_ft.penBank;
+    g_vehicle_data.ft_pen_timing = g_ft.penTiming;
+    g_vehicle_data.mil_on        = g_mil_on;
+    g_vehicle_data.dtc_count     = g_dtc01_valid ? g_dtc_count_01 : -1;
+    g_vehicle_data.dtc_valid     = g_dtc01_valid;
+
     // 7. Periodic logging (ALWAYS logs status, even when no ECU data received)
     static uint32_t lastOBDLog = 0;
     if (now - lastOBDLog > 5000) {  // Log every 5 seconds
         lastOBDLog = now;
         
         if (g_obd_data.coolant_valid || g_obd_data.rpm_valid || g_obd_data.fuel_trim_valid) {
-            Serial.printf("[OBD] ECT:%d°C RPM:%.0f Spd:%dkph Tim:%.1f° ST1:%.1f%% LT1:%.1f%% Trust:%d%%\n",
+            Serial.printf("[OBD] ECT:%d°C RPM:%.0f Spd:%dkph Tim:%.1f° ST1:%.1f%% LT1:%.1f%% ST2:%.1f%% LT2:%.1f%% Trust:%d%%\n",
                 g_obd_data.coolant_valid ? g_obd_data.coolant_c : -99,
                 g_obd_data.rpm_valid ? g_obd_data.rpm : 0,
                 g_obd_data.speed_valid ? g_obd_data.speed_kph : -1,
                 g_obd_data.timing_valid ? g_obd_data.timing_deg : 0,
                 g_obd_data.fuel_trim_valid ? g_obd_data.stft_b1 : 0,
                 g_obd_data.fuel_trim_valid ? g_obd_data.ltft_b1 : 0,
+                g_obd_data.fuel_trim_valid ? g_obd_data.stft_b2 : 0,   // v6.10: Bank 2 restored to the log
+                g_obd_data.fuel_trim_valid ? g_obd_data.ltft_b2 : 0,
                 g_vehicle_data.fuel_trust_valid ? g_vehicle_data.fuel_trust_percent : -1);
             // v6.9 extended PIDs. A real value = ECU supports it; -1 = unsupported/no-response yet.
             Serial.printf("[OBD2] Thr:%d%% Load:%d%% IATf:%d Ambf:%d OilTf:%d MAF:%.1f Lam:%.3f Volt:%.2f Fuel:%d%% Baro:%d FSys:0x%02X\n",
@@ -3585,6 +3875,29 @@ void updateOBDData() {
 #define WIFI_CONFIG_FILE "/wifi.cfg"
 static char g_wifi_ssid[64] = "";      // Loaded from SD config
 static char g_wifi_password[64] = ""; // Loaded from SD config
+
+// v6.11: cloud auto-upload of completed session logs (Google Drive via an Apps
+// Script webhook — see cloud/CloudUpload.gs). All endpoint-agnostic: the box just
+// HTTPS-POSTs each file to CLOUD_URL with a shared secret, so you can point it at
+// Dropbox/S3/your own server later by changing only /wifi.cfg. Runs at boot while
+// WiFi is already up for NTP, then powers WiFi back off.
+#define ENABLE_CLOUD_UPLOAD 1
+static char g_cloud_url[192]   = "";                 // CLOUD_URL   in /wifi.cfg (Apps Script /exec URL)
+static char g_cloud_secret[64] = "";                 // CLOUD_SECRET in /wifi.cfg (must match the script)
+static char g_cloud_folder[48] = "370zMonitor_logs"; // CLOUD_FOLDER in /wifi.cfg (Drive folder name)
+#define CLOUD_MANIFEST_FILE "/CLOUDUP.DAT"            // records already-uploaded session base names
+#define CLOUD_MAX_PER_BOOT  8                         // cap uploads per boot to bound the WiFi window
+
+// v6.12: local WiFi file page — the box serves its SD logs over WiFi so you can
+// browse/download them from a laptop/phone on the same network (redundancy for the
+// cloud upload; works with no external service). To keep WiFi's RAM from being held
+// for the whole drive (internal RAM is the board's tightest resource), it serves for
+// a bounded window after boot, then powers WiFi down and reclaims the RAM as usual.
+// Reach it at http://<box-ip>/ or http://z370.local/ .
+#define ENABLE_FILE_SERVER 1
+#define FILE_SERVER_DEFAULT_MINUTES 15                // serve this long after boot; 0 = disabled
+static int g_fileserver_minutes = FILE_SERVER_DEFAULT_MINUTES;  // overridable via /wifi.cfg FILE_SERVER_MINUTES
+
 #define NTP_SERVER_1 "pool.ntp.org"
 #define NTP_SERVER_2 "time.nist.gov"
 #define NTP_SERVER_3 "time.google.com"
@@ -3904,7 +4217,11 @@ bool sdStartSession() {
         "intake_air_temp_f,intake_air_temp_valid,ambient_temp_f,ambient_temp_valid,"
         "obd_oil_temp_f,obd_oil_temp_valid,maf_gps,maf_valid,"
         "commanded_lambda,lambda_valid,module_voltage,module_voltage_valid,"
-        "fuel_level_pct,fuel_level_valid,baro_kpa,baro_valid,fuel_sys_status,fuel_sys_valid\n";
+        "fuel_level_pct,fuel_level_valid,baro_kpa,baro_valid,fuel_sys_status,fuel_sys_valid,"
+        // v6.10 fuel-trust transparency columns (appended so v6.9 positions are unchanged)
+        "stft_b1,stft_b2,ltft_b1,ltft_b2,fuel_trim_valid,"
+        "ft_timing_deg,pen_stft,pen_ltft,pen_bank,pen_timing,"
+        "mil_on,dtc_count\n";
 
     size_t written = g_sd_state.data_file.print(header);
     if (written == 0) {
@@ -3914,6 +4231,13 @@ bool sdStartSession() {
     }
 
     g_sd_state.bytes_written += written;
+    // v6.10: stamp firmware version into the CSV as a #-comment line
+    // (same shape as the periodic "# SYNC" lines, so parsers already skip it).
+    {
+        char vbuf[64];
+        snprintf(vbuf, sizeof(vbuf), "# 370zMonitor FW %s\n", FW_VERSION);
+        g_sd_state.bytes_written += g_sd_state.data_file.print(vbuf);
+    }
     sdSafeFlush();  // Immediate flush after header
 
     Serial.printf("[SD] Session started: %s\n", g_sd_state.current_filename);
@@ -3943,7 +4267,7 @@ bool sdStartLogSession() {
     
     // Write header
     char header[128];
-    snprintf(header, sizeof(header), "=== 370zMonitor Serial Log - Session %lu ===\n", g_sd_state.boot_count);
+    snprintf(header, sizeof(header), "=== 370zMonitor %s - Serial Log - Session %lu ===\n", FW_VERSION, g_sd_state.boot_count);
     g_sd_state.log_file.print(header);
     g_sd_state.log_bytes_written += strlen(header);
     g_sd_state.log_file.flush();
@@ -4006,7 +4330,7 @@ void sdWriteTask(void* parameter) {
     
     SDLogEntry entry;
     SerialLogEntry logEntry;
-    char line[512];  // v6.9: widened for datetime + extended OBD columns
+    char line[700];  // v6.9: widened for datetime + extended OBD columns; v6.10: +12 fuel-trust fields
     
     // Debug counter for periodic status
     uint32_t loop_counter = 0;
@@ -4116,7 +4440,11 @@ void sdWriteTask(void* parameter) {
                 // v6.9 extended OBD columns (11 value+valid pairs = 22 fields)
                 "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,"
                 "%.2f,%d,%.3f,%d,%.2f,%d,"
-                "%d,%d,%d,%d,%d,%d\n",
+                "%d,%d,%d,%d,%d,%d,"
+                // v6.10 fuel-trust transparency columns
+                "%.1f,%.1f,%.1f,%.1f,%d,"
+                "%.1f,%.1f,%.1f,%.1f,%.1f,"
+                "%d,%d\n",
                 datetime_copy, entry.data.rpm,  // datetime, rpm
                 entry.data.oil_pressure_psi, oil_press_crit,  // oil pressure + critical
                 entry.data.oil_temp_value_f, oil_temp_crit,  // oil temp + critical
@@ -4143,7 +4471,13 @@ void sdWriteTask(void* parameter) {
                 entry.data.module_voltage,    entry.data.module_voltage_valid ? 1 : 0,
                 entry.data.fuel_level_pct,    entry.data.fuel_level_valid ? 1 : 0,
                 entry.data.baro_kpa,          entry.data.baro_valid ? 1 : 0,
-                entry.data.fuel_sys_status,   entry.data.fuel_sys_valid ? 1 : 0
+                entry.data.fuel_sys_status,   entry.data.fuel_sys_valid ? 1 : 0,
+                // v6.10 fuel-trust transparency (order matches the header exactly)
+                entry.data.stft_b1, entry.data.stft_b2, entry.data.ltft_b1, entry.data.ltft_b2,
+                entry.data.fuel_trim_valid ? 1 : 0,
+                entry.data.ft_timing_deg, entry.data.ft_pen_stft, entry.data.ft_pen_ltft,
+                entry.data.ft_pen_bank,   entry.data.ft_pen_timing,
+                entry.data.mil_on ? 1 : 0, entry.data.dtc_count
             );
             
             // Write with retry
@@ -4531,6 +4865,12 @@ bool loadWifiConfig() {
         if (templateFile) {
             templateFile.println("WIFI_SSID=");
             templateFile.println("WIFI_PASSWORD=");
+            templateFile.println("# v6.11 optional cloud upload (see cloud/CloudUpload.gs):");
+            templateFile.println("# CLOUD_URL=https://script.google.com/macros/s/XXXX/exec");
+            templateFile.println("# CLOUD_SECRET=your_long_random_secret");
+            templateFile.println("# CLOUD_FOLDER=370zMonitor_logs");
+            templateFile.println("# v6.12 local WiFi file page: minutes to serve after boot (0=off, default 15):");
+            templateFile.println("# FILE_SERVER_MINUTES=15");
             templateFile.close();
             Serial.printf("[WIFI] Template created at %s - please edit with your credentials\n", WIFI_CONFIG_FILE);
         } else {
@@ -4572,6 +4912,27 @@ bool loadWifiConfig() {
                 g_wifi_password[sizeof(g_wifi_password) - 1] = '\0';
                 pass_found = true;
                 Serial.println("[WIFI] Password loaded: ********");
+            }
+            // v6.11: optional cloud-upload settings (same /wifi.cfg file)
+            else if (key.equalsIgnoreCase("CLOUD_URL")) {
+                strncpy(g_cloud_url, value.c_str(), sizeof(g_cloud_url) - 1);
+                g_cloud_url[sizeof(g_cloud_url) - 1] = '\0';
+                Serial.printf("[CLOUD] Upload URL loaded (%d chars)\n", (int)strlen(g_cloud_url));
+            }
+            else if (key.equalsIgnoreCase("CLOUD_SECRET")) {
+                strncpy(g_cloud_secret, value.c_str(), sizeof(g_cloud_secret) - 1);
+                g_cloud_secret[sizeof(g_cloud_secret) - 1] = '\0';
+                Serial.println("[CLOUD] Upload secret loaded: ********");
+            }
+            else if (key.equalsIgnoreCase("CLOUD_FOLDER")) {
+                strncpy(g_cloud_folder, value.c_str(), sizeof(g_cloud_folder) - 1);
+                g_cloud_folder[sizeof(g_cloud_folder) - 1] = '\0';
+                Serial.printf("[CLOUD] Upload folder: %s\n", g_cloud_folder);
+            }
+            // v6.12: how long (minutes) to keep the local WiFi file page up after boot (0 = off)
+            else if (key.equalsIgnoreCase("FILE_SERVER_MINUTES")) {
+                g_fileserver_minutes = value.toInt();
+                Serial.printf("[FILESRV] Serve window: %d min\n", g_fileserver_minutes);
             }
         }
     }
@@ -4813,6 +5174,241 @@ bool tryNTPSync(const char* server) {
     return false;
 }
 
+//=================================================================
+// v6.11: Cloud auto-upload of completed session logs (runs on Core 0)
+//=================================================================
+// Called from timeSyncTask() while WiFi is already up for NTP, just before it
+// powers WiFi back off. Streams each not-yet-uploaded SESS_*.csv/.log to
+// CLOUD_URL (HTTPS POST — file as the body, metadata in the query string) and
+// records success in /CLOUDUP.DAT so nothing is ever re-sent. Endpoint-agnostic;
+// with the bundled Apps Script (cloud/CloudUpload.gs) files land in Google Drive.
+//
+// NOT flash-tested. On first flash verify: (1) the Apps Script 302 redirect is
+// followed (we accept 200/301/302), and (2) TLS fits in RAM/stack — mbedTLS
+// alloc or stack-overflow errors mean the heap/task-stack is too small.
+#if ENABLE_CLOUD_UPLOAD
+static bool cloudAlreadyUploaded(const char* base) {
+    File m = SD.open(CLOUD_MANIFEST_FILE, FILE_READ);
+    if (!m) return false;
+    bool found = false;
+    while (m.available()) {
+        String line = m.readStringUntil('\n'); line.trim();
+        if (line == base) { found = true; break; }
+    }
+    m.close();
+    return found;
+}
+
+static void cloudMarkUploaded(const char* base) {
+    File m = SD.open(CLOUD_MANIFEST_FILE, FILE_APPEND);
+    if (m) { m.println(base); m.close(); }
+}
+
+// Stream one SD file to the endpoint as the POST body. True on success.
+static bool cloudUploadFile(const char* path, const char* remoteName) {
+    File f = SD.open(path, FILE_READ);
+    if (!f) { Serial.printf("[CLOUD] open failed: %s\n", path); return false; }
+    size_t sz = f.size();
+
+    WiFiClientSecure client;
+    client.setInsecure();                 // uploading our own logs; skip cert pinning
+    HTTPClient http;
+    char url[420];
+    snprintf(url, sizeof(url), "%s?secret=%s&folder=%s&name=%s",
+             g_cloud_url, g_cloud_secret, g_cloud_folder, remoteName);
+    if (!http.begin(client, url)) { f.close(); return false; }
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);  // Apps Script 302 -> googleusercontent
+    http.setTimeout(20000);
+    http.addHeader("Content-Type", "text/plain");
+
+    int code = http.sendRequest("POST", &f, sz);            // stream file, no big RAM buffer
+    String resp = (code > 0) ? http.getString() : String("");
+    http.end();
+    f.close();
+
+    bool ok = (code == 200 && resp.indexOf("OK") >= 0) || code == 301 || code == 302;
+    Serial.printf("[CLOUD] %-22s HTTP %d  %s  (%u bytes)\n",
+                  remoteName, code, ok ? "OK" : "FAIL", (unsigned)sz);
+    return ok;
+}
+
+// Scan the card and upload any completed sessions not yet uploaded.
+void uploadPendingSessions() {
+    if (strlen(g_cloud_url) < 8 || strlen(g_cloud_secret) < 1) return;   // not configured
+    if (!g_sd_state.initialized) return;
+    Serial.println("[CLOUD] Scanning card for sessions to upload...");
+
+    // Pass 1: collect candidate base names (avoid nested SD ops during iteration).
+    String bases[40]; int nb = 0;
+    File root = SD.open("/");
+    if (root) {
+        File entry;
+        while (nb < 40 && (entry = root.openNextFile())) {
+            bool isDir = entry.isDirectory();
+            String fn = entry.name();
+            entry.close();
+            if (isDir) continue;
+            int slash = fn.lastIndexOf('/'); if (slash >= 0) fn = fn.substring(slash + 1);
+            String low = fn; low.toLowerCase();                    // FAT may report .CSV uppercase
+            if (low.startsWith("sess_") && low.endsWith(".csv"))
+                bases[nb++] = fn.substring(0, fn.length() - 4);   // strip ".csv", keep original case
+        }
+        root.close();
+    }
+
+    // Pass 2: upload csv + log for each pending session.
+    int done = 0;
+    for (int i = 0; i < nb && done < CLOUD_MAX_PER_BOOT; i++) {
+        const char* base = bases[i].c_str();
+        if (strstr(g_sd_state.current_filename, base)) continue;   // skip the open session
+        if (cloudAlreadyUploaded(base)) continue;
+
+        char csvPath[48], logPath[48], csvName[44], logName[44];
+        snprintf(csvPath, sizeof(csvPath), "/%s.csv", base);
+        snprintf(logPath, sizeof(logPath), "/%s.log", base);
+        snprintf(csvName, sizeof(csvName), "%s.csv", base);
+        snprintf(logName, sizeof(logName), "%s.log", base);
+
+        bool okCsv = cloudUploadFile(csvPath, csvName);
+        bool okLog = SD.exists(logPath) ? cloudUploadFile(logPath, logName) : true;
+        if (okCsv && okLog) { cloudMarkUploaded(base); done++; }
+    }
+    Serial.printf("[CLOUD] Uploaded %d new session(s) this boot.\n", done);
+}
+#else
+void uploadPendingSessions() {}
+#endif // ENABLE_CLOUD_UPLOAD
+
+//=================================================================
+// v6.12: Local WiFi file page (browse/download logs from a browser)
+//=================================================================
+// Runs from timeSyncTask() (Core 0) for a bounded window after boot, reusing the
+// WiFi that's already up for NTP/upload. SD reads are bracketed with the same
+// g_fb_pause_sd_writes flag the file browser uses, so they can't collide with the
+// logging writer. After the window, WiFi powers off and its RAM is reclaimed.
+// NOT flash-tested. Main risk: internal RAM while WiFi + the full UI run together —
+// if the box glitches during the window, lower FILE_SERVER_MINUTES (or set 0).
+#if ENABLE_FILE_SERVER
+static WebServer* g_web = nullptr;   // valid only during the serve window
+
+// Only allow our own log files to be fetched (blocks path traversal).
+static bool fsValidName(const String& n) {
+    if (n.length() < 6 || n.length() > 32) return false;
+    String low = n; low.toLowerCase();
+    if (!low.startsWith("sess_")) return false;
+    if (!(low.endsWith(".csv") || low.endsWith(".log"))) return false;
+    for (size_t i = 0; i < n.length(); i++) {
+        char c = n[i];
+        if (!(isalnum((unsigned char)c) || c == '_' || c == '.')) return false;  // no '/', no ".."
+    }
+    return true;
+}
+
+// Root: chunked listing of SESS_* files with sizes + download links.
+static void fsHandleRoot() {
+    g_fb_pause_sd_writes = true; vTaskDelay(pdMS_TO_TICKS(150));
+    g_web->setContentLength(CONTENT_LENGTH_UNKNOWN);
+    g_web->send(200, "text/html", "");
+    g_web->sendContent(F(
+        "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>370Z logs</title><style>body{font-family:system-ui;background:#0a0a0a;color:#eee;margin:0;padding:16px}"
+        "h1{color:#d41f2d;font-size:19px;margin:0 0 12px}a{color:#4da6ff;text-decoration:none}"
+        "table{border-collapse:collapse;width:100%;font-size:13px}td,th{padding:6px 9px;border-bottom:1px solid #222}"
+        "th{color:#888;text-align:left}.s{font-family:monospace;text-align:right;color:#9a9a9a}"
+        ".d{text-align:right}</style>"
+        "<h1>370Z session logs</h1><table><tr><th>File</th><th class=s>Size</th><th class=d></th></tr>"));
+    File root = SD.open("/");
+    if (root) {
+        File e;
+        while ((e = root.openNextFile())) {
+            String n = e.name(); bool dir = e.isDirectory(); size_t sz = e.size(); e.close();
+            int sl = n.lastIndexOf('/'); if (sl >= 0) n = n.substring(sl + 1);
+            if (dir) continue;
+            String low = n; low.toLowerCase();
+            if (low.startsWith("sess_") && (low.endsWith(".csv") || low.endsWith(".log"))) {
+                String row = "<tr><td>" + n + "</td><td class=s>" + String((sz + 1023) / 1024) +
+                             " KB</td><td class=d><a href='/dl?f=" + n + "'>download</a></td></tr>";
+                g_web->sendContent(row);
+            }
+        }
+        root.close();
+    }
+    String foot = "</table><p style='color:#888;font-size:12px'>Serving for ~" + String(g_fileserver_minutes) +
+                  " min after boot — restart the car to reopen. Firmware " FW_VERSION "</p>";
+    g_web->sendContent(foot);
+    g_web->sendContent("");            // end chunked response
+    g_fb_pause_sd_writes = false;
+}
+
+// Download one validated session file (streamed straight off the SD card).
+static void fsHandleDownload() {
+    if (!g_web->hasArg("f")) { g_web->send(400, "text/plain", "missing f"); return; }
+    String f = g_web->arg("f");
+    if (!fsValidName(f)) { g_web->send(400, "text/plain", "bad name"); return; }
+    String path = "/" + f;
+    g_fb_pause_sd_writes = true; vTaskDelay(pdMS_TO_TICKS(150));
+    File file = SD.open(path.c_str(), FILE_READ);
+    if (!file) { g_fb_pause_sd_writes = false; g_web->send(404, "text/plain", "not found"); return; }
+    g_web->sendHeader("Content-Disposition", "attachment; filename=" + f);
+    g_web->streamFile(file, "application/octet-stream");
+    file.close();
+    g_fb_pause_sd_writes = false;
+}
+
+// Bring the server up, serve for the configured window, then tear it down.
+static void serveFilesWindow() {
+    if (g_fileserver_minutes <= 0) return;
+    WebServer server(80);
+    g_web = &server;
+    server.on("/", fsHandleRoot);
+    server.on("/dl", fsHandleDownload);
+    server.onNotFound([]() { g_web->send(404, "text/plain", "404 - try /"); });
+    server.begin();
+    if (MDNS.begin("z370")) MDNS.addService("http", "tcp", 80);
+    Serial.printf("[FILESRV] Ready: http://%s/  (or http://z370.local/) for ~%d min\n",
+                  WiFi.localIP().toString().c_str(), g_fileserver_minutes);
+
+    uint32_t start = millis();
+    uint32_t windowMs = (uint32_t)g_fileserver_minutes * 60000UL;
+    while (millis() - start < windowMs) {
+        server.handleClient();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    server.stop();
+    MDNS.end();
+    g_web = nullptr;
+    Serial.println("[FILESRV] Serve window closed; powering WiFi down");
+}
+#else
+static void serveFilesWindow() {}
+#endif // ENABLE_FILE_SERVER
+
+// v6.13: on a WiFi failure, scan 2.4 GHz and report whether the configured SSID is
+// even visible. The ESP32 radio is 2.4 GHz only, so if a scan does NOT see the SSID,
+// it's 5 GHz-only here (band steering) or out of range — not a password problem.
+static void logWifiScanDiag() {
+    Serial.printf("[WIFI] status=%d (3=connected,1=no-SSID-found,4=connect/auth-fail,6=disconnected)\n",
+                  (int)WiFi.status());
+    Serial.println("[WIFI] Scanning 2.4 GHz for the configured SSID...");
+    int n = WiFi.scanNetworks();
+    bool found = false;
+    for (int i = 0; i < n; i++) {
+        if (WiFi.SSID(i) == String(g_wifi_ssid)) {
+            found = true;
+            Serial.printf("[WIFI]   FOUND '%s'  rssi=%d dBm  ch=%d  enc=%d\n",
+                          g_wifi_ssid, WiFi.RSSI(i), WiFi.channel(i), (int)WiFi.encryptionType(i));
+        }
+    }
+    if (!found) {
+        Serial.printf("[WIFI]   '%s' NOT visible on 2.4 GHz (saw %d networks). Likely 5 GHz-only here "
+                      "(band steering) or out of range — give 2.4 GHz its own SSID, e.g. %s-2G.\n",
+                      g_wifi_ssid, n, g_wifi_ssid);
+    } else {
+        Serial.println("[WIFI]   SSID is visible on 2.4 GHz — if connect still fails it's the password.");
+    }
+    WiFi.scanDelete();
+}
+
 // Background task for WiFi time sync (runs on Core 0)
 void timeSyncTask(void* parameter) {
     Serial.println("[TIME/CORE0] Time sync task started");
@@ -4854,6 +5450,7 @@ void timeSyncTask(void* parameter) {
     while (WiFi.status() != WL_CONNECTED) {
         if (millis() - start_ms > WIFI_CONNECT_TIMEOUT_MS) {
             Serial.println("[TIME/CORE0] WiFi connection timeout");
+            logWifiScanDiag();   // v6.13: is the SSID even visible on 2.4 GHz?
             WiFi.disconnect(true);
             WiFi.mode(WIFI_OFF);
             
@@ -4938,6 +5535,12 @@ void timeSyncTask(void* parameter) {
         }
     }
     
+    // v6.11: while WiFi is up, push any completed sessions to the cloud
+    uploadPendingSessions();
+
+    // v6.12: then keep WiFi up and serve the local file page for a bounded window
+    serveFilesWindow();
+
     // Disconnect WiFi to save power
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
@@ -5059,13 +5662,14 @@ void initTimeKeeping() {
     }
     
     BaseType_t result = xTaskCreatePinnedToCore(
-        timeSyncTask,           
-        "TimeSyncTask",         
-        4096,                   
-        NULL,                   
-        1,                      
+        timeSyncTask,
+        "TimeSyncTask",
+        16384,                  // v6.11: bumped 4096->16384; the TLS handshake for cloud upload
+                                //        needs a much deeper stack than NTP alone (was overflowing).
+        NULL,
+        1,
         &g_time_sync_task_handle,
-        0                       
+        0
     );
     
     if (result == pdPASS) {
@@ -5919,6 +6523,33 @@ void autoBrightnessForceUpdate() {
 #define DOUBLE_TAP_TIMEOUT_MS 400  // 400ms window for double-tap detection
 
 // Update mode indicator text and color
+// v6.13: an always-visible banner so DEMO mode can never be mistaken for live data.
+// The small "DEMO" label above lives inside the utility box, which is hidden by
+// default — that's why a mid-drive demo trigger looked like real climbing temps.
+static void updateDemoBanner() {
+    if (!g_demo_mode) {
+        if (g_demo_banner) lv_obj_add_flag(g_demo_banner, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (!g_demo_banner) {
+        lv_obj_t* top = lv_layer_top();
+        g_demo_banner = lv_label_create(top);
+        lv_obj_set_style_bg_color(g_demo_banner, lv_color_hex(0xFF00FF), 0);   // magenta = fake
+        lv_obj_set_style_bg_opa(g_demo_banner, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(g_demo_banner, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_text_font(g_demo_banner, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_pad_ver(g_demo_banner, 5, 0);
+        lv_obj_set_style_pad_hor(g_demo_banner, 40, 0);
+        lv_label_set_text(g_demo_banner, "DEMO - SIMULATED DATA (not live)");
+        lv_obj_set_width(g_demo_banner, lv_pct(100));
+        lv_obj_set_style_text_align(g_demo_banner, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(g_demo_banner, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_add_flag(g_demo_banner, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    }
+    lv_obj_clear_flag(g_demo_banner, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(g_demo_banner);   // keep it above gauges/overlays
+}
+
 static void updateModeIndicator() {
     if (mode_indicator) {
         if (g_demo_mode) {
@@ -5930,6 +6561,7 @@ static void updateModeIndicator() {
             lv_obj_set_style_text_color(mode_indicator, lv_color_hex(0x00FF00), 0);
         }
     }
+    updateDemoBanner();   // v6.13: always-visible DEMO banner
     // Update tap box visibility based on mode
     updateTapBoxVisibility();
 }
@@ -6678,6 +7310,18 @@ static void checkUtilityLongPress() {
         uint32_t held_time = millis() - g_utility_press_start;
 
         if (held_time >= DEMO_MODE_TOGGLE_HOLD_MS) {
+            // v6.13: PHANTOM-TOUCH GUARD. Demo mode is a bench-only feature; a stray
+            // 5-second capacitive touch on the road once dropped the display into DEMO
+            // mid-drive, showing simulated temps climbing to critical — looked like a
+            // real emergency. Never allow LIVE->DEMO while the engine is turning; still
+            // allow DEMO->LIVE so you can always get back to real data.
+            bool engine_running = g_vehicle_data.rpm_valid && g_vehicle_data.rpm > 300;
+            if (!g_demo_mode && engine_running) {
+                g_utility_long_press_triggered = true;   // consume the hold, do nothing
+                Serial.printf("[MODE] Demo toggle IGNORED - engine running (rpm=%d); likely a phantom touch\n",
+                              g_vehicle_data.rpm);
+                return;
+            }
             // 5-second hold detected - toggle demo mode
             g_demo_mode = !g_demo_mode;
             g_utility_long_press_triggered = true;
@@ -6934,6 +7578,153 @@ static void diff_temp_tap_cb(lv_event_t* e) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// v6.10: FUEL TRUST tap popup — shows exactly how the 0-100% score is derived
+// (both banks' trims, the four penalties, plain-English meaning, and DTCs).
+// Tap the Fuel Trust value to open; tap anywhere to close.
+// ---------------------------------------------------------------------------
+#if ENABLE_OBD_CAN
+static lv_obj_t* g_ft_popup = NULL;
+
+static void ft_popup_dismiss_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    if (g_ft_popup) { lv_obj_delete(g_ft_popup); g_ft_popup = NULL; }
+}
+
+// Short descriptions for the trouble codes this catless/tuned VQ37 tends to set.
+// Unknown codes just show the raw code (still fully transparent).
+static const char* dtcDescription(const char* c) {
+    static const struct { const char* code; const char* desc; } tbl[] = {
+        {"P010B","MAF 'B' range/perf"}, {"P0101","MAF range/perf"},
+        {"P0102","MAF flow low"},       {"P0103","MAF flow high"},
+        {"P0171","Sys too lean B1"},    {"P0174","Sys too lean B2"},
+        {"P0172","Sys too rich B1"},    {"P0175","Sys too rich B2"},
+        {"P0037","O2 htr low B1S2"},    {"P0038","O2 htr high B1S2"},
+        {"P0057","O2 htr low B2S2"},    {"P0058","O2 htr high B2S2"},
+        {"P0130","O2 circuit B1S1"},    {"P0150","O2 circuit B2S1"},
+        {"P0138","O2 high B1S2"},       {"P0158","O2 high B2S2"},
+        {"P2096","Post-cat lean B1"},   {"P2098","Post-cat lean B2"},
+        {"P2097","Post-cat rich B1"},   {"P2099","Post-cat rich B2"},
+        {"P0420","Catalyst eff B1"},    {"P0430","Catalyst eff B2"},
+    };
+    for (unsigned i = 0; i < sizeof(tbl) / sizeof(tbl[0]); i++)
+        if (strcmp(c, tbl[i].code) == 0) return tbl[i].desc;
+    return "";
+}
+
+static void showFuelTrustPopup() {
+    if (!ui_Screen1) return;
+    if (g_ft_popup) { lv_obj_delete(g_ft_popup); g_ft_popup = NULL; }
+
+    // Full-screen dark backdrop on the top layer; a tap anywhere dismisses it.
+    lv_obj_t* top = lv_layer_top();
+    g_ft_popup = lv_obj_create(top);
+    lv_obj_remove_style_all(g_ft_popup);
+    lv_obj_set_size(g_ft_popup, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+    lv_obj_set_pos(g_ft_popup, 0, 0);
+    lv_obj_set_style_bg_color(g_ft_popup, lv_color_hex(0x0A0A0A), 0);
+    lv_obj_set_style_bg_opa(g_ft_popup, LV_OPA_90, 0);
+    lv_obj_add_flag(g_ft_popup, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(g_ft_popup, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(g_ft_popup, ft_popup_dismiss_cb, LV_EVENT_CLICKED, NULL);
+
+    // Title + hint
+    int score = g_vehicle_data.fuel_trust_valid ? g_vehicle_data.fuel_trust_percent : g_ft.score;
+    lv_obj_t* title = lv_label_create(g_ft_popup);
+    { char t[48]; snprintf(t, sizeof(t), "FUEL TRUST   %d%%", score); lv_label_set_text(title, t); }
+    lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
+
+    lv_obj_t* hint = lv_label_create(g_ft_popup);
+    lv_label_set_text(hint, "tap to close");
+    lv_obj_set_style_text_color(hint, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 40);
+
+    // Left column: live trims + score math + meaning
+    char b[900];
+    if (g_ft.valid) {
+        float avgLTsigned = 0.5f * (g_ft.lt1 + g_ft.lt2);
+        const char* dir = (avgLTsigned < -0.05f) ? "rich (ECU pulling fuel out)"
+                        : (avgLTsigned >  0.05f) ? "lean (ECU adding fuel)"
+                        : "balanced";
+        snprintf(b, sizeof(b),
+            "LIVE FUEL TRIMS (OBD)\n"
+            "  STFT   B1 %+.1f%%   B2 %+.1f%%\n"
+            "  LTFT   B1 %+.1f%%   B2 %+.1f%%\n"
+            "  Timing %.1f deg\n"
+            "\n"
+            "SCORE = 100 - penalties\n"
+            "  STFT avg %.1f%%  ->  -%.0f\n"
+            "  LTFT avg %.1f%%  ->  -%.0f\n"
+            "  Bank split ST %.1f / LT %.1f  ->  -%.0f\n"
+            "  Timing pulls x%d  ->  -%.0f\n"
+            "  --------------------------\n"
+            "  = %d%%\n"
+            "\n"
+            "MEANING\n"
+            "  Avg LTFT %+.1f%% -> running %s.\n"
+            "  Past +/-10%% is worth a look.",
+            g_ft.st1, g_ft.st2, g_ft.lt1, g_ft.lt2,
+            isnan(g_ft.timing_deg) ? 0.0f : g_ft.timing_deg,
+            g_ft.avgAbsST, g_ft.penST,
+            g_ft.avgAbsLT, g_ft.penLT,
+            g_ft.deltaST, g_ft.deltaLT, g_ft.penBank,
+            g_ft.timingPulls, g_ft.penTiming,
+            g_ft.score, avgLTsigned, dir);
+    } else {
+        snprintf(b, sizeof(b),
+            "LIVE FUEL TRIMS (OBD)\n"
+            "  Waiting for warmed-up data.\n"
+            "\n"
+            "  Fuel Trust appears once coolant\n"
+            "  is >= 80 C and the ECU reports\n"
+            "  fuel trims. The score = 100 minus\n"
+            "  penalties for STFT, LTFT, bank\n"
+            "  imbalance, and timing pulls.");
+    }
+    lv_obj_t* body = lv_label_create(g_ft_popup);
+    lv_label_set_text(body, b);
+    lv_obj_set_style_text_color(body, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(body, &lv_font_montserrat_14, 0);
+    lv_obj_align(body, LV_ALIGN_TOP_LEFT, 36, 72);
+
+    // Right column: check-engine lamp + stored trouble codes
+    char d[600]; int m = 0;
+    m += snprintf(d + m, sizeof(d) - m, "CHECK-ENGINE\n  MIL %s",
+                  g_dtc01_valid ? (g_mil_on ? "ON" : "off") : "?");
+    if (g_dtc01_valid) m += snprintf(d + m, sizeof(d) - m, ",  %d stored", g_dtc_count_01);
+    m += snprintf(d + m, sizeof(d) - m, "\n\n");
+    if (g_dtc_list_valid && g_dtc_list_count > 0) {
+        for (int i = 0; i < g_dtc_list_count && i < 8; i++) {
+            const char* desc = dtcDescription(g_dtc_list[i]);
+            m += snprintf(d + m, sizeof(d) - m, "  %s %s\n", g_dtc_list[i], desc);
+        }
+    } else if (g_dtc01_valid && g_dtc_count_01 == 0) {
+        m += snprintf(d + m, sizeof(d) - m, "  no stored codes");
+    } else {
+        m += snprintf(d + m, sizeof(d) - m, "  reading codes...");
+    }
+    lv_obj_t* dtc = lv_label_create(g_ft_popup);
+    lv_label_set_text(dtc, d);
+    lv_obj_set_style_text_color(dtc, lv_color_hex(0xFFC04D), 0);   // amber, like a MIL
+    lv_obj_set_style_text_font(dtc, &lv_font_montserrat_14, 0);
+    lv_obj_align(dtc, LV_ALIGN_TOP_LEFT, 470, 72);
+
+    Serial.println("[UI] Fuel Trust popup opened");
+}
+
+static void fuel_trust_tap_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    // Kick a fresh DTC read so the codes shown are current, then open the popup.
+    if (g_obd_initialized) { sendOBD_Mode03(); g_dtc_last_read_ms = millis(); }
+    showFuelTrustPopup();
+}
+#else
+static void fuel_trust_tap_cb(lv_event_t* e) { LV_UNUSED(e); }  // OBD disabled: no-op
+#endif // ENABLE_OBD_CAN
+
 // Update tap box visibility - panels are always transparent when not critical
 // (critical state is handled in updateUI)
 void updateTapBoxVisibility() {
@@ -6966,8 +7757,9 @@ void setupUnitTapHandlers() {
     configureTapPanel(ui_TRAN_TEMP_Value_Tap_Panel, trans_temp_tap_cb);
     configureTapPanel(ui_STEER_TEMP_Value_Tap_Panel, steer_temp_tap_cb);
     configureTapPanel(ui_DIFF_TEMP_Value_Tap_Panel, diff_temp_tap_cb);
-    // Note: FUEL_TRUST doesn't have a tap handler (no unit conversion)
-    
+    // v6.10: FUEL TRUST tap opens the score-breakdown popup (not unit cycling)
+    configureTapPanel(ui_FUEL_TRUST_Value_Tap_Panel, fuel_trust_tap_cb);
+
     Serial.println("[UI] Value Tap Panels configured");
 }
 
@@ -8621,7 +9413,7 @@ void setup() {
     delay(1000);
 
     Serial.println("\n========================================");
-    Serial.println("   370zMonitor v6.9 - Dual-Core + G-Sensor");
+    Serial.printf("   370zMonitor %s - Dual-Core + G-Sensor\n", FW_VERSION);
     Serial.println("========================================");
 
     if (psramFound()) {

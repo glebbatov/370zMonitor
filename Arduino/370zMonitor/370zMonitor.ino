@@ -1,9 +1,22 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v6.13
+ * 370zMonitor v6.14
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v6.14 Changes (OBD oil temp via Mode 22 + watchdog/power-loss hardening):
+ * - OBD OIL TEMP (Nissan Mode 22). The generic PID 0x5C is unsupported on the VQ37, but the 370Z
+ *   exposes oil temp via Nissan enhanced DID 0x111F over Mode 0x22 (physical addr 7E0, °C = A-50).
+ *   Added sendOBD_Mode22()/decodeOBD_Mode22Reply(), polled ~1 Hz. When the (dead) Modbus PRTXI
+ *   oil-temp sensor is offline, mergeOilTempSource() drives the oil-temp DIAL from this OBD value —
+ *   so oil temp is back on screen in software. Validate the -50 offset vs the factory gauge on first
+ *   drive. If the PRTXI sensor is replaced later, its reading wins automatically.
+ * - TASK WATCHDOG. esp_task_wdt armed on the main loop (12 s, version-guarded for IDF 4.x/5.x); a
+ *   hang now auto-resets the board instead of a frozen screen. Fed each loop iteration. No hardware.
+ * - POWER-LOSS FLUSH (optional, OFF by default). ENABLE_POWER_FAIL_DETECT + a 12V-sense divider on
+ *   POWER_SENSE_PIN: on a power good->failing transition it emergency-flushes the SD so a mid-write
+ *   key-off can't corrupt the card. Dormant until wired + enabled. NOT flash-tested.
  *
  * v6.13 Changes (demo-mode phantom-touch guard + WiFi diagnostics):
  * - DEMO-MODE SAFETY. A stray capacitive touch once held the utility box for 5 s mid-drive and
@@ -352,6 +365,7 @@ extern "C" void lv_draw_sw_rgb565_swap(void * buf, uint32_t buf_size_px);
 #include <stdarg.h>                 // For va_list in SerialLogf
 #include <vector>                   // For file browser
 #include "driver/twai.h"            // ESP32 CAN (TWAI) controller for OBD-II
+#include "esp_task_wdt.h"           // v6.14: task watchdog (auto-reset on a hang)
 #include <math.h>                   // For fabsf, fminf in Fuel Trust calculation
 #include <Adafruit_LIS3DH.h>         // LIS3DH accelerometer (ADA2809)
 #include <Adafruit_Sensor.h>         // Required by Adafruit LIS3DH
@@ -550,7 +564,7 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_MODBUS_SENSORS           1       // Enable Modbus RS485 sensor reading (8-Ch Analog Module)
 #define ENABLE_OBD_CAN                  1       // Enable OBD-II via CAN bus (TWAI)
 #ifndef FW_VERSION
-#define FW_VERSION                      "v6.13" // single source of truth for the serial banner + .log/.csv stamps
+#define FW_VERSION                      "v6.14" // single source of truth for the serial banner + .log/.csv stamps
 #endif
 #define UPDATE_INTERVAL_MS              25      // default 250ms
 
@@ -3021,6 +3035,8 @@ void updateSensorData() {
 #define OBD_FUNCTIONAL_REQ_ID  0x7DF    // Broadcast request address
 #define OBD_MIN_RESP_ID        0x7E8    // ECU response range start
 #define OBD_MAX_RESP_ID        0x7EF    // ECU response range end
+#define OBD_PHYS_ECU_REQ_ID    0x7E0    // v6.14: physical request to ECU #1 (used for Mode 22)
+#define OBD_DID_OIL_TEMP       0x111F   // v6.14: Nissan enhanced oil-temp DID (Mode 0x22); °C = A - 50
 
 //-----------------------------------------------------------------------------
 // OBD PID POLLING CONFIGURATION
@@ -3254,6 +3270,41 @@ static void sendOBD_Mode03() {
     g_dtc_asm_active = false;
     g_dtc_asm_len = g_dtc_asm_got = 0;
     g_dtc_asm_next_sn = 1;
+}
+
+//-----------------------------------------------------------------------------
+// v6.14: OBD Mode 0x22 (ReadDataByIdentifier) — Nissan enhanced PIDs
+//-----------------------------------------------------------------------------
+// The generic oil-temp PID (0x5C) is unsupported on the VQ37, but the 370Z exposes
+// oil temp via the Nissan enhanced DID 0x111F over Mode 0x22 (physical addr 7E0):
+//   request  7E0: 03 22 11 1F ...
+//   response 7E8: xx 62 11 1F A ...   ->  oil_temp_C = A - 50
+// NOT flash-tested — validate the offset against the factory oil-temp gauge on first
+// drive; if it reads ~50 low/high, the -50 constant is the thing to tweak.
+static void sendOBD_Mode22(uint16_t did) {
+    twai_message_t tx = {};
+    tx.identifier = OBD_PHYS_ECU_REQ_ID;   // 0x7E0 (physical, not the 0x7DF broadcast)
+    tx.extd = 0; tx.rtr = 0; tx.data_length_code = 8;
+    tx.data[0] = 0x03;                     // 3 data bytes follow
+    tx.data[1] = 0x22;                     // Mode 22 (ReadDataByIdentifier)
+    tx.data[2] = (did >> 8) & 0xFF;        // DID high
+    tx.data[3] = did & 0xFF;               // DID low
+    g_obd_tx_total_count++;
+    twai_transmit(&tx, pdMS_TO_TICKS(10));
+}
+
+// Decode a Mode 22 positive response (service byte 0x62).
+static void decodeOBD_Mode22Reply(const twai_message_t& rx) {
+    if (rx.data_length_code < 5 || rx.data[1] != 0x62) return;
+    uint16_t did = ((uint16_t)rx.data[2] << 8) | rx.data[3];
+    uint8_t A = rx.data[4];
+    uint32_t now = millis();
+    if (did == OBD_DID_OIL_TEMP) {
+        g_obd_data.oil_temp_c = (int)A - 50;   // Nissan: °C = A - 50
+        g_obd_data.oil_temp_ts = now;
+        g_obd_data.oil_temp_valid = true;
+        g_obd_success_count++;
+    }
 }
 
 // ISO-TP Flow Control (Clear-To-Send) to a specific ECU physical address.
@@ -3697,6 +3748,14 @@ void updateOBDData() {
         g_dtc_last_read_ms = now;
         sendOBD_Mode03();
     }
+
+    // v6.14: poll Nissan Mode 22 oil temp (~1 Hz). Generic PID 0x5C is unsupported on
+    // the VQ37, so this is the working oil-temp source over OBD.
+    static uint32_t lastMode22 = 0;
+    if (now - lastMode22 >= 1000) {
+        lastMode22 = now;
+        sendOBD_Mode22(OBD_DID_OIL_TEMP);
+    }
     if (g_dtc_asm_active && (now - g_dtc_asm_start_ms > DTC_ASM_TIMEOUT_MS)) {
         g_dtc_asm_active = false;
     }
@@ -3706,9 +3765,13 @@ void updateOBDData() {
     while (twai_receive(&rx, pdMS_TO_TICKS(1)) == ESP_OK) {
         // Filter for OBD-II responses (0x7E8-0x7EF)
         if (!rx.extd && rx.identifier >= OBD_MIN_RESP_ID && rx.identifier <= OBD_MAX_RESP_ID) {
-            // Mode 03 (DTC) frames are ISO-TP framed; route them to the
-            // reassembler first. Anything it doesn't claim is a Mode 01 reply.
-            if (!handleDTCFrame(rx)) {
+            // Mode 03 (DTC) frames are ISO-TP framed; route them to the reassembler
+            // first, then Mode 22 (0x62) responses, else it's a Mode 01 reply.
+            if (handleDTCFrame(rx)) {
+                // consumed as DTC data
+            } else if (rx.data_length_code >= 2 && rx.data[1] == 0x62) {
+                decodeOBD_Mode22Reply(rx);   // v6.14: Mode 22 (Nissan oil temp)
+            } else {
                 decodeOBD_Mode01Reply(rx);
             }
         }
@@ -3897,6 +3960,14 @@ static char g_cloud_folder[48] = "370zMonitor_logs"; // CLOUD_FOLDER in /wifi.cf
 #define ENABLE_FILE_SERVER 1
 #define FILE_SERVER_DEFAULT_MINUTES 15                // serve this long after boot; 0 = disabled
 static int g_fileserver_minutes = FILE_SERVER_DEFAULT_MINUTES;  // overridable via /wifi.cfg FILE_SERVER_MINUTES
+
+// v6.14: reliability — task watchdog (no hardware) + optional power-fail SD flush.
+#define WDT_TIMEOUT_MS 12000            // auto-reset the board if the main loop hangs this long
+static bool g_wdt_armed = false;
+#define ENABLE_POWER_FAIL_DETECT 0      // 0 = OFF. Needs a 12V-sense divider on POWER_SENSE_PIN first.
+#define POWER_SENSE_PIN 6               // candidate spare ADC1 pin; wire ignition-12V via a divider (~12V -> ~2.7V)
+#define POWER_SENSE_GOOD_RAW 1800       // analogRead above this = power present (establishes "power good")
+#define POWER_SENSE_FAIL_RAW 900        // dropping below this after "good" = power failing -> emergency flush
 
 #define NTP_SERVER_1 "pool.ntp.org"
 #define NTP_SERVER_2 "time.nist.gov"
@@ -9825,6 +9896,21 @@ void setup() {
     }
 #endif
 
+    // v6.14: arm the task watchdog on the main loop — a hang now auto-resets the board
+    // instead of a frozen screen. Version-guarded (the TWDT API differs across ESP-IDF).
+#if ESP_IDF_VERSION_MAJOR >= 5
+    esp_task_wdt_config_t twdt_cfg = { .timeout_ms = WDT_TIMEOUT_MS, .idle_core_mask = 0, .trigger_panic = true };
+    esp_task_wdt_reconfigure(&twdt_cfg);
+#else
+    esp_task_wdt_init(WDT_TIMEOUT_MS / 1000, true);
+#endif
+    if (esp_task_wdt_add(NULL) == ESP_OK) {
+        g_wdt_armed = true;
+        Serial.printf("[WDT] Task watchdog armed (%d s)\n", WDT_TIMEOUT_MS / 1000);
+    } else {
+        Serial.println("[WDT] Task watchdog add failed (continuing without it)");
+    }
+
     Serial.println("\n========================================");
     Serial.println("         RUNNING (DUAL-CORE)");
     Serial.printf("  Mode: %s\n", g_demo_mode ? "DEMO" : "LIVE");
@@ -9836,6 +9922,39 @@ void setup() {
     Serial.println("========================================\n");
 }
 
+// v6.14: if the Modbus PRTXI oil-temp sensor is dead, drive the oil-temp dial from
+// the OBD (Mode 22) oil temp instead. Runs between data-gather and UI update so it's
+// order-independent. When the physical sensor is healthy, its value wins.
+static void mergeOilTempSource() {
+#if ENABLE_OBD_CAN
+    if (!g_demo_mode && !g_vehicle_data.oil_temp_valid && g_vehicle_data.obd_oil_temp_valid) {
+        g_vehicle_data.oil_temp_value_f = g_vehicle_data.obd_oil_temp_f;
+        g_vehicle_data.oil_temp_valid   = true;
+        g_vehicle_data.has_received_data = true;
+    }
+#endif
+}
+
+// v6.14: optional power-loss flush. OFF by default — needs a resistor divider from
+// ignition-switched 12V to POWER_SENSE_PIN (pin sees ~2.7V when 12V is present, and
+// collapses on key-off before the 3.3V rail sags). When it sees power go good -> failing
+// it flushes the SD once so a mid-write key-off can't corrupt the card. Unwired/floating
+// with the flag off = never runs. The watchdog needs no hardware; this is the extra layer.
+static void checkPowerFail() {
+#if ENABLE_POWER_FAIL_DETECT
+    static bool power_was_good = false;
+    static bool flushed = false;
+    int raw = analogRead(POWER_SENSE_PIN);
+    if (raw > POWER_SENSE_GOOD_RAW) { power_was_good = true; flushed = false; }
+    else if (power_was_good && !flushed && raw < POWER_SENSE_FAIL_RAW) {
+        flushed = true;
+        _RealSerial.println("[PWR] Power failing - emergency SD flush");
+        g_fb_pause_sd_writes = true;   // halt the writer, then push buffered data to the card
+        sdSafeFlush();
+    }
+#endif
+}
+
 //=================================================================
 // MAIN LOOP
 //=================================================================
@@ -9843,6 +9962,9 @@ void setup() {
 void loop() {
     static uint32_t frame_start = 0;
     frame_start = millis();
+
+    if (g_wdt_armed) esp_task_wdt_reset();   // v6.14: feed the watchdog each iteration
+    checkPowerFail();                        // v6.14: emergency SD flush on power loss (if enabled)
 
     static uint32_t last_tick = 0;
     static uint32_t last_status = 0;
@@ -9937,6 +10059,9 @@ void loop() {
 
         // Step 1: Get data from appropriate provider
         updateVehicleData();
+
+        // Step 1.5 (v6.14): OBD oil temp fills in for the dead Modbus oil-temp sensor
+        mergeOilTempSource();
 
         // Step 2: Update UI from g_vehicle_data
         updateUI();

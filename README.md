@@ -36,8 +36,7 @@ Designed around the demands of regular track use, 370zMonitor gives you real-tim
 ### Electric box: ignition relay, 12V to 24V converter, Modbus RTU
 
 <p align="center">
-  <img src="docs/images/02.jpg" alt="Electric box open, viewed from above: Victron Orion-Tr 12/24-5 isolated DC-DC converter, Waveshare Modbus RTU module, ignition relay and labelled wiring" width="49%">
-  <img src="docs/images/03.jpg" alt="Electric box open on the bench, three-quarter view showing the internal loom and labelled connector pigtails" width="49%">
+  <img src="docs/images/02.jpg" alt="Electric box open, viewed from above: Victron Orion-Tr 12/24-5 isolated DC-DC converter, Waveshare Modbus RTU module, ignition relay and labelled wiring" width="80%">
 </p>
 
 <p align="center">
@@ -50,6 +49,31 @@ Designed around the demands of regular track use, 370zMonitor gives you real-tim
   <img src="docs/images/05.jpg" alt="370Z front end with the bumper removed, electric box mounted to the crash bar alongside the oil and transmission coolers" width="49%">
   <img src="docs/images/06.jpg" alt="Front view of the 370Z with bumper removed showing the fuse block, harness routing and cooler ducting on the crash bar" width="49%">
 </p>
+
+### Temp sensors positioning
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/images/07.jpg" alt="Front end of the car showing temperature sensor placement" width="100%"><br>
+      <sub><b>Front end</b></sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/images/08.jpg" alt="Transmission fluid temperature sensor installed" width="34%"><br>
+      <sub><b>Transmission fluid temp sensor</b></sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/images/09.jpg" alt="Steering fluid temperature sensor installed" width="34%"><br>
+      <sub><b>Steering fluid temp sensor</b></sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/images/10.jpg" alt="Engine oil temperature sensor installed" width="100%"><br>
+      <sub><b>Engine oil temp sensor</b></sub>
+    </td>
+  </tr>
+</table>
 
 ---
 

@@ -1,0 +1,400 @@
+<title>Heat Derate Monitor</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Orbitron:wght@500;700&display=swap">
+<style>
+:root{
+  --bg:#F4F6F9; --surface:#FFFFFF; --ink:#151A21; --ink-2:#4F5A67; --line:#D9DFE7;
+  --accent:#1F6FB2; --accent-soft:#E4EFF9; --hot:#D9571D; --hot-bg:#FBEEE6; --ok:#2A8A5A;
+  --mag:#B03A9E; --mono-bg:#EDF1F5; --dash:#0B0D10; --dash-ink:#E9EEF3; --amber:#F2A93B; --shadow:0 1px 2px rgba(21,26,33,.06),0 8px 24px rgba(21,26,33,.06);
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --head:"Barlow Semi Condensed","Arial Narrow",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --dashfont:"Orbitron","Barlow Semi Condensed",Arial,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0E1114; --surface:#161A20; --ink:#E8ECF1; --ink-2:#A5AFBB; --line:#2A3139;
+    --accent:#74B4EA; --accent-soft:#16283A; --hot:#F5884E; --hot-bg:#2C1A10; --ok:#5FC08A;
+    --mag:#D77BC6; --mono-bg:#1C2128; --dash:#050607; --dash-ink:#E9EEF3; --amber:#F5B04A; --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0E1114; --surface:#161A20; --ink:#E8ECF1; --ink-2:#A5AFBB; --line:#2A3139;
+  --accent:#74B4EA; --accent-soft:#16283A; --hot:#F5884E; --hot-bg:#2C1A10; --ok:#5FC08A;
+  --mag:#D77BC6; --mono-bg:#1C2128; --dash:#050607; --dash-ink:#E9EEF3; --amber:#F5B04A; --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration-thickness:1px;text-underline-offset:2px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1160px;margin:0 auto;padding:40px 24px 80px}
+header.top{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:32px}
+.eyebrow{font-family:var(--head);font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+h1{font-family:var(--head);font-weight:700;font-size:clamp(36px,5vw,56px);line-height:1;letter-spacing:-.01em;margin:8px 0 12px;text-wrap:balance}
+.meta{color:var(--ink-2);font-size:14px;display:flex;flex-wrap:wrap;gap:6px 18px;margin:0}
+.meta span{white-space:nowrap}
+.readouts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-top:24px}
+.readout{background:var(--dash);color:var(--dash-ink);padding:16px 18px 14px;min-width:0}
+.readout .k{font-family:var(--head);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#9AA6B4}
+.readout .v{font-family:var(--dashfont);font-weight:700;font-size:clamp(22px,3vw,32px);line-height:1.15;margin-top:6px;font-variant-numeric:tabular-nums;color:var(--amber)}
+.readout .v.cool{color:#7FC4FF}
+.readout .d{font-size:13px;color:#C3CBD5;margin-top:6px;line-height:1.4}
+.layout{display:grid;grid-template-columns:1fr;gap:40px}
+@media (min-width:960px){.layout{grid-template-columns:200px minmax(0,1fr)}}
+nav.toc{font-size:14px}
+@media (min-width:960px){nav.toc{position:sticky;top:24px;align-self:start}}
+nav.toc .eyebrow{margin-bottom:10px}
+nav.toc ol{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px}
+nav.toc a{color:var(--ink-2);text-decoration:none;display:block;padding:3px 0 3px 10px;border-left:2px solid var(--line);line-height:1.35}
+nav.toc a:hover{color:var(--ink);border-left-color:var(--accent)}
+nav.toc .part{font-family:var(--head);font-weight:600;text-transform:uppercase;letter-spacing:.08em;font-size:11px;color:var(--ink-2);margin:10px 0 2px}
+article{min-width:0}
+section{margin:0 0 56px}
+section>h2{font-family:var(--head);font-weight:700;font-size:30px;line-height:1.1;margin:0 0 6px;text-wrap:balance}
+section>.eyebrow{margin-bottom:6px}
+h3{font-family:var(--head);font-weight:600;font-size:21px;line-height:1.2;margin:32px 0 8px;text-wrap:balance}
+h4{font-family:var(--head);font-weight:600;font-size:16px;letter-spacing:.02em;margin:22px 0 6px}
+p,li{max-width:74ch}
+p{margin:0 0 14px}
+ul,ol{padding-left:22px;margin:0 0 16px}
+li{margin:0 0 8px}
+li::marker{color:var(--ink-2)}
+strong{font-weight:600}
+code,.mono{font-family:var(--mono);font-size:.9em;background:var(--mono-bg);padding:1px 5px;border-radius:4px;white-space:nowrap}
+pre{font-family:var(--mono);font-size:13px;background:var(--mono-bg);padding:14px 16px;border-radius:8px;overflow-x:auto;margin:0 0 16px;line-height:1.5}
+pre code{background:none;padding:0;white-space:pre;font-size:inherit}
+.lead{font-size:18px;line-height:1.55;color:var(--ink);max-width:70ch}
+.bl{counter-reset:bl;list-style:none;padding:0;margin:0 0 8px;display:flex;flex-direction:column;gap:14px}
+.bl li{max-width:none;position:relative;padding-left:44px;border-top:1px solid var(--line);padding-top:14px}
+.bl li::before{counter-increment:bl;content:counter(bl);position:absolute;left:0;top:12px;width:30px;height:30px;border-radius:50%;border:1.5px solid var(--accent);color:var(--accent);font-family:var(--head);font-weight:700;font-size:15px;display:grid;place-items:center}
+.bl li p{max-width:76ch;margin:0}
+.callout{border-left:3px solid var(--hot);background:var(--hot-bg);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0 20px}
+.callout.cool{border-left-color:var(--accent);background:var(--accent-soft)}
+.callout p{margin:0 0 8px}.callout p:last-child{margin:0}
+.tw{overflow-x:auto;margin:14px 0 22px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.45}
+th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}
+th{font-family:var(--head);font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:12px;color:var(--ink-2);background:var(--mono-bg);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.conf{display:inline-block;font-family:var(--head);font-weight:600;font-size:11px;letter-spacing:.08em;padding:1px 7px;border-radius:999px;border:1px solid currentColor;vertical-align:1px;white-space:nowrap}
+.conf.h{color:var(--ok)}.conf.m{color:var(--accent)}.conf.l{color:var(--hot)}
+.pri{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:6px;font-family:var(--head);font-weight:700;font-size:14px;background:var(--accent-soft);color:var(--accent)}
+.pri.one{background:var(--hot-bg);color:var(--hot)}
+figure{margin:18px 0 24px}
+figure svg{width:100%;height:auto;display:block}
+figcaption{font-size:13px;color:var(--ink-2);margin-top:8px;max-width:76ch}
+.dash{background:var(--dash);color:var(--dash-ink);border-radius:12px;padding:14px;margin:16px 0 22px;box-shadow:var(--shadow);border:1px solid #23282f}
+.dash .banner{display:flex;align-items:center;gap:14px;background:#2A1A08;border:1px solid var(--amber);border-radius:6px;padding:8px 12px;font-family:var(--dashfont);font-weight:700;font-size:clamp(13px,2.2vw,18px);letter-spacing:.06em;color:var(--amber);font-variant-numeric:tabular-nums;overflow-x:auto;white-space:nowrap}
+.dash .banner .tag{background:var(--amber);color:#1A1204;padding:2px 8px;border-radius:4px;font-size:.8em}
+.dash .banner.red{background:#2A0C0A;border-color:#FF5A47;color:#FF6F5E}
+.dash .banner.red .tag{background:#FF5A47;color:#1F0705}
+.dash .popup{margin-top:12px;border:1px solid #2E353E;border-radius:8px;padding:12px 14px;font-family:var(--mono);font-size:13px;line-height:1.55;color:#D5DCE4;overflow-x:auto;white-space:pre}
+.dash .popup b{color:#FFFFFF;font-weight:500}
+.dash .popup .amb{color:var(--amber)}.dash .popup .blu{color:#7FC4FF}.dash .popup .mag{color:#E27BD3}
+.dash .cap{font-size:12px;color:#8E99A6;margin-top:10px;font-family:var(--sans)}
+.note{font-size:14px;color:var(--ink-2)}
+.srcs h4{margin-top:18px}
+.srcs ul{font-size:14px;padding-left:18px}
+.srcs li{margin-bottom:4px;max-width:none;overflow-wrap:anywhere}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:14px;margin:0 0 16px;max-width:76ch}
+.kv dt{font-family:var(--head);font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:12px;color:var(--ink-2);padding-top:2px}
+.kv dd{margin:0}
+@media (prefers-reduced-motion:no-preference){nav.toc a{transition:color .15s,border-color .15s}}
+</style>
+
+<div class="wrap">
+<header class="top">
+  <div class="eyebrow">370zMonitor · research &amp; design brief</div>
+  <h1>Heat Derate Monitor</h1>
+  <p class="meta"><span>2018 370Z · Z34 · VQ37VHR · RE7R01A 7AT</span><span>Firmware baseline v6.14 (unflashed)</span><span>2026-09-06</span><span>No firmware changed — every feature below needs authorization</span></p>
+  <div class="readouts" aria-label="Key numbers from the 7/24 logs">
+    <div class="readout"><div class="k">Timing channel update rate</div><div class="v">0.20–0.25 Hz</div><div class="d">one new PID 0x0E value every 3–5 s; a WOT pull lasts 2–7 s</div></div>
+    <div class="readout"><div class="k">Rows with a "timing pull" penalty</div><div class="v">24.5 %</div><div class="d">session 596: 12.7 min, six short pulls — the penalty is counting operating-point changes</div></div>
+    <div class="readout"><div class="k">Intake air temp on 7/24</div><div class="v cool">97–145 °F</div><div class="d">≈ −3 % to −7 % of power from air density alone, before the ECU does anything</div></div>
+  </div>
+</header>
+
+<div class="layout">
+<nav class="toc" aria-label="Contents">
+  <div class="eyebrow">Contents</div>
+  <ol>
+    <li><a href="#bottom">Bottom line</a></li>
+    <li class="part">Part 1</li>
+    <li><a href="#mech">What the ECU does when hot</a></li>
+    <li class="part">Part 2</li>
+    <li><a href="#today">What the box sees today</a></li>
+    <li class="part">Part 3</li>
+    <li><a href="#design">The monitor design</a></li>
+    <li><a href="#ui">What the driver sees</a></li>
+    <li><a href="#disc">Discovery modes</a></li>
+    <li><a href="#validate">Validation &amp; risks</a></li>
+    <li class="part">Part 4</li>
+    <li><a href="#more">More transparency</a></li>
+    <li class="part">—</li>
+    <li><a href="#sources">Sources</a></li>
+  </ol>
+</nav>
+
+<article>
+
+<section id="bottom">
+  <div class="eyebrow">Bottom line</div>
+  <h2>Yes — and "pulling timing" is only one of four things</h2>
+  <ol class="bl">
+    <li><p><strong>Four mechanisms make the Z slower when hot, and timing retard is probably not the biggest one on this car.</strong> Likely order of impact: <strong>air density</strong> (at the 130–145 °F intake temps the box logged, 5–7 % is gone before the ECU acts); <strong>oil-temp "engine protection mode"</strong> (Nissan documents it for MY2009–2019; the FSM says the ECM <em>restricts VVEL lift and lowers the rev limit</em> — owners see a cap of ≈6,000–6,500 rpm around 280 °F on the gauge, then ≈3,500–4,500); <strong>ignition retard</strong> from knock feedback and temperature-correction tables (the "pulling timing" part); and <strong>transmission protection</strong> keyed to ATF temperature.</p></li>
+    <li><p><strong>It can be built into the app with the tap you already have — no new hardware for the core.</strong> The box already reads timing advance (PID 0x0E), IAT, ECT, load, throttle, rpm, baro and — in v6.14 — oil temp via Mode 22. What's missing is <em>how</em> timing is sampled, a <em>baseline</em> to compare against, and two cheap signals readable over the same wire: pedal position and the TCM's own ATF temperature.</p></li>
+    <li><p><strong>Today's timing channel cannot see a heat pull.</strong> Timing updates once every 3–5 s; a pull gets 2–3 samples paired with load values up to 3 s stale. The existing <code>pen_timing</code> penalty fires in 24.5 % of rows of a 12-minute street drive with six short pulls, and in 9 % of rows of a drive that never passed 35 % throttle. It measures operating-point changes, not retard.</p></li>
+    <li><p><strong>The design (Part 3):</strong> burst-poll timing at ≈8 Hz only during power windows; learn the car's own cool-morning timing map per rpm bin; show Δtiming against it; add rev-ceiling, pedal-vs-throttle-gap and load-deficit detectors plus an air-density readout so "hot air" and "ECU pulling" are separated; surface it as an event banner, a POWER popup, appended CSV columns and a per-lap/session verdict.</p></li>
+    <li><p><strong>What else (Part 4):</strong> a fuel-pressure sender on spare AI6 (catches the saddle-tank starvation that mimics heat loss, and it <em>is</em> the physical fuel-pressure test already planned for the −12 % rich trims), TCM ATF temps + torque-converter slip (free), pedal/wheel speeds/steering from passive CAN (free), 10–25 Hz GPS for per-lap "how much slower" numbers, a wideband on AI7, a BME280 for real density altitude.</p></li>
+  </ol>
+</section>
+
+<section id="mech">
+  <div class="eyebrow">Part 1</div>
+  <h2>What the ECU actually does when the car gets hot</h2>
+  <p class="note">Confidence: <span class="conf h">HIGH</span> Nissan document read directly · <span class="conf m">MED</span> FSM text quoted by independent sources, or tuner documentation · <span class="conf l">LOW</span> owner reports. Numbers that could not be sourced are marked as such — none are invented.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Mechanism</th><th>Trigger</th><th>What changes</th><th>How it feels</th><th>Signal that reveals it over OBD/CAN</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Oil-temp engine protection</strong><br><span class="note">FSM: "torque cut control at high engine oil temperature"</span></td><td>Nissan's driver action line is <strong>280 °F</strong> on the gauge, MY2009–2019 <span class="conf h">HIGH</span> (exact ECM trip point <span class="conf l">LOW</span>). Owners: stage 1 ≈280 °F, stage 2 ≈290 °F <span class="conf l">LOW</span></td><td>ECM <strong>restricts the VVEL operating angle</strong> (less lift → less torque) and <strong>lowers max engine speed</strong> <span class="conf m">MED</span>. Reported caps ≈6,000–6,500 then ≈3,500–4,500 rpm; clears after cooling + key cycle <span class="conf l">LOW</span></td><td>Weak pull, then a soft limiter far below 7,500</td><td>Oil temp (Mode 22 DID <code>0x111F</code>, v6.14); rpm ceiling in a pedal-pinned pull; calculated load at fixed rpm + pedal falling</td></tr>
+      <tr><td><strong>Ignition retard — knock control</strong></td><td>Two knock sensors, per-cylinder feedback + learned retard; UpRev documents a <strong>"High Det" table switch</strong> (ECU swaps to a lower-timing ignition table and a different VVEL table after too many knock events) <span class="conf m">MED</span>. Hot oil/coolant/intake air raise knock tendency</td><td>Final timing below the base map at the same rpm/load</td><td>Flat, hesitant WOT</td><td><strong>PID <code>0x0E</code></strong> vs a cool baseline at the same rpm/load bin. Knock counts are <em>not</em> on standard PIDs</td></tr>
+      <tr><td><strong>Ignition retard — temperature corrections</strong></td><td>UpRev/EcuTek expose oil-temp, coolant-temp and IAT ignition-correction tables <span class="conf m">MED</span>. Whether the <em>stock</em> calibration populates them is not settled in public docs; the FSM lists corrections at start, warm-up, idle, low voltage, acceleration, knock</td><td>Timing trimmed as temperature rises, before any knock</td><td>Gradual loss through a session</td><td>Same PID <code>0x0E</code> Δ, attributed by which temperature is elevated</td></tr>
+      <tr><td><strong>Air density</strong> (physics, not ECU)</td><td>IAT ↑, baro ↓</td><td>Less air per cycle. SAE J1349 vs 77 °F: <strong>−2.4 % at 100 °F, −4.4 % at 120 °F, −6.0 % at 137 °F, −6.8 % at 145 °F</strong> intake temp</td><td>Slower everywhere, nothing "wrong"</td><td>IAT <code>0x0F</code> + baro <code>0x33</code> (already logged) → correction factor</td></tr>
+      <tr><td><strong>Coolant</strong></td><td><strong>No ECT-triggered torque cut is documented</strong> for the VQ37VHR — the FSM fail-safe chart has no high-ECT row; P1217 "engine over temperature" is a DTC/MIL only <span class="conf h">HIGH</span>. Hot-engine fuel enrichment exists</td><td>Nothing explicit; enrichment</td><td>—</td><td>ECT <code>0x05</code>, commanded λ <code>0x44</code>, fuel-system status <code>0x03</code>, MIL <code>0x01</code></td></tr>
+      <tr><td><strong>Transmission (RE7R01A TCM)</strong></td><td>FSM TM section has "Fail-Safe" (TM-285) and "Protection Control" (TM-287) <span class="conf h">HIGH</span> that they exist; text not retrieved. Sibling Nissan TCMs reduce "gear shift permission maximum revolution and the maximum torque" when fluid is hot <span class="conf m">MED</span>. Owner: limp at ~270 °F ATF <span class="conf l">LOW</span></td><td>Torque-down request to the ECM, shift/rev restriction, lock-up changes</td><td>A/T CHECK lamp; held gears</td><td><strong>TCM ATF temps via Mode 21 LID <code>0x20</code> on <code>0x7E1</code></strong> (ScanGauge X-Gauges prove the request works on the 370Z); TCM DTCs on <code>0x7E9</code></td></tr>
+      <tr><td><strong>Other torque management</strong></td><td>Drive-by-wire: TCS/VDC throttle close, shift torque-down, rev/speed fuel cut, low-battery timing correction; <strong>CAN-communication loss (U1000 etc.) → 3,500 rpm VVEL limp</strong> <span class="conf h">HIGH</span></td><td>Throttle plate &lt; pedal; fuel cut</td><td>Pedal ≠ response</td><td>Pedal (<code>0x49/0x4A</code> or CAN <code>0x180</code> byte F) vs throttle <code>0x11</code>; rpm plateau; voltage <code>0x42</code></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>What this means for this car</h3>
+  <ul>
+    <li><strong>Oil temp is the mechanism Nissan itself documents.</strong> 2009 owner's manual: <em>"When the engine oil temperature is high, the engine protection mode, which helps reduce the chance of engine damage, could activate. The engine protection mode automatically decreases engine power."</em> The 2018 and 2019 quick-reference guides repeat it and set 280 °F as the "reduce engine speed" line. The FSM passage (quoted by two independent posters): <em>"To avoid VVEL performance, ECM performs the engine torque cut control at high engine oil temperature… This control is to control the VVEL operating angle… engine performance will decrease, then maximum engine speed is reduced a little."</em> The gauge, the protection logic and DID 0x111F all read the same sensor — the ECM feeds the gauge over CAN.</li>
+    <li><strong>There is currently no oil temp on track.</strong> The PRTXI AI2 sensor is dead and v6.14's Mode-22 fallback is not flashed. Flashing v6.14 is prerequisite #1 for everything here.</li>
+    <li><strong>The IAT you log is the bank-1 MAF-housing temperature</strong> (the ECM ignores the bank-2 IAT). On 7/24 it ran 97–145 °F with the "ambient" PID reading 70–118 °F — genuine heat soak.</li>
+    <li><strong>Coolant at ~230 °F on 7/6 was not triggering an ECU derate</strong> — none is documented — though hot coolant raises knock tendency.</li>
+    <li><strong>Knock counts are out of reach from the box.</strong> EcuTek, UpRev and HP Tuners read them as ROM-address "memory parameters"; no public Mode 22 DID exists. Δtiming vs baseline is the observable proxy.</li>
+  </ul>
+  <div class="callout"><p><strong>Bus risk to keep in mind.</strong> The ESP32 is a node on the powertrain CAN, and the FSM lists CAN-communication-loss DTCs as a trigger for the 3,500 rpm VVEL limp. Keep request rates bounded and never loop bus-off recovery.</p></div>
+</section>
+
+<section id="today">
+  <div class="eyebrow">Part 2</div>
+  <h2>What the box can see today</h2>
+  <p class="lead">Evidence from the 7/24 logs in <code>share/</code> (sessions 592–596, FW v6.12, 10 Hz CSV).</p>
+
+  <figure>
+    <svg viewBox="0 0 760 226" role="img" aria-labelledby="fig1t" font-family="IBM Plex Sans, system-ui, sans-serif">
+      <title id="fig1t">One 6.7-second WOT pull from session 596: rpm rises from 3,338 to 7,413; today's timing samples land at 0.0, 1.9 and 5.4 s; the proposed power mode samples every 0.125 s.</title>
+      <line x1="96" y1="30" x2="96" y2="150" stroke="var(--line)" stroke-width="1"/>
+      <line x1="96" y1="150" x2="726" y2="150" stroke="var(--line)" stroke-width="1"/>
+      <line x1="96" y1="30" x2="726" y2="30" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 4"/>
+      <line x1="96" y1="90" x2="726" y2="90" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 4"/>
+      <text x="90" y="34" text-anchor="end" font-size="11" fill="var(--ink-2)">7,500</text>
+      <text x="90" y="94" text-anchor="end" font-size="11" fill="var(--ink-2)">5,250</text>
+      <text x="90" y="154" text-anchor="end" font-size="11" fill="var(--ink-2)">3,000</text>
+      <text x="8" y="22" font-size="11" fill="var(--ink-2)">rpm</text>
+      <polyline fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" points="96,141 186,126 276,110 366,91 456,73 546,57 636,43 699,32"/>
+      <circle cx="699" cy="32" r="4" fill="var(--accent)"/>
+      <text x="691" y="24" text-anchor="end" font-size="11" fill="var(--ink)">7,413 rpm at 6.7 s</text>
+      <text x="96" y="166" text-anchor="middle" font-size="11" fill="var(--ink-2)">0 s</text>
+      <text x="276" y="166" text-anchor="middle" font-size="11" fill="var(--ink-2)">2 s</text>
+      <text x="456" y="166" text-anchor="middle" font-size="11" fill="var(--ink-2)">4 s</text>
+      <text x="636" y="166" text-anchor="middle" font-size="11" fill="var(--ink-2)">6 s</text>
+      <text x="90" y="187" text-anchor="end" font-size="11" fill="var(--ink-2)">today</text>
+      <line x1="96" y1="183" x2="726" y2="183" stroke="var(--line)" stroke-width="1"/>
+      <line x1="96" y1="176" x2="96" y2="190" stroke="var(--hot)" stroke-width="3"/>
+      <line x1="267" y1="176" x2="267" y2="190" stroke="var(--hot)" stroke-width="3"/>
+      <line x1="582" y1="176" x2="582" y2="190" stroke="var(--hot)" stroke-width="3"/>
+      <text x="726" y="177" text-anchor="end" font-size="11" fill="var(--hot)">3 timing samples, load up to 3 s stale</text>
+      <text x="90" y="213" text-anchor="end" font-size="11" fill="var(--ink-2)">power mode</text>
+      <line x1="96" y1="209" x2="726" y2="209" stroke="var(--ok)" stroke-width="12" stroke-dasharray="2 9.25"/>
+      <text x="726" y="225" text-anchor="end" font-size="11" fill="var(--ok)">≈8 Hz → ~54 samples</text>
+    </svg>
+    <figcaption>A real pull from session 596 (t = 387.8 s). Today's round-robin delivers three timing values across the whole pull, and the load value logged next to two of them (17 %) is a stale reading from before the pull. The proposed power-window list samples timing every 125 ms.</figcaption>
+  </figure>
+
+  <div class="tw"><table>
+    <thead><tr><th>Finding</th><th>Number</th><th>Why it matters</th></tr></thead>
+    <tbody>
+      <tr><td>Timing update rate</td><td class="num">26-entry list × 120 ms = 3.1 s cycle; measured <strong>0.20–0.25 Hz</strong> value changes</td><td>One new value per 3–5 s; a pull lasts 2–7 s → 2–3 samples per pull</td></tr>
+      <tr><td>Samples inside real pulls (sess 596: six pulls of 2.0–6.7 s, rpm to 7,413)</td><td><code>t=387.8 s, 6.7 s, 3338→4988 rpm: (0.0 s, 30°, load 17 %) (1.9 s, 58°, load 17 %) (5.4 s, 34°, load 100 %)</code></td><td>Row values are <strong>time-misaligned</strong>: rpm is oversampled, but timing and load in the same row can be 3 s old. "Load 17 %" at 4,463 rpm and ≥70 % throttle is a stale value, not a reading</td></tr>
+      <tr><td><code>pen_timing</code> firing</td><td class="num"><strong>24.5 %</strong> of rows in 596 (12.7 min, six pulls) · <strong>9.2 %</strong> in 594 (max throttle 35 %) · <strong>3.0 %</strong> in 592 (max throttle 63 %)</td><td>The penalty compares consecutive samples 3–5 s apart at different rpm/load. It fires during gentle driving; it is not measuring retard</td></tr>
+      <tr><td>Absolute 0x0E values</td><td class="num">41° BTDC warm idle · 73–88° light cruise · 34–62° WOT (36° at 3,500 rpm → 55–62° at 5,500–7,500)</td><td>Wild for a conventional engine, plausible for VVEL at low lift, <strong>unverified</strong> — check once against a Cipher/EcuTek/Consult "IGN TIMING" reading. Detection needs only deltas, so the scale doesn't block the design</td></tr>
+      <tr><td>Heat soak</td><td class="num">IAT 97–145 °F (median 111 °F in 595) · ambient PID 70–118 °F · ECT ≤ 201 °F</td><td>≈ −3 % to −7 % from density alone across that range</td></tr>
+      <tr><td>Open-loop share</td><td class="num"><code>fuel_sys_status = 4</code> in 13 % of rows</td><td>STFT/LTFT are blind at WOT — Fuel Trust cannot see fuel starvation while it happens</td></tr>
+      <tr><td>Throttle PID at WOT</td><td class="num">max 89 % at 7,563 rpm</td><td><code>0x11</code> is the plate, not the pedal; the pedal is not logged at all today</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="design">
+  <div class="eyebrow">Part 3</div>
+  <h2>The Heat Derate Monitor — what exactly, and how it works</h2>
+
+  <h3>3.1 Fast timing sampling in power windows</h3>
+  <ul>
+    <li>Add a second PID list, <code>OBD_PID_LIST_POWER[] = {0x0E, 0x0C, 0x0E, 0x11, 0x0E, 0x04, 0x0E, 0x0C}</code> at <code>OBD_PID_REQUEST_PERIOD_POWER_MS = 60</code>. Timing ≈ 8 Hz, rpm ≈ 4 Hz, throttle and load ≈ 2 Hz.</li>
+    <li>Enter power mode when <code>throttle ≥ 70 % &amp;&amp; rpm ≥ 3000</code> (or pedal ≥ 80 % once pedal exists); leave 1.5 s after the condition clears. Outside it the existing 26-PID list runs unchanged — temperatures don't move fast.</li>
+    <li>While in power mode, exempt the slow PIDs from the 5 s staleness timeout (or raise it to 10 s) so temperatures don't flicker to "---" on a long straight.</li>
+    <li>Each fast sample is stored with its own <code>millis()</code> and paired with the nearest rpm/load samples (the per-PID timestamps already exist in <code>g_obd_data</code>), so bins are built from aligned values, not from CSV rows.</li>
+    <li><strong>Where:</strong> the <code>processOBD()</code> scheduler (<code>g_obd_pid_index</code>, <code>OBD_PID_REQUEST_PERIOD_MS</code>) and <code>decodeOBD_Mode01Reply</code> case <code>0x0E</code>. Bus load stays ≤ 17 requests/s — inside what ELM-class loggers do.</li>
+  </ul>
+
+  <h3>3.2 A learned cool baseline — the thing <code>pen_timing</code> never had</h3>
+  <ul>
+    <li><code>g_tim_base[12]</code>: rpm bins of 500 from 2,000 to 8,000, WOT only (<code>throttle ≥ 70 % &amp;&amp; load ≥ 85 %</code>). Each bin keeps an EMA (α ≈ 0.1) and a sample count.</li>
+    <li>A sample updates the baseline only while the engine is <strong>cool</strong>: oil &lt; 230 °F, IAT &lt; 120 °F, ECT &lt; 205 °F. The first cool laps of the day become the reference. Persisted in <code>Preferences</code> namespace <code>timbase</code>, written once at session end, so it survives reboots and sharpens over track days. Long-press in the POWER popup resets it.</li>
+    <li><code>Δtiming = live − base[bin]</code>, valid once the bin holds ≥ 5 samples. Time-qualified alarm: Δ ≤ −3° held ≥ 1 s → amber; ≤ −6° → red.</li>
+    <li>Attribution from which temperature is elevated at that moment: <code>IAT</code> (&gt; 120 °F), <code>OIL</code> (&gt; 250 °F), <code>ECT</code> (&gt; 215 °F), else <code>KNOCK/FUEL?</code> — retard with no temperature excuse.</li>
+  </ul>
+
+  <h3>3.3 Four more detectors, one POWER state</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Detector</th><th>Uses</th><th>Logic</th><th>Catches</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Rev ceiling</strong></td><td>rpm at 4 Hz, throttle</td><td>In a power window, look for an rpm plateau: within ±75 rpm for ≥ 0.5 s while throttle ≥ 85 %. Plateau &lt; 7,000 → <code>REV CAP ≈6,0xx</code>; &lt; 5,000 → stage 2. A 7AT upshift is a sharp drop, not a plateau, so it doesn't false-trigger</td><td>Oil-temp protection stage 1/2</td></tr>
+      <tr><td><strong>Pedal-vs-throttle gap</strong></td><td>pedal (PID <code>0x49/0x4A</code> if supported, else CAN <code>0x180</code> byte F); throttle <code>0x11</code></td><td>Normalize throttle to its own WOT max (~89 %); learn the cool gap per rpm bin; gap grows &gt; 10 pts for ≥ 0.5 s outside a shift (rpm drop &gt; 500 in 0.3 s) → <code>THROTTLE</code></td><td>Any drive-by-wire torque management: protection, TCS, TCM torque-down</td></tr>
+      <tr><td><strong>Load deficit</strong></td><td>load <code>0x04</code> at WOT</td><td>Cool baseline per rpm bin; live ≤ baseline − 8 % for ≥ 0.5 s → <code>LIFT</code></td><td>VVEL lift restriction — airflow falls before the rev cap shows</td></tr>
+      <tr><td><strong>Air density</strong></td><td>IAT <code>0x0F</code>, baro <code>0x33</code> (BME280 humidity later)</td><td><code>cf = 1.18·(990/Pd)·√((T_C+273)/298) − 0.18</code> → shown as <code>AIR −4 %</code></td><td>Separates "hot air" from "ECU pulling"</td></tr>
+      <tr><td><strong>Fuel-cut flag</strong> (bonus)</td><td>rpm, throttle, lateral g</td><td>rpm drop &gt; 300 in 0.2 s at throttle ≥ 85 % and |lat g| &gt; 0.8 → <code>FUEL?</code>, latched 30 s with the g sign and fuel %</td><td>Saddle-tank starvation in right-handers (Part 4)</td></tr>
+    </tbody>
+  </table></div>
+  <p>The five feed one <strong>POWER state</strong> — <code>OK</code> / <code>AIR</code> / <code>TIMING</code> / <code>THROTTLE</code> / <code>LIFT</code> / <code>REV CAP</code> / <code>FUEL?</code> — worst active wins, with a reason string such as <code>TIMING −4° · IAT 138 °F</code>.</p>
+
+  <h3 id="ui">3.4 What the driver sees</h3>
+  <div class="dash" aria-label="Mock of the display banner and popup">
+    <div class="banner red"><span class="tag">PWR ▼</span><span>REV CAP 6,050 · OIL 281 °F</span></div>
+    <div class="popup"><b>POWER</b>              state <span class="amb">REV CAP</span>   since 14:32:08
+Δ timing   <span class="amb">-3.5°</span>  bin 5500-5999   55.0° now / 58.5° cool  (n=41)
+pedal/thr  <span class="amb">+14</span>    pedal 100 %  throttle 76 %  (cool gap 11)
+load       <span class="amb">-9 %</span>   vs cool baseline
+rev cap    <span class="amb">6,050</span>  seen 2× this session
+air        <span class="blu">-4.4 %</span> IAT 120 °F  baro 98 kPa
+attrib     <span class="amb">OIL</span>    oil 281  IAT 120  ECT 214
+ATF (TCM)  198 / 205 °F   TCC slip 40 rpm
+<span class="mag">pedal source: CAN 0x180</span>          long-press: reset baseline</div>
+    <div class="cap">Banner = the DEMO-banner pattern from v6.13, shown only when the state is not OK; amber for AIR/TIMING/THROTTLE/LIFT, red for REV CAP and FUEL?. Popup opens from the banner or the FUEL TRUST value tap (extended into a two-column FUEL / POWER view). Magenta marks a sensor-source note, never a value.</div>
+  </div>
+  <ul>
+    <li><strong>Event banner</strong> (same top-layer pattern as the DEMO banner): hidden when <code>OK</code>; colour is the message and the number is small. Persists until acknowledged by a tap; re-arms at a worse value instead of nagging — the MoTeC auto-increment pattern.</li>
+    <li><strong>POWER popup</strong> from the banner or by extending <code>showFuelTrustPopup</code>: Δtiming and its bin, samples in bin, pedal/throttle gap, load deficit, rev ceiling seen this session, air factor, oil/IAT/ECT at the last alarm, attribution, TCM ATF temps. Long-press resets the baseline.</li>
+    <li><strong>Sensor-fault colour</strong> (magenta, distinct from red) when the pedal or timing source is invalid, so "no data" never reads as "no problem".</li>
+    <li>Optional: the FUEL TRUST chart plots Δtiming during power windows. Not required.</li>
+  </ul>
+
+  <h3>3.5 Logging and post-session</h3>
+  <dl class="kv">
+    <dt>CSV</dt><dd><strong>Append</strong> columns (66 → ~78; existing positions unchanged, same convention as v6.9/v6.10): <code>tim_base_deg, tim_delta_deg, tim_bin_n, pedal_pct, pedal_valid, thr_gap_pct, load_delta_pct, rev_cap_rpm, air_cf, pwr_state, pwr_reason, atf1_f, atf2_f, tcc_slip_rpm</code></dd>
+    <dt>Serial</dt><dd><code>[PWR]</code> once per second; <code>[SESSION]</code> gains <code>min_dTiming_WOT</code>, <code>rev_cap</code>, <code>max_IAT</code>, <code>min_air_cf</code></dd>
+    <dt>Report</dt><dd>Per lap (per session until GPS exists): min and mean Δtiming at WOT, IAT/ECT/oil/ATF max, rev cap, air cf, POWER states seen, min oil pressure &gt; 2k rpm, max lat/long g, and one verdict string — <code>HEAT: Δtiming −4.1° (IAT 128 °F) · AIR −4 %</code>. The cloud dashboard consumes it.</dd>
+  </dl>
+
+  <h3>3.6 The Fuel Trust fix — same class of bug</h3>
+  <p><code>computeFuelTrust()</code>'s timing term compares each 0x0E sample with the previous one, 3–5 s and thousands of rpm apart. Replace it with the baseline Δ from 3.2, counted only inside power windows, keeping the 1.5 pts/event, max 30 weighting. This is not a softening — the current term is noise — but it will change the score, so it's flagged as a decision rather than assumed.</p>
+
+  <h3 id="disc">3.7 One-time discovery modes — on-car, no guessing</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Mode</th><th>Request</th><th>Gives</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Supported-PID bitmaps</strong> at boot</td><td><code>01 00 / 20 / 40 / 60 / 80</code> → <code>[OBD-DISC]</code> line</td><td>Which of <code>0x45</code>, <code>0x47–0x4C</code> (pedal D/E, commanded throttle), <code>0x5A</code>, <code>0x61–0x63</code> (demand/actual torque), <code>0x66</code> (MAF B1/B2) the 2018 ECU supports</td><td>Ends the guesswork that cost <code>0x10/0x5C/0x2F</code></td></tr>
+      <tr><td><strong>TCM ATF + TCC slip</strong></td><td><code>7E1 21 20</code> (ISO-TP multi-frame; reuse the Mode 03 reassembler; flow control to <code>0x7E1</code>)</td><td>ATF temp 1, ATF temp 2 (adjacent bytes, °C ≈ raw − 55 per ScanGauge's math), TCC slip 16-bit</td><td>Validate against the PRTXI trans sensor already logged — a built-in cross-check</td></tr>
+      <tr><td><strong>Mode 22 DID sweep</strong> (menu toggle, idle only)</td><td><code>7E0 22 1100…12FF</code> at 60 ms (~30 s); optionally after <code>10 C0</code> with <code>3E 01</code> keep-alive every 2.5 s</td><td>A 370Z owner found 224 responding DIDs this way. Candidates from the Nissan table (formulas unverified): <code>0x1107–0x110A / 0x112D / 0x113C</code> ignition timing, <code>0x120D/0x120E</code> accel sensors, <code>0x120F/0x1210</code> throttle sensors, <code>0x1204/0x1205</code> MAF B1/B2 (replaces unsupported PID 0x10), <code>0x1123–0x1126</code> A/F alpha</td><td>Decode by correlating with the standard PIDs</td></tr>
+      <tr><td><strong>Passive CAN sniff</strong></td><td>Filter is already <code>ACCEPT_ALL</code>; the RX drain drops non-<code>0x7E8–0x7EF</code> frames — add a dispatch</td><td><code>0x180</code>: rpm (A,B) + <strong>pedal % = F/255</strong> at 100 Hz · <code>0x551</code>: ECT ≈ A − 40 · <code>0x354</code>: TCS off / brake · <code>0x002</code>: steering angle · <code>0x284/0x285</code>: wheel speeds (scale unverified) · <code>0x1F9</code>: rpm</td><td>Zero added bus load; raise <code>rx_queue_len</code> 32 → 64 and drain every loop</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="validate">3.8 On-car validation plan</h3>
+  <ol>
+    <li>Flash v6.14 → confirm the Mode-22 oil-temp offset against the factory gauge. You finally have oil temp on track.</li>
+    <li>Boot → read the bitmap line; add whichever of <code>0x49/0x4A/0x4C/0x61–0x63</code> answer.</li>
+    <li>At idle → TCM <code>21 20</code> dump; match ATF1/ATF2 to the PRTXI trans reading.</li>
+    <li>First drive → confirm the <code>0x180</code> pedal and rpm scale against <code>0x0C</code> and <code>0x11</code>.</li>
+    <li>Track day: the morning session builds the baseline; the afternoon shows Δ. Compare the verdict strings with how the car felt.</li>
+  </ol>
+
+  <h3>3.9 Risks</h3>
+  <ul>
+    <li><strong>CPU/RAM:</strong> negligible — a second PID list, ~1 KB of bins, one popup. Passive sniffing raises RX interrupt load; keep the drain tight.</li>
+    <li><strong>Bus etiquette:</strong> ≤ 17 requests/s, watch TWAI alerts, stop on bus-off rather than auto-recover in a loop (FSM: CAN-loss DTC → 3,500 rpm limp).</li>
+    <li><strong>NVS wear:</strong> write the baseline at most once per session.</li>
+    <li><strong>The 0x0E absolute scale:</strong> unverified but irrelevant to Δ; verify once for the popup's absolute number.</li>
+  </ul>
+</section>
+
+<section id="more">
+  <div class="eyebrow">Part 4</div>
+  <h2>More transparency on track — prioritized</h2>
+  <p class="note">Box constraints: three spare Waveshare channels AI6–AI8 (0–10 V / 0–20 mA / 4–20 mA), spare I2C ports on the hub, one free UART, TWAI on the OBD CAN, 10 Hz SD logging, cloud upload. Cooling hardware is already complete and deliberately not on this list.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Pri</th><th>Add</th><th>What it reveals</th><th>Hardware</th><th>Plugs in</th><th>Cost / effort</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pri one">1</span></td><td><strong>Heat Derate Monitor</strong> (Part 3)</td><td>ECU/thermal power loss, attributed</td><td>none</td><td><code>processOBD</code>, new popup, banner, CSV columns</td><td>$0 / medium</td></tr>
+      <tr><td><span class="pri one">1</span></td><td><strong>Fuel pressure</strong></td><td>Right-hander starvation (saddle tank, pump on the passenger side; Z1 says it can occur up to ¾ tank in long sweepers), pump fade with heat — and it <em>is</em> the physical fuel-pressure test for the −12 % rich trims. STFT can't see it: open loop at WOT</td><td>WIKA A-10 0–100 psi <strong>4–20 mA</strong> (industrial, ~$150) → AI6 Mode 3, same PRTXI wiring pattern; or AEM 30-2130-100 0.5–4.5 V → 0–10 V mode. Tap at the OEM rail damper (aftermarket kits mount there; nominal 51 psi, returnless)</td><td>New reading in the FUEL popup; <code>FUEL?</code> latch becomes a real alarm (<code>&lt; 40 psi ≥ 0.3 s at rpm &gt; 3k</code>); CSV</td><td>~$150–200 / low</td></tr>
+      <tr><td><span class="pri one">1</span></td><td><strong>TCM ATF temps + TCC slip</strong></td><td>The transmission's <em>own</em> protection input; converter slip = heat generation and lock-up behaviour on track</td><td>none (Mode 21)</td><td>TRAN TEMP popup "TCM says…", CSV</td><td>$0 / low</td></tr>
+      <tr><td><span class="pri one">1</span></td><td><strong>Pedal position</strong></td><td>Required for the gap detector; 100 Hz</td><td>none (CAN <code>0x180</code> or PID <code>0x49</code>)</td><td><code>g_obd_data.pedal</code></td><td>$0 / low</td></tr>
+      <tr><td><span class="pri">2</span></td><td><strong>GPS 10–25 Hz</strong></td><td>Lap and sector times, track map, and the actual "how much slower" number: per-lap acceleration in a reference straight → <code>P_wheel ≈ m·a·v + ½ρ·CdA·v³</code> (Race Technology / AiM math), density-normalized. Turns "feels slow" into "lap 8: −0.6 s on the straight, Δtiming −3°, IAT 131 °F"</td><td>u-blox NEO-M9N (25 Hz, 0.05 m/s velocity, ~$30–70) on the free UART (UBX binary), or a RaceBox Mini</td><td>New <code>[LAP]</code> line, per-lap report CSV, cloud dashboard track map</td><td>~$50 / medium</td></tr>
+      <tr><td><span class="pri">2</span></td><td><strong>Passive CAN: wheel speeds, steering, brake, TCS</strong></td><td>Slip and lock-up flags, an understeer channel (steering vs lat-g vs speed), better speed than PID <code>0x0D</code></td><td>none</td><td>RX dispatch, CSV</td><td>$0 / low–medium (verify scaling)</td></tr>
+      <tr><td><span class="pri">2</span></td><td><strong>Wideband O2</strong></td><td>Real WOT AFR on a catless untuned car; lean spikes = starvation; enrichment vs heat</td><td>AEM 30-0300 X-series 0–5 V (~$230) → AI7 in 0–10 V mode; budget: 14Point7 Spartan 3 Lite (~$85–135). Bung in the test pipe</td><td>FUEL popup, CSV, lean-spike latch</td><td>~$100–250 / low–medium</td></tr>
+      <tr><td><span class="pri">3</span></td><td><strong>BME280</strong></td><td>Humidity → proper density altitude; "thin air today" vs "engine bay cooking"</td><td>$15, I2C hub, mounted at the cowl</td><td><code>air_cf</code> uses dry-air pressure</td><td>$15 / low</td></tr>
+      <tr><td><span class="pri">3</span></td><td><strong>Brake pressure</strong></td><td>Braking technique (threshold, trail); brake vs scrub in the g trace</td><td>Any 0–2,000 psi 0–5 V transducer + tee at the master cylinder (~$150) → AI8</td><td>CSV, lap report</td><td>~$150 / medium</td></tr>
+      <tr><td><span class="pri">3</span></td><td><strong>Coolant pressure</strong></td><td>Cap, leak and head-gasket early warning</td><td>150 psi 0.5–4.5 V; needs a channel</td><td>CSV alarm</td><td>~$50 / medium</td></tr>
+      <tr><td>—</td><td>Tire IR arrays · rotor IR · EGT</td><td>Camber balance · pad window · per-bank mixture</td><td>Per-corner MCUs; rotor IR needs ≥ 1,000 °C sensors (an MLX90614 tops out at 382 °C); EGT is low value on a stock NA ECU</td><td>—</td><td>skip for now</td></tr>
+      <tr><td>—</td><td>Knock counts directly</td><td>The direct heat-power signal</td><td>Only via an EcuTek/UpRev tune (RaceROM also adds oil-temp, fuel-pressure and knock failsafes and a knock-warning CEL flash)</td><td>not a box channel</td><td>a tuning decision</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout cool"><p><strong>Presentation rules worth borrowing from AiM / MoTeC / RaceCapture practice:</strong> every alarm gets a time qualifier and an rpm or speed gate (already done for oil pressure in v6.7); tiered colours, amber then red; magenta for sensor faults; single-tap acknowledge with auto-increment re-arm; colour readable at a glance, number secondary.</p></div>
+</section>
+
+<section id="sources" class="srcs">
+  <div class="eyebrow">Sources</div>
+  <h2>Where each claim comes from</h2>
+  <h4>Nissan / FSM</h4>
+  <ul>
+    <li><a href="https://owners.nissanusa.com/content/techpub/ManualsAndGuides/ZCoupe/2009/2009-ZCoupe-owner-manual.pdf">2009 370Z owner's manual — engine protection mode, 280 °F</a></li>
+    <li><a href="https://owners.nissanusa.com/content/techpub/ManualsAndGuides/ZCoupe/2018/2018-ZCoupe-quick-reference-guide.pdf">2018 370Z Quick Reference Guide</a> · <a href="https://owners.nissanusa.com/content/techpub/ManualsAndGuides/ZCoupe/2019/2019-ZCoupe-quick-reference-guide.pdf">2019 QRG</a></li>
+    <li>FSM "torque cut control at high engine oil temperature" passage, quoted at <a href="https://bobistheoilguy.com/forums/threads/new-370z-overheating-with-mild-track-time.101331/">BITOG</a> and <a href="https://my350z.com/forum/2009-370z/414330-370z-has-overheating-issues-on-road-courses.html">my350z</a></li>
+    <li>VQ37VHR FSM (2008 G37, same ECM family): <a href="https://zinref.ru/avtomobili/Infiniti/040_010_00_Infiniti_G37_Cupe_service_manual_2008_ENGLISH/592.htm">fail-safe chart</a> · <a href="https://zinref.ru/avtomobili/Infiniti/040_010_00_Infiniti_G37_Cupe_service_manual_2008_ENGLISH/466.htm">ignition corrections / knock</a> · <a href="https://zinref.ru/avtomobili/Infiniti/040_010_00_Infiniti_G37_Cupe_service_manual_2008_ENGLISH/500.htm">IAT sensor in the MAF</a> · <a href="https://zinref.ru/avtomobili/Infiniti/040_010_00_Infiniti_G37_Cupe_service_manual_2008_ENGLISH/463.htm">fuel enrichment / fuel cut</a> · <a href="https://zinref.ru/avtomobili/Infiniti/040_010_00_Infiniti_G37_Cupe_service_manual_2008_ENGLISH/550.htm">P1217</a></li>
+    <li>2012 370Z FSM: <a href="https://www.nicoclub.com/service-manual?fsm_download=370Z%2FCoupe%2F2012%2FLAN.pdf">LAN (CAN signal chart)</a> · <a href="https://www.nicoclub.com/service-manual?fsm_download=370Z%2FCoupe%2F2012%2FTM.pdf">TM (Fail-Safe TM-285, Protection Control TM-287)</a></li>
+  </ul>
+  <h4>Tuner documentation</h4>
+  <ul>
+    <li><a href="https://uprev.com/wp-content/uploads/2023/05/UpRev-Nissan-Tuning-Guide-Rev2.pdf">UpRev Nissan Tuning Guide — temperature corrections, Knock Strength, High Det, torque tables</a></li>
+    <li><a href="https://ecutek.atlassian.net/wiki/spaces/SUPPORT/pages/7143430/370Z+ProECU+Tuning+Guide">EcuTek 370Z ProECU Tuning Guide</a> · <a href="https://ecutek.atlassian.net/wiki/spaces/SUPPORT/pages/1653997569/370Z+Knock+Control,+dynamic+advance+and+Octane+Judgement">knock control / octane judgement</a> · <a href="https://ecutek.atlassian.net/wiki/spaces/SUPPORT/pages/6881638/370Z+ProECU+RaceROM+Supplement">RaceROM supplement (failsafes)</a> · <a href="https://ecutek.atlassian.net/wiki/spaces/SUPPORT/pages/7635028/Nissan+370Z+FAQ">370Z FAQ</a></li>
+    <li><a href="https://forum.hptuners.com/showthread.php?91041-370Z-turbo-tuning&p=647261">HP Tuners forum — knock channels as ROM memory parameters</a></li>
+  </ul>
+  <h4>Owner reports on the oil-temp protection</h4>
+  <ul>
+    <li><a href="https://motoiq.com/nissan-370z-bad-news-buzz-high-engine-diff-oil-temps-the-300-oil-change-engine-clatter-and-more-hype-or-reality/">MotoIQ</a> · <a href="https://forums.edmunds.com/discussion/11381/nissan/370z/nissan-370z">Edmunds 2009 thread</a> · <a href="https://my350z.com/forum/2009-370z/492809-dealer-says-no-problem-with-high-running-temperatures-370z.html">my350z "dealer says no problem…"</a></li>
+    <li><a href="https://my350z.com/forum/engine-and-drivetrain/472200-automatic-transmission-fluid-temperature.html">my350z — ATF temperature / limp</a> · <a href="https://my350z.com/forum/autocross-road/565115-350z-heat-soak-causes.html">heat soak</a> · <a href="https://my350z.com/forum/engine-and-drivetrain/440115-air-intake-temperature.html">IAT numbers</a></li>
+  </ul>
+  <h4>OBD / CAN</h4>
+  <ul>
+    <li><a href="https://en.wikipedia.org/wiki/OBD-II_PIDs">OBD-II PIDs — formulas, support bitmaps</a></li>
+    <li><a href="https://github.com/Knio/carhack/blob/master/Cars/Nissan.markdown">2010 370Z CAN reverse engineering — 0x180 rpm + pedal, 0x551, 0x354, 0x002, 0x284/0x285</a></li>
+    <li><a href="https://www.aim-sportline.com/download/ecu/stock/nissan/Nissan370Z_104_eng.pdf">AiM Nissan 370Z OEM protocol channel list</a> · <a href="https://www.racelogic.co.uk/_downloads/vbox/Vehicles/Other/Docs/Nissan-370Z.pdf">Racelogic VBOX 370Z CAN database</a></li>
+    <li><a href="https://projectbytes.wordpress.com/2014/06/29/nissan-370z-custom-pids/">ProjectBytes — 370Z custom PIDs (224 DIDs, session C0)</a> · <a href="https://torque-bhp.com/community/main-forum/nissan-titan-support-thread/">Nissan Mode 22 DID table (Torque forum; formulas unverified)</a></li>
+    <li>ScanGauge 370Z X-Gauges: <a href="https://www.scangauge.com/xgauge/transmission-fluid-temperature-1-f-370z/">ATF 1</a> · <a href="https://www.scangauge.com/xgauge/transmission-fluid-temperature-2-f-nissan-370z/">ATF 2</a> · <a href="https://www.scangauge.com/xgauge/torque-converter-clutch-slip-speed-rpm-nissan-370z/">TCC slip</a></li>
+    <li><a href="https://github.com/rampage128/niscan">niscan (370Z Arduino CAN)</a> · <a href="https://github.com/icecube45/Dash_InfinitiG37/blob/master/InfinitiG37.dbc">G37 DBC</a></li>
+  </ul>
+  <h4>Methods and sensors</h4>
+  <ul>
+    <li><a href="https://www.ajdesigner.com/dyno-correction-factor/">SAE J1349 correction factor</a> · <a href="https://www.race-technology.com/wiki/index.php/AnalysisTechnical/MeasuringPowerAndTorque">Race Technology — power from data</a> · <a href="https://www.aim-sportline.com/download/software/doc/Math_Channels_101_eng.pdf">AiM Math Channels 101</a></li>
+    <li><a href="https://www.tarmacsportz.co.uk/z1-motorsports-nissan-350z-03-09-370z-09-20-fuel-anti-starvation-kit.html">Z1 anti-starvation kit text (reseller copy)</a> · <a href="https://www.radiumauto.com/products/fuel-hanger-surge-tank-nissan-370z">Radium 370Z fuel hanger</a> · starvation threads: <a href="https://my350z.com/forum/autocross-road/544501-power-fuel-cut-off-on-track.html">1</a> · <a href="https://my350z.com/forum/autocross-road/590134-fuel-starvation-issues-2.html">2</a> · <a href="https://my350z.com/forum/autocross-road/556381-does-anybody-experience-fuel-starvation-in-right-handers.html">3</a></li>
+    <li><a href="https://my350z.com/forum/maintenance-and-repair/585387-fuel-pressure-test-point.html">Fuel pressure test point — 51 psi, returnless</a> · <a href="https://btwtuning.com/products/370z-g37-q50-3-7-fuel-pressure-monitoring-kit">BTW Tuning damper-mount kit</a> · <a href="https://www.wika.com/en-us/a_10.WIKA">WIKA A-10</a> · <a href="https://www.aemelectronics.com/products/sensors/pressure_sensors/parts/30-2130-100">AEM 30-2130-100</a></li>
+    <li><a href="https://documents.aemelectronics.com/30-0300_for_x-series_fae_uego_gauge_kit.pdf">AEM 30-0300 wideband sheet</a> · <a href="https://www.14point7.com/products/spartan-3-lite-v2">14Point7 Spartan 3 Lite</a></li>
+    <li><a href="https://content.u-blox.com/sites/default/files/NEO-M9N-00B_DataSheet_UBX-19014285.pdf">u-blox NEO-M9N datasheet</a> · <a href="https://racechrono.com/article/faq/which-external-gps-should-i-buy">RaceChrono GPS FAQ</a> · <a href="https://www.adafruit.com/product/2652">BME280</a></li>
+    <li><a href="https://grassrootsmotorsports.com/forum/grm/brake-pressure-sensor-for-data-acquisition/70215/page1/">Brake pressure sensors</a> · <a href="https://www.autosportlabs.com/how-to-add-a-coolant-pressure-sensor-and-avoid-a-rookie-mistake/">Coolant pressure</a> · <a href="https://www.hpacademy.com/forum/general-tuning-discussion/show/desired-rotor-temp/">rotor temps vs IR sensor limits</a> · <a href="https://github.com/MagnusThome/RejsaRubberTrac">DIY tire IR</a></li>
+  </ul>
+  <h4>Alarm and presentation practice</h4>
+  <ul>
+    <li><a href="https://www.motec.com.au/hessian/uploads/C125_User_Manual_1f4a1c6bf4.pdf">MoTeC C125 manual — time-qualified alarms, auto-increment</a> · <a href="https://manual.rush.sr/at-the-track/aim-dashes-and-smartycams/dash-alarms">Rush SR AiM dash alarms — tiered, magenta = sensor fault</a> · <a href="https://rennlist.com/forums/data-acquisition-and-analysis-for-racing-and-de/909669-this-mxs-alarm-pop-up-feature-want.html">Rennlist AiM MXS alarm discussion</a></li>
+  </ul>
+  <p class="note">Unreachable during research and therefore not relied on: the370z.com, myg37.com, z1motorsports.com product text, and the bodies of the 2009+ 370Z EC/TM PDFs. The same brief lives in the repo as <code>heat_derate_research.md</code>.</p>
+</section>
+
+</article>
+</div>
+</div>

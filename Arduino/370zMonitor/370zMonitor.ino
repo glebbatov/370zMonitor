@@ -1,9 +1,51 @@
 //-----------------------------------------------------------------
 
 /*
- * 370zMonitor v6.14
+ * 370zMonitor v6.15
  * Supports Demo Mode (animated values) and Live Mode (sensors data/OBD data)
  * ESP32-S3 with PSRAM, LVGL, GT911 Touch
+ *
+ * v6.15 Changes (HEAT DERATE MONITOR — "is the ECU pulling power because the car is hot?"):
+ *   Background: the 7/24 logs showed PID 0x0E (timing advance) refreshing only every 3-5 s
+ *   (26-PID round-robin x 120 ms), i.e. 2-3 samples per WOT pull, and the Fuel Trust
+ *   "timing pull" term comparing samples 5 s / thousands of rpm apart (it fired in 24.5% of
+ *   rows on a street drive). See heat_derate_research.md in the repo root for the research.
+ * - POWER WINDOWS. While throttle >= 70% and rpm >= 3000 (or pedal pinned) the OBD scheduler
+ *   switches to a short burst list (OBD_PID_LIST_POWER, 60 ms) so timing refreshes ~8 Hz and
+ *   rpm ~3 Hz; the full 26-PID list resumes 1.5 s after the throttle lifts. Slow PIDs get a
+ *   longer staleness timeout during a window so temps don't blink "---" on a long straight.
+ * - LEARNED COOL BASELINE. Timing/load/pedal-gap at WOT are averaged per 500-rpm bin
+ *   (2000-7999) while the engine is warm-but-cool (ECT 160-205F, IAT < 120F, oil < 230F when
+ *   known), persisted in NVS namespace "timbase". Every later WOT sample is compared to its
+ *   bin: tim_delta = live - cool. rpm is extrapolated to the timing sample time so the bin is
+ *   right even in low gears. Reset: long-press RESET BASELINE in the popup, or
+ *   PWR_BASELINE_RESET=1 in /wifi.cfg (one boot).
+ * - DERATE DETECTORS -> one POWER state (worst wins): REV CAP (rpm plateau < 7000 at WOT while
+ *   oil is hot, or a jagged limiter-style plateau), FUEL? (rpm stumble + recovery at WOT in a
+ *   corner), TIMING (delta <= -3 amber / -6 red, held 1 s), THROTTLE (pedal-vs-plate gap grows
+ *   vs cool), LIFT (calculated load below the cool baseline = VVEL lift cut), AIR (SAE J1349
+ *   density loss from IAT + baro; banner only at >= 6%). Each is time-qualified and latched.
+ * - UI. A top banner (same top-layer pattern as the DEMO banner; amber/red; hidden when OK)
+ *   shows the state + reason, e.g. "PWR  REV CAP 6050 - OIL 281F". Tapping it acknowledges
+ *   (hides until a worse state) and opens the popup. The FUEL TRUST popup gained a POWER
+ *   block (delta, bin, gap, load, rev cap, air, attribution, TCM ATF) + a long-press
+ *   RESET BASELINE button.
+ * - PEDAL POSITION. PID 0x49 is polled; if the ECU doesn't answer it, the pedal comes from the
+ *   passively-heard CAN frame 0x180 byte F (= F/255*100, per the Z34 reverse-engineering).
+ *   pedal_src in the CSV says which (0 none, 1 PID, 2 CAN).
+ * - TCM ATF TEMPS + TCC SLIP via Mode 21 LID 0x20 to the TCM (7E1 -> 7E9, ISO-TP). Byte
+ *   offsets are PROVISIONAL (TCM_ATF1_IDX etc.) — the raw record is dumped on a [TCM] line so
+ *   the offsets can be confirmed against the PRTXI trans temp on the first drive.
+ * - DISCOVERY (one-time, logged): supported-PID bitmaps 0x00/0x20/0x40/0x60/0x80 at boot
+ *   ([OBD-DISC]); a passive CAN ID census 30 s after boot ([CAN-DISC]); optional Nissan
+ *   Mode 22 DID sweep 0x1100-0x12FF at idle when OBD_DID_SWEEP=1 in /wifi.cfg ([DID]).
+ * - FUEL TRUST timing term now uses the baseline delta (FUEL_TRUST_TIMING_MODE 1; 0 = legacy
+ *   consecutive-sample counter). Same max weight (30 pts). This changes the score on purpose.
+ * - CSV: 14 columns appended (66 -> 80): tim_base_deg, tim_delta_deg, tim_bin_n, pedal_pct,
+ *   pedal_src, thr_gap_pct, load_delta_pct, rev_cap_rpm, air_loss_pct, pwr_state, pwr_sev,
+ *   atf1_f, atf2_f, tcc_slip_rpm. New [PWR] serial line every 2 s; [SESSION] line extended.
+ * - Bus etiquette unchanged in spirit: <= 17 requests/s even in a power window; TWAI RX queue
+ *   32 -> 64. HOST-VERIFIED only, NOT flash-tested. Validation steps are in CLAUDE.md.
  *
  * v6.14 Changes (OBD oil temp via Mode 22 + watchdog/power-loss hardening):
  * - OBD OIL TEMP (Nissan Mode 22). The generic PID 0x5C is unsupported on the VQ37, but the 370Z
@@ -564,8 +606,12 @@ __attribute__((constructor)) void configurePSRAM() {
 #define ENABLE_MODBUS_SENSORS           1       // Enable Modbus RS485 sensor reading (8-Ch Analog Module)
 #define ENABLE_OBD_CAN                  1       // Enable OBD-II via CAN bus (TWAI)
 #ifndef FW_VERSION
-#define FW_VERSION                      "v6.14" // single source of truth for the serial banner + .log/.csv stamps
+#define FW_VERSION                      "v6.15" // single source of truth for the serial banner + .log/.csv stamps
 #endif
+// v6.15: Fuel Trust timing term. 1 = baseline delta from the Heat Derate Monitor (timing at WOT
+// vs the learned cool map, same rpm bin); 0 = legacy consecutive-sample "pull" counter, which
+// compared samples 3-5 s and thousands of rpm apart and fired during gentle driving.
+#define FUEL_TRUST_TIMING_MODE          1
 #define UPDATE_INTERVAL_MS              25      // default 250ms
 
 // USB MSC Configuration
@@ -778,6 +824,22 @@ struct VehicleData {
     bool  mil_on;              // MIL (check-engine) lamp commanded on (PID 0x01)
     int   dtc_count;           // stored DTC count (PID 0x01; -1 = unknown)
     bool  dtc_valid;           // PID 0x01 answered
+
+    // v6.15 Heat Derate Monitor ("POWER") — logged to CSV (14 appended columns)
+    float tim_base_deg;        // cool-baseline timing for the current rpm bin (0 = no baseline yet)
+    float tim_delta_deg;       // last WOT timing sample minus baseline (0 = none)
+    int   tim_bin_n;           // samples in that baseline bin
+    int   pedal_pct;           // accelerator pedal [%] (PID 0x49 or CAN 0x180)
+    int   pedal_src;           // 0 none, 1 = PID 0x49, 2 = CAN 0x180 byte F
+    int   thr_gap_pct;         // pedal - throttle plate at WOT, minus the cool gap (0 = n/a)
+    int   load_delta_pct;      // calculated load minus cool baseline at WOT (0 = n/a)
+    int   rev_cap_rpm;         // rpm plateau flagged as a rev cap this session (0 = none)
+    float air_loss_pct;        // SAE J1349 density loss vs 77F/990mb from IAT + baro [%]
+    int   pwr_state;           // 0 OK,1 AIR,2 LIFT,3 THROTTLE,4 TIMING,5 FUEL,6 REVCAP
+    int   pwr_sev;             // 0 ok, 1 amber, 2 red
+    int   atf1_f, atf2_f;      // TCM ATF temps [F] via Mode 21 (provisional decode)
+    bool  atf_valid;
+    int   tcc_slip_rpm;        // torque-converter slip [rpm] (provisional decode)
 
     // Flag to track if ANY valid data has ever been received
     // Used to determine if UI should show "---" or actual values
@@ -3038,6 +3100,27 @@ void updateSensorData() {
 #define OBD_PHYS_ECU_REQ_ID    0x7E0    // v6.14: physical request to ECU #1 (used for Mode 22)
 #define OBD_DID_OIL_TEMP       0x111F   // v6.14: Nissan enhanced oil-temp DID (Mode 0x22); °C = A - 50
 
+// v6.15: transmission control module (RE7R01A 7AT) — Mode 21 (ReadDataByLocalIdentifier)
+// LID 0x20 returns a multi-frame record that ScanGauge's 370Z X-Gauges decode as two ATF
+// temperatures (°C = raw - 55) and the torque-converter slip (16-bit rpm). The byte offsets
+// inside the record are PROVISIONAL — the whole record is dumped on a [TCM] line so they can
+// be confirmed against the PRTXI trans-temp sensor. Indices count from the 0x61 service byte.
+#define OBD_PHYS_TCM_REQ_ID    0x7E1
+#define OBD_TCM_RESP_ID        0x7E9
+#define TCM_LID_TRANS_DATA     0x20
+#define TCM_ATF1_IDX           4        // provisional: record byte holding ATF temp 1 (raw - 55 = °C)
+#define TCM_ATF2_IDX           5        // provisional: ATF temp 2
+#define TCM_TCC_IDX            7        // provisional: 16-bit big-endian torque-converter slip [rpm]
+#define TCM_ATF_OFFSET_C       55       // °C = raw - 55 (from the X-Gauge math: F = raw*9/5 - 67)
+#define TCM_POLL_INTERVAL_MS   1000
+
+// v6.15: passively-heard Z34 broadcast frames (no request needed; from the 2010 370Z
+// reverse-engineering, verify on this 2018 car via the [CAN180] log line)
+#define CAN_ID_ENGINE_180      0x180    // bytes A,B = rpm (scale unverified), byte F = pedal (F/255*100)
+#define CAN_ID_ECT_551         0x551    // byte A ≈ ECT + 40 (°C)
+#define CAN_ID_VDC_354         0x354    // byte E: TCS (0 on / 64 off), byte G: brake (4 off / 20 pressed)
+#define CAN_PEDAL_STALE_MS     500      // pedal from 0x180 is 100 Hz; older than this = not heard
+
 //-----------------------------------------------------------------------------
 // OBD PID POLLING CONFIGURATION
 //-----------------------------------------------------------------------------
@@ -3080,8 +3163,25 @@ static const uint8_t OBD_PID_LIST[] = {
     0x5C,  // Engine oil temperature: A - 40 [°C]  (Nissan support varies — free oil-temp source if present)
     0x46,  // Ambient air temp: A - 40 [°C]
     0x33,  // Barometric pressure (absolute): A [kPa]
+    0x49,  // v6.15: Accelerator pedal position D: A*100/255 [%] (skipped if the bitmap says unsupported)
 };
 #define OBD_NUM_PIDS (sizeof(OBD_PID_LIST) / sizeof(OBD_PID_LIST[0]))
+
+// v6.15: POWER-WINDOW burst list. While the driver is hard on the throttle (see
+// pwrUpdateWindow()) the scheduler polls THIS list at OBD_PID_REQUEST_PERIOD_POWER_MS instead
+// of the full list, so timing advance refreshes ~8 Hz, rpm ~3 Hz, throttle/load/pedal ~1.7 Hz.
+// That is what makes a 2-7 s pull measurable (the full list gave 2-3 timing samples per pull).
+// Temperatures don't move in 5 s, so they simply wait for the window to end. Total request
+// rate stays <= 17/s (still well below what ELM-class loggers put on the bus).
+static const uint8_t OBD_PID_LIST_POWER[] = {
+    0x0E, 0x0C, 0x0E, 0x11, 0x0E, 0x04, 0x0E, 0x0C, 0x0E, 0x49,
+};
+#define OBD_NUM_PIDS_POWER (sizeof(OBD_PID_LIST_POWER) / sizeof(OBD_PID_LIST_POWER[0]))
+#define OBD_PID_REQUEST_PERIOD_POWER_MS  60     // one request per 60 ms inside a power window
+#define OBD_PID_STALE_THRESHOLD_POWER_MS 12000  // slow PIDs may legitimately go quiet for a whole straight
+#define PWR_WINDOW_THROTTLE_PCT          70     // plate (PID 0x11) >= this ...
+#define PWR_WINDOW_RPM_MIN               3000   // ... and rpm >= this opens a power window
+#define PWR_WINDOW_EXIT_MS               1500   // window closes this long after the condition clears
 
 //-----------------------------------------------------------------------------
 // OBD STATE VARIABLES
@@ -3138,7 +3238,173 @@ static struct {
     int      fuel_level_pct;    uint32_t fuel_level_ts;    bool fuel_level_valid;     // 0x2F (may be unsupported)
     int      baro_kpa;          uint32_t baro_ts;          bool baro_valid;           // 0x33
     int      fuel_sys_status;   uint32_t fuel_sys_ts;      bool fuel_sys_valid;       // 0x03 (raw status byte A)
+
+    // v6.15: accelerator pedal from PID 0x49 (D). If the ECU never answers it, the
+    // passively-heard CAN 0x180 byte F takes over (see g_can180 below).
+    int      pedal_pct;         uint32_t pedal_ts;         bool pedal_valid;          // 0x49
+    // v6.15: previous rpm sample, used to extrapolate rpm to a timing sample's timestamp
+    float    rpm_prev;          uint32_t rpm_prev_ts;
 } g_obd_data = {0};
+
+// ---------------------------------------------------------------------------
+// v6.15: power-window flag (drives the burst scheduler + relaxed staleness)
+// ---------------------------------------------------------------------------
+static bool     g_pwr_window = false;        // true while the driver is hard on the throttle
+static uint32_t g_pwr_window_cond_ms = 0;    // last time the open-condition was true
+static int      g_obd_pwr_index = 0;         // round-robin index into OBD_PID_LIST_POWER
+
+// ---------------------------------------------------------------------------
+// v6.15: supported-PID discovery (Mode 01 PIDs 0x00/0x20/0x40/0x60/0x80 bitmaps)
+// ---------------------------------------------------------------------------
+static uint32_t g_pid_bitmap[5]   = {0, 0, 0, 0, 0};  // bits for PIDs 0x01-0x20, 0x21-0x40, ...
+static bool     g_pid_bitmap_ok[5] = {false, false, false, false, false};
+static int      g_disc_next_block = 0;        // next bitmap block to request (0..4); 5 = done
+static uint32_t g_disc_last_req_ms = 0;
+static int      g_disc_retries = 0;
+static bool     g_pid49_supported = true;     // assume yes until the 0x40 bitmap says otherwise
+
+static inline bool obdPidSupported(uint8_t pid) {
+    if (pid == 0) return true;
+    int block = (pid - 1) / 32;               // 0x01-0x20 -> block 0, 0x21-0x40 -> 1, ...
+    if (block < 0 || block > 4 || !g_pid_bitmap_ok[block]) return true;  // unknown = assume yes
+    int bit = 31 - ((pid - 1) % 32);          // MSB of byte A = first PID of the block
+    return (g_pid_bitmap[block] >> bit) & 1;
+}
+
+// ---------------------------------------------------------------------------
+// v6.15: TCM Mode 21 (LID 0x20) ISO-TP reassembly + decoded ATF temps / TCC slip
+// ---------------------------------------------------------------------------
+#define TCM_ASM_BUF_LEN 64
+static uint8_t  g_tcm_asm_buf[TCM_ASM_BUF_LEN];
+static int      g_tcm_asm_len = 0, g_tcm_asm_got = 0;
+static bool     g_tcm_asm_active = false;
+static uint32_t g_tcm_asm_start_ms = 0;
+static uint32_t g_tcm_last_poll_ms = 0;
+static uint32_t g_tcm_last_dump_ms = 0;
+static int      g_tcm_atf1_c = 0, g_tcm_atf2_c = 0, g_tcm_tcc_slip = 0;
+static bool     g_tcm_valid = false;
+static uint32_t g_tcm_ts = 0;
+static uint32_t g_tcm_reply_count = 0;
+
+// ---------------------------------------------------------------------------
+// v6.15: passive CAN — frames the car broadcasts anyway (zero added bus load)
+// ---------------------------------------------------------------------------
+static struct {
+    uint8_t  pedal_raw;  uint16_t rpm_raw;  uint32_t ts;  uint32_t count;   // 0x180
+    uint8_t  ect_raw;    uint32_t ect_ts;                                   // 0x551 byte A
+    uint8_t  vdc_e, vdc_g; uint32_t vdc_ts;                                 // 0x354 bytes E,G
+} g_can180 = {0};
+#define CAN_CENSUS_SLOTS 40
+static struct { uint16_t id; uint32_t count; } g_can_census[CAN_CENSUS_SLOTS];
+static int      g_can_census_n = 0;
+static bool     g_can_census_printed = false;
+static uint32_t g_can_census_start_ms = 0;
+
+// ---------------------------------------------------------------------------
+// v6.15: optional Nissan Mode 22 DID sweep (OBD_DID_SWEEP=1 in /wifi.cfg). Walks
+// 0x1100-0x12FF at idle, one request per 60 ms, logging every DID that answers.
+// ---------------------------------------------------------------------------
+static bool     g_did_sweep_enabled = false;   // from /wifi.cfg
+static bool     g_did_sweep_done = false;
+static bool     g_did_sweep_running = false;
+static uint16_t g_did_sweep_next = 0x1100;
+static uint32_t g_did_sweep_last_ms = 0;
+static int      g_did_sweep_hits = 0;
+static bool     g_pwr_baseline_reset_req = false;  // PWR_BASELINE_RESET=1 in /wifi.cfg
+
+// ---------------------------------------------------------------------------
+// v6.15: HEAT DERATE MONITOR ("POWER") — state. Functions live after updateOBDData().
+// ---------------------------------------------------------------------------
+#define PWR_RPM_BIN_MIN      2000
+#define PWR_RPM_BIN_SIZE     500
+#define PWR_RPM_BINS         12         // 2000-2499 ... 7500-7999
+#define PWR_WOT_LOAD_PCT     85         // calculated load >= this (with throttle >= PWR_WINDOW_THROTTLE_PCT) = WOT sample
+#define PWR_COOL_ECT_MIN_F   160        // baseline learns only when warmed up ...
+#define PWR_COOL_ECT_MAX_F   205        // ... but not hot
+#define PWR_COOL_IAT_MAX_F   120
+#define PWR_COOL_OIL_MAX_F   230        // applied only when an oil temp is known
+#define PWR_BIN_MIN_N        5          // bin usable for deltas after this many cool samples
+#define PWR_EMA_ALPHA        0.10f
+#define PWR_ALIGN_RPM_MS     400        // rpm sample must be at most this old to place a timing sample
+#define PWR_ALIGN_LOAD_MS    800
+#define PWR_TIM_AMBER_DEG    -3.0f
+#define PWR_TIM_RED_DEG      -6.0f
+#define PWR_TIM_HOLD_MS      1000       // delta must stay past the threshold this long
+#define PWR_TIM_LATCH_MS     10000      // ... and the state stays up this long after the last bad sample
+#define PWR_GAP_PTS          10         // pedal-vs-throttle gap growth vs cool [points]
+#define PWR_GAP_HOLD_MS      500
+#define PWR_LOAD_DEFICIT_PCT 8          // load below cool baseline [%]
+#define PWR_LOAD_HOLD_MS     500
+#define PWR_REVCAP_BAND_RPM  150        // plateau = rpm stays within +/- this ...
+#define PWR_REVCAP_HOLD_MS   500        // ... for this long at >= 85% throttle
+#define PWR_REVCAP_MAX_RPM   7000       // plateaus above this are just the normal limiter
+#define PWR_REVCAP_OIL_F     250        // "oil is hot" co-condition for the plateau
+#define PWR_REVCAP_JAG_RPM   80         // or: limiter-style jaggedness inside the plateau
+#define PWR_REVCAP_LATCH_MS  30000
+#define PWR_FUEL_DROP_MIN    300        // rpm stumble at WOT: drop between MIN and MAX ...
+#define PWR_FUEL_DROP_MAX    1000       // ... (bigger = an upshift, not fuel)
+#define PWR_FUEL_RECOVER_MS  1000       // ... that recovers within this = FUEL?
+#define PWR_FUEL_LAT_G       0.8f
+#define PWR_FUEL_LATCH_MS    30000
+#define PWR_AIR_BANNER_PCT   6.0f       // AIR shows on the banner only past this loss
+#define PWR_LATCH_MS         10000      // THROTTLE / LIFT latch
+#define PWR_BASELINE_SAVE_MS 120000     // NVS write at most this often (only when changed)
+#define PWR_BASELINE_VERSION 2   // v6.15: bumped when PwrBin gained mean-rpm (slope interpolation)
+
+enum PwrState { PWR_OK = 0, PWR_AIR, PWR_LIFT, PWR_THROTTLE, PWR_TIMING, PWR_FUEL, PWR_REVCAP };
+static const char* const PWR_STATE_NAME[] = { "OK", "AIR", "LIFT", "THROTTLE", "TIMING", "FUEL?", "REV CAP" };
+
+struct PwrBin { float tim; float load; float gap; float rpm; uint16_t n; uint16_t n_gap; };
+struct PwrBaseline { uint8_t version; uint8_t pad[3]; PwrBin bin[PWR_RPM_BINS]; };
+static PwrBaseline g_pwr_base = {0};
+static bool     g_pwr_base_dirty = false;
+static uint32_t g_pwr_base_saved_ms = 0;
+
+struct PwrMonitor {
+    // last processed WOT timing sample
+    uint32_t last_tim_ts;         // timestamp of the last timing sample we looked at
+    int      bin;                 // rpm bin of the last WOT sample (-1 = none)
+    float    tim_live, tim_base, tim_delta;  // last WOT sample, its baseline, the difference
+    int      bin_n;
+    bool     delta_valid;         // bin had >= PWR_BIN_MIN_N cool samples
+    uint32_t delta_ts;            // when tim_delta was last computed
+    float    delta_worst;         // most negative delta inside the current latch window
+    // timing alarm timing
+    uint32_t tim_bad_since;       // 0 = delta not currently past amber
+    uint32_t tim_last_bad_ms;
+    uint32_t tim_red_since;       // 0 = delta not currently past red (separate sustained breach)
+    uint32_t tim_last_red_ms;
+    int      tim_sev;             // 0/1/2 (amber/red) currently latched
+    // pedal / throttle gap
+    int      pedal_pct, pedal_src;   // src: 0 none, 1 PID 0x49, 2 CAN 0x180
+    int      pedal_max_seen;         // session max pedal (pedal is "pinned" within 5 pts of it)
+    int      gap_live, gap_delta;    // pedal - throttle now; minus cool gap
+    uint32_t gap_bad_since, gap_last_bad_ms;
+    // load deficit
+    int      load_delta;
+    uint32_t load_bad_since, load_last_bad_ms;
+    // rev cap (plateau detector)
+    uint32_t last_rpm_ts;         // last rpm sample folded into the plateau tracker
+    float    plat_ref, plat_min, plat_max;
+    uint32_t plat_since;
+    int      rev_cap_rpm;         // 0 = none this session
+    int      rev_cap_count;
+    uint32_t rev_cap_ms;
+    // fuel stumble
+    float    fuel_pre_rpm; uint32_t fuel_drop_ms; bool fuel_pending; float fuel_lat_g;
+    uint32_t fuel_ms;
+    // air density
+    float    air_cf, air_loss_pct;
+    // resulting state
+    int      state, sev;
+    char     reason[48];
+    uint32_t state_since;
+    // session stats for [SESSION]
+    float    sess_min_delta; int sess_max_iat_f; float sess_max_air_loss; uint16_t sess_states_seen;
+    // banner acknowledge
+    int      ack_state, ack_sev;
+    bool     banner_shown;
+} g_pwr = {0};
 
 // Fuel Trust calculation state
 static float g_obd_last_timing_deg = NAN;        // For timing pull detection
@@ -3195,7 +3461,7 @@ static uint32_t g_dtc_asm_txid     = 0;   // ECU physical addr for the flow-cont
 //-----------------------------------------------------------------------------
 static bool startCAN() {
     twai_general_config_t general = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
-    general.rx_queue_len = 32;
+    general.rx_queue_len = 64;   // v6.15: 32 -> 64, the drain now also reads broadcast frames
     general.tx_queue_len = 8;
     
     twai_timing_config_t timing = TWAI_TIMING_CONFIG_500KBITS();  // 500 kbit/s for OBD-II
@@ -3435,9 +3701,56 @@ static void decodeOBD_Mode01Reply(const twai_message_t& rx) {
             if (rx.data_length_code >= 5) {
                 uint16_t A = rx.data[3];
                 uint16_t B = rx.data[4];
+                // v6.15: keep the previous sample so a timing sample can be placed at the
+                // rpm the engine was actually at (rpm moves ~600 rpm in 0.3 s in 2nd gear)
+                if (g_obd_data.rpm_valid) {
+                    g_obd_data.rpm_prev    = g_obd_data.rpm;
+                    g_obd_data.rpm_prev_ts = g_obd_data.rpm_timestamp;
+                }
                 g_obd_data.rpm = ((A << 8) | B) / 4.0f;
                 g_obd_data.rpm_timestamp = now;
                 g_obd_data.rpm_valid = true;
+            }
+        } break;
+
+        // ---- v6.15: supported-PID bitmaps (discovery) ----
+        case 0x00: case 0x20: case 0x40: case 0x60: case 0x80: {
+            if (rx.data_length_code >= 7) {
+                int block = pid / 0x20;
+                g_pid_bitmap[block] = ((uint32_t)rx.data[3] << 24) | ((uint32_t)rx.data[4] << 16) |
+                                      ((uint32_t)rx.data[5] << 8)  |  (uint32_t)rx.data[6];
+                g_pid_bitmap_ok[block] = true;
+                g_obd_success_count++;
+                // Decode into a readable list so the .log answers "what does this ECU support?"
+                char list[200]; int m = 0;
+                for (int i = 0; i < 32 && m < (int)sizeof(list) - 4; i++)
+                    if ((g_pid_bitmap[block] >> (31 - i)) & 1)
+                        m += snprintf(list + m, sizeof(list) - m, "%02X ", pid + 1 + i);
+                Serial.printf("[OBD-DISC] PIDs %02X-%02X bitmap=%08lX supported: %s\n",
+                              pid + 1, pid + 0x20, (unsigned long)g_pid_bitmap[block], m ? list : "(none)");
+                if (block == 2) {
+                    g_pid49_supported = obdPidSupported(0x49);
+                    Serial.printf("[OBD-DISC] pedal 0x49:%s 0x4A:%s cmd-throttle 0x4C:%s rel-throttle 0x45:%s rel-pedal 0x5A:%s\n",
+                        obdPidSupported(0x49) ? "yes" : "no", obdPidSupported(0x4A) ? "yes" : "no",
+                        obdPidSupported(0x4C) ? "yes" : "no", obdPidSupported(0x45) ? "yes" : "no",
+                        obdPidSupported(0x5A) ? "yes" : "no");
+                } else if (block == 3) {
+                    Serial.printf("[OBD-DISC] torque 0x61:%s 0x62:%s 0x63:%s  MAF-B 0x66:%s  fuel-rate 0x5E:%s\n",
+                        obdPidSupported(0x61) ? "yes" : "no", obdPidSupported(0x62) ? "yes" : "no",
+                        obdPidSupported(0x63) ? "yes" : "no", obdPidSupported(0x66) ? "yes" : "no",
+                        obdPidSupported(0x5E) ? "yes" : "no");
+                }
+                // Chain to the next block only if the ECU says it exists (last bit = "next block supported")
+                if (block < 4 && (g_pid_bitmap[block] & 1)) g_disc_next_block = block + 1;
+                else g_disc_next_block = 5;   // done
+                g_disc_retries = 0;
+            }
+        } break;
+
+        case 0x49: {  // v6.15: Accelerator pedal position D: A*100/255 [%]
+            if (rx.data_length_code >= 4) {
+                g_obd_data.pedal_pct = (int)((float)rx.data[3] * 100.0f / 255.0f + 0.5f);
+                g_obd_data.pedal_ts = now; g_obd_data.pedal_valid = true;
             }
         } break;
         
@@ -3594,7 +3907,19 @@ static float computeFuelTrust() {
     // Bank imbalance > 5%: 5 point penalty
     float pDelta = (deltaBanksST > 5.0f || deltaBanksLT > 5.0f) ? 5.0f : 0.0f;
     
-    // Timing pull detection: count drops > 3° when under load
+    float pTiming = 0.0f;
+#if FUEL_TRUST_TIMING_MODE
+    // v6.15: timing term = how far WOT timing sits below the learned cool baseline at the
+    // same rpm bin (Heat Derate Monitor). 0 pts down to -1°, then 3 pts per degree, max 30
+    // (-3° -> 6, -6° -> 15, -11° -> 30). Uses the latest delta from the last 2 minutes.
+    if (g_pwr.delta_valid && (millis() - g_pwr.delta_ts) < 120000UL) {
+        float below = -g_pwr.tim_delta - 1.0f;
+        if (below > 0.0f) pTiming = fminf(30.0f, below * 3.0f);
+    }
+    g_obd_timing_pull_count = (unsigned)(pTiming / 1.5f + 0.5f);   // keeps the popup/CSV field meaningful
+#else
+    // Legacy: count drops > 3° between consecutive samples when under load. (Compares
+    // samples 3-5 s and thousands of rpm apart — fires during gentle driving.)
     if (g_obd_data.timing_valid && g_obd_data.speed_valid && g_obd_data.rpm_valid) {
         if (g_obd_data.speed_kph > 30 && g_obd_data.rpm > 2000.0f) {
             if (!isnan(g_obd_last_timing_deg)) {
@@ -3606,9 +3931,10 @@ static float computeFuelTrust() {
         }
     }
     g_obd_last_timing_deg = g_obd_data.timing_valid ? g_obd_data.timing_deg : NAN;
-    
+
     // Timing pull penalty: 1.5 points per pull, max 30 points
-    float pTiming = fminf(30.0f, g_obd_timing_pull_count * 1.5f);
+    pTiming = fminf(30.0f, g_obd_timing_pull_count * 1.5f);
+#endif
     
     // Calculate final score
     float score = 100.0f - (pST + pLT + pDelta + pTiming);
@@ -3626,13 +3952,15 @@ static float computeFuelTrust() {
     g_ft.score = (int)(score + 0.5f);
     g_ft.valid = g_obd_data.fuel_trim_valid;
 
+#if !FUEL_TRUST_TIMING_MODE
     // Periodic reset of timing pull counter (keeps display responsive)
     uint32_t now = millis();
     if (now - g_obd_timing_pull_reset_ms > FUEL_TRUST_TIMING_RESET_INTERVAL_MS) {
         g_obd_timing_pull_count = 0;
         g_obd_timing_pull_reset_ms = now;
     }
-    
+#endif
+
     return score;
 }
 
@@ -3641,34 +3969,41 @@ static float computeFuelTrust() {
 //-----------------------------------------------------------------------------
 static void checkOBDDataStaleness() {
     uint32_t now = millis();
-    
-    if (g_obd_data.coolant_valid && 
-        (now - g_obd_data.coolant_timestamp > OBD_PID_STALE_THRESHOLD_MS)) {
+    // v6.15: inside a power window the slow PIDs are deliberately not polled, so give them
+    // a longer leash; the fast movers (rpm/timing/throttle/load/pedal) keep the normal one.
+    const uint32_t slow_ms = g_pwr_window ? OBD_PID_STALE_THRESHOLD_POWER_MS : OBD_PID_STALE_THRESHOLD_MS;
+    const uint32_t fast_ms = OBD_PID_STALE_THRESHOLD_MS;
+
+    if (g_obd_data.coolant_valid &&
+        (now - g_obd_data.coolant_timestamp > slow_ms)) {
         g_obd_data.coolant_valid = false;
     }
-    
-    if (g_obd_data.rpm_valid && 
-        (now - g_obd_data.rpm_timestamp > OBD_PID_STALE_THRESHOLD_MS)) {
+
+    if (g_obd_data.rpm_valid &&
+        (now - g_obd_data.rpm_timestamp > fast_ms)) {
         g_obd_data.rpm_valid = false;
     }
-    
-    if (g_obd_data.speed_valid && 
-        (now - g_obd_data.speed_timestamp > OBD_PID_STALE_THRESHOLD_MS)) {
+
+    if (g_obd_data.speed_valid &&
+        (now - g_obd_data.speed_timestamp > slow_ms)) {
         g_obd_data.speed_valid = false;
     }
-    
-    if (g_obd_data.timing_valid && 
-        (now - g_obd_data.timing_timestamp > OBD_PID_STALE_THRESHOLD_MS)) {
+
+    if (g_obd_data.timing_valid &&
+        (now - g_obd_data.timing_timestamp > fast_ms)) {
         g_obd_data.timing_valid = false;
     }
-    
+
     if (g_obd_data.fuel_trim_valid &&
-        (now - g_obd_data.fuel_trim_timestamp > OBD_PID_STALE_THRESHOLD_MS)) {
+        (now - g_obd_data.fuel_trim_timestamp > slow_ms)) {
         g_obd_data.fuel_trim_valid = false;
     }
 
     // v6.9 extended PIDs — independent staleness
-    #define OBD_STALE(v, ts) if (g_obd_data.v && (now - g_obd_data.ts > OBD_PID_STALE_THRESHOLD_MS)) g_obd_data.v = false;
+    #define OBD_STALE(v, ts) if (g_obd_data.v && (now - g_obd_data.ts > slow_ms)) g_obd_data.v = false;
+    #define OBD_STALE_FAST(v, ts) if (g_obd_data.v && (now - g_obd_data.ts > fast_ms)) g_obd_data.v = false;
+    OBD_STALE_FAST(pedal_valid,     pedal_ts)
+    #undef OBD_STALE_FAST
     OBD_STALE(throttle_valid,       throttle_ts)
     OBD_STALE(load_valid,           load_ts)
     OBD_STALE(iat_valid,            iat_ts)
@@ -3681,6 +4016,213 @@ static void checkOBDDataStaleness() {
     OBD_STALE(baro_valid,           baro_ts)
     OBD_STALE(fuel_sys_valid,       fuel_sys_ts)
     #undef OBD_STALE
+}
+
+//=============================================================================
+// v6.15: POWER WINDOW — when to switch the OBD scheduler into burst mode
+//=============================================================================
+// Open while the plate is >= 70% (PID 0x11) and rpm >= 3000, or the pedal is pinned
+// (within 5 points of the session max, when a pedal source exists). Closes 1.5 s after
+// the condition clears so a short lift between corners doesn't drop the burst list.
+static void pwrUpdateWindow(uint32_t now) {
+    bool cond = false;
+    if (g_obd_data.rpm_valid && g_obd_data.rpm >= PWR_WINDOW_RPM_MIN) {
+        if (g_obd_data.throttle_valid && g_obd_data.throttle_pct >= PWR_WINDOW_THROTTLE_PCT) cond = true;
+        if (g_pwr.pedal_src != 0 && g_pwr.pedal_max_seen >= 60 &&
+            g_pwr.pedal_pct >= g_pwr.pedal_max_seen - 5) cond = true;
+    }
+    if (cond) {
+        g_pwr_window_cond_ms = now;
+        if (!g_pwr_window) {
+            g_pwr_window = true;
+            g_obd_pwr_index = 0;
+        }
+    } else if (g_pwr_window && (now - g_pwr_window_cond_ms) > PWR_WINDOW_EXIT_MS) {
+        g_pwr_window = false;
+    }
+}
+
+//=============================================================================
+// v6.15: TCM Mode 21 LID 0x20 — ATF temperatures + torque-converter slip
+//=============================================================================
+static void sendOBD_Mode21_TCM(uint8_t lid) {
+    twai_message_t tx = {};
+    tx.identifier = OBD_PHYS_TCM_REQ_ID;   // 0x7E1 (physical: the TCM)
+    tx.extd = 0; tx.rtr = 0; tx.data_length_code = 8;
+    tx.data[0] = 0x02;                     // 2 data bytes follow
+    tx.data[1] = 0x21;                     // Mode 21 (ReadDataByLocalIdentifier)
+    tx.data[2] = lid;
+    g_obd_tx_total_count++;
+    twai_transmit(&tx, pdMS_TO_TICKS(10));
+    g_tcm_asm_active = false;
+    g_tcm_asm_len = g_tcm_asm_got = 0;
+}
+
+// Reassembled record = [0x61][LID][d0][d1]... . Decode with the PROVISIONAL indices and
+// dump the raw bytes every 30 s so the real offsets can be confirmed on the car.
+static void finalizeTCMRecord() {
+    g_tcm_reply_count++;
+    uint32_t now = millis();
+    int need = TCM_TCC_IDX + 2;
+    if (g_tcm_asm_got >= need && g_tcm_asm_buf[0] == 0x61 && g_tcm_asm_buf[1] == TCM_LID_TRANS_DATA) {
+        int a1 = (int)g_tcm_asm_buf[TCM_ATF1_IDX] - TCM_ATF_OFFSET_C;
+        int a2 = (int)g_tcm_asm_buf[TCM_ATF2_IDX] - TCM_ATF_OFFSET_C;
+        int slip = ((int)g_tcm_asm_buf[TCM_TCC_IDX] << 8) | g_tcm_asm_buf[TCM_TCC_IDX + 1];
+        // plausibility: ATF between -40 and 180 C, slip below 5000 rpm
+        if (a1 > -40 && a1 < 180 && a2 > -40 && a2 < 180 && slip >= 0 && slip < 5000) {
+            g_tcm_atf1_c = a1; g_tcm_atf2_c = a2; g_tcm_tcc_slip = slip;
+            g_tcm_valid = true; g_tcm_ts = now;
+        }
+    }
+    if (now - g_tcm_last_dump_ms > 30000 || g_tcm_reply_count <= 3) {
+        g_tcm_last_dump_ms = now;
+        char hex[TCM_ASM_BUF_LEN * 3 + 1]; int m = 0;
+        for (int i = 0; i < g_tcm_asm_got && m < (int)sizeof(hex) - 3; i++)
+            m += snprintf(hex + m, sizeof(hex) - m, "%02X ", g_tcm_asm_buf[i]);
+        Serial.printf("[TCM] LID 0x%02X record (%d bytes): %s| provisional ATF1=%dC ATF2=%dC slip=%d%s\n",
+                      TCM_LID_TRANS_DATA, g_tcm_asm_got, hex, g_tcm_atf1_c, g_tcm_atf2_c, g_tcm_tcc_slip,
+                      g_tcm_valid ? "" : " (not plausible yet)");
+    }
+}
+
+// Feed a 0x7E9 frame into the TCM reassembler. Returns true if consumed.
+static bool handleTCMFrame(const twai_message_t& rx) {
+    if (rx.data_length_code < 2) return false;
+    uint8_t pci = rx.data[0] & 0xF0;
+    if (pci == 0x00) {                                  // single frame
+        if (rx.data[1] != 0x61) return false;
+        int len = rx.data[0] & 0x0F;
+        g_tcm_asm_got = 0;
+        for (int i = 0; i < len && g_tcm_asm_got < TCM_ASM_BUF_LEN && (1 + i) < 8; i++)
+            g_tcm_asm_buf[g_tcm_asm_got++] = rx.data[1 + i];
+        g_tcm_asm_active = false;
+        finalizeTCMRecord();
+        return true;
+    }
+    if (pci == 0x10) {                                  // first frame
+        if (rx.data_length_code < 3 || rx.data[2] != 0x61) return false;
+        g_tcm_asm_len = ((rx.data[0] & 0x0F) << 8) | rx.data[1];
+        if (g_tcm_asm_len > TCM_ASM_BUF_LEN) g_tcm_asm_len = TCM_ASM_BUF_LEN;
+        g_tcm_asm_got = 0;
+        for (int i = 0; i < 6 && g_tcm_asm_got < g_tcm_asm_len; i++)
+            g_tcm_asm_buf[g_tcm_asm_got++] = rx.data[2 + i];
+        g_tcm_asm_active = true;
+        g_tcm_asm_start_ms = millis();
+        sendFlowControl(OBD_PHYS_TCM_REQ_ID);
+        return true;
+    }
+    if (pci == 0x20) {                                  // consecutive frame
+        if (!g_tcm_asm_active) return false;
+        for (int i = 1; i < 8 && g_tcm_asm_got < g_tcm_asm_len; i++)
+            g_tcm_asm_buf[g_tcm_asm_got++] = rx.data[i];
+        if (g_tcm_asm_got >= g_tcm_asm_len) {
+            g_tcm_asm_active = false;
+            finalizeTCMRecord();
+        }
+        return true;
+    }
+    return false;
+}
+
+//=============================================================================
+// v6.15: DISCOVERY — supported-PID bitmaps at boot, optional Mode 22 DID sweep
+//=============================================================================
+static void obdDiscoveryStep(uint32_t now) {
+    if (g_disc_next_block > 4) return;                          // done
+    // first request ~3 s after CAN comes up (ECU settles), then one request per 700 ms
+    const uint32_t wait_ms = (g_disc_next_block == 0 && g_disc_retries == 0) ? 3000 : 700;
+    if (now - g_disc_last_req_ms < wait_ms) return;             // one request, wait for the answer
+    if (g_disc_retries >= 3) {                                  // ECU silent for this block: give up on it
+        Serial.printf("[OBD-DISC] no answer for bitmap block %d after 3 tries\n", g_disc_next_block);
+        g_disc_next_block = 5;
+        return;
+    }
+    g_disc_last_req_ms = now;
+    g_disc_retries++;
+    sendOBD_Mode01((uint8_t)(g_disc_next_block * 0x20));
+}
+
+static void didSweepStep(uint32_t now) {
+    if (!g_did_sweep_enabled || g_did_sweep_done) return;
+    if (!g_did_sweep_running) {
+        // start only at a warm idle, 20 s after boot, outside a power window
+        if (now < 20000 || g_pwr_window) return;
+        if (!g_obd_data.rpm_valid || g_obd_data.rpm < 300 || g_obd_data.rpm > 1200) return;
+        g_did_sweep_running = true;
+        g_did_sweep_next = 0x1100;
+        g_did_sweep_hits = 0;
+        Serial.println("[DID] Mode 22 sweep 0x1100-0x12FF starting (one request / 60 ms, ~30 s)");
+    }
+    if (now - g_did_sweep_last_ms < 60) return;
+    g_did_sweep_last_ms = now;
+    if (g_did_sweep_next > 0x12FF) {
+        g_did_sweep_running = false; g_did_sweep_done = true;
+        Serial.printf("[DID] sweep done: %d DIDs answered (see [DID] lines above)\n", g_did_sweep_hits);
+        return;
+    }
+    if (g_did_sweep_next != OBD_DID_OIL_TEMP) sendOBD_Mode22(g_did_sweep_next);
+    g_did_sweep_next++;
+}
+
+// A positive Mode 22 reply for a DID we don't decode (sweep hit) — log the bytes.
+static void logSweepDID(const twai_message_t& rx) {
+    if (!g_did_sweep_running) return;
+    g_did_sweep_hits++;
+    char hex[40]; int m = 0;
+    for (int i = 0; i < rx.data_length_code && m < (int)sizeof(hex) - 3; i++)
+        m += snprintf(hex + m, sizeof(hex) - m, "%02X ", rx.data[i]);
+    Serial.printf("[DID] %s\n", hex);   // frame as received: [len][62][DIDhi][DIDlo][A][B]... or [10][len][62]... for multi-frame
+}
+
+//=============================================================================
+// v6.15: PASSIVE CAN — frames the car broadcasts anyway
+//=============================================================================
+static void canCensusAdd(uint16_t id) {
+    for (int i = 0; i < g_can_census_n; i++)
+        if (g_can_census[i].id == id) { g_can_census[i].count++; return; }
+    if (g_can_census_n < CAN_CENSUS_SLOTS) { g_can_census[g_can_census_n].id = id; g_can_census[g_can_census_n].count = 1; g_can_census_n++; }
+}
+
+static void handlePassiveCanFrame(const twai_message_t& rx, uint32_t now) {
+    if (rx.extd) return;
+    if (!g_can_census_printed) canCensusAdd((uint16_t)rx.identifier);
+    switch (rx.identifier) {
+        case CAN_ID_ENGINE_180:
+            if (rx.data_length_code >= 6) {
+                g_can180.rpm_raw   = ((uint16_t)rx.data[0] << 8) | rx.data[1];
+                g_can180.pedal_raw = rx.data[5];
+                g_can180.ts = now; g_can180.count++;
+            }
+            break;
+        case CAN_ID_ECT_551:
+            if (rx.data_length_code >= 1) { g_can180.ect_raw = rx.data[0]; g_can180.ect_ts = now; }
+            break;
+        case CAN_ID_VDC_354:
+            if (rx.data_length_code >= 7) { g_can180.vdc_e = rx.data[4]; g_can180.vdc_g = rx.data[6]; g_can180.vdc_ts = now; }
+            break;
+        default: break;
+    }
+}
+
+// One-shot ID census ~30 s after CAN came up: which IDs are on this bus and how busy.
+static void canCensusStep(uint32_t now) {
+    if (g_can_census_printed) return;
+    if (g_can_census_start_ms == 0) { g_can_census_start_ms = now; return; }
+    if (now - g_can_census_start_ms < 30000) return;
+    g_can_census_printed = true;
+    // sort by count (tiny insertion sort)
+    for (int i = 1; i < g_can_census_n; i++) {
+        auto t = g_can_census[i]; int j = i - 1;
+        while (j >= 0 && g_can_census[j].count < t.count) { g_can_census[j + 1] = g_can_census[j]; j--; }
+        g_can_census[j + 1] = t;
+    }
+    char line[CAN_CENSUS_SLOTS * 14 + 1]; int m = 0;
+    for (int i = 0; i < g_can_census_n && m < (int)sizeof(line) - 14; i++)
+        m += snprintf(line + m, sizeof(line) - m, "%03X:%lu ", g_can_census[i].id, (unsigned long)(g_can_census[i].count / 30));
+    Serial.printf("[CAN-DISC] %d IDs heard in 30 s (id:frames/s): %s\n", g_can_census_n, line);
+    Serial.printf("[CAN-DISC] 0x180 %s, 0x551 %s, 0x354 %s\n",
+                  g_can180.count ? "heard (pedal/rpm source available)" : "NOT heard",
+                  g_can180.ect_ts ? "heard" : "NOT heard", g_can180.vdc_ts ? "heard" : "NOT heard");
 }
 
 #endif // ENABLE_OBD_CAN
@@ -3699,6 +4241,9 @@ void initOBD() {
         Serial.println("[OBD] CAN bus initialized successfully");
         Serial.println("[OBD] Polling: ECT, RPM, Speed, Timing, STFT/LTFT B1/B2,");
         Serial.println("[OBD]   +v6.9: Throttle, Load, IAT, Ambient, OilTemp(0x5C), MAF, Lambda, Voltage, FuelLevel, Baro, FuelSys");
+        Serial.println("[OBD]   +v6.15: Pedal(0x49), power-window burst list (timing ~8 Hz at WOT), TCM Mode 21 ATF, PID bitmaps, passive 0x180/0x551/0x354");
+        g_disc_next_block = 0; g_disc_retries = 0; g_disc_last_req_ms = millis();   // v6.15: bitmaps ~3 s after CAN is up
+        g_can_census_start_ms = 0; g_can_census_printed = false; g_can_census_n = 0;
     } else {
         g_obd_initialized = false;
         Serial.println("[OBD] CAN bus initialization FAILED!");
@@ -3734,17 +4279,33 @@ void updateOBDData() {
     }
     
     uint32_t now = millis();
-    
-    // 1. Send next PID request (round-robin)
-    if (now - g_obd_last_request_ms >= OBD_PID_REQUEST_PERIOD_MS) {
-        g_obd_last_request_ms = now;
-        sendOBD_Mode01(OBD_PID_LIST[g_obd_pid_index]);
-        g_obd_pid_index = (g_obd_pid_index + 1) % OBD_NUM_PIDS;
+
+    // 1. Send next PID request (round-robin).
+    //    v6.15: inside a POWER WINDOW the short burst list runs at 60 ms (timing ~8 Hz);
+    //    otherwise the full list runs at 120 ms exactly as before.
+    {
+        const uint32_t period = g_pwr_window ? OBD_PID_REQUEST_PERIOD_POWER_MS : OBD_PID_REQUEST_PERIOD_MS;
+        if (now - g_obd_last_request_ms >= period) {
+            g_obd_last_request_ms = now;
+            uint8_t pid;
+            if (g_pwr_window) {
+                pid = OBD_PID_LIST_POWER[g_obd_pwr_index];
+                g_obd_pwr_index = (g_obd_pwr_index + 1) % OBD_NUM_PIDS_POWER;
+            } else {
+                pid = OBD_PID_LIST[g_obd_pid_index];
+                g_obd_pid_index = (g_obd_pid_index + 1) % OBD_NUM_PIDS;
+            }
+            // pedal PID skipped once the bitmap says the ECU doesn't have it (CAN 0x180 covers it)
+            if (pid == 0x49 && !g_pid49_supported) pid = 0x0C;
+            sendOBD_Mode01(pid);
+        }
     }
 
     // 1b. v6.10: periodically read stored trouble codes (Mode 03), and give up
     //     on any ISO-TP reassembly that stalls (benign — leaves the last list).
-    if (now - g_dtc_last_read_ms >= DTC_READ_INTERVAL_MS) {
+    //     v6.15: housekeeping requests (DTC, TCM, discovery, DID sweep) stay out of power
+    //     windows so the burst budget is all timing/rpm.
+    if (!g_pwr_window && now - g_dtc_last_read_ms >= DTC_READ_INTERVAL_MS) {
         g_dtc_last_read_ms = now;
         sendOBD_Mode03();
     }
@@ -3760,25 +4321,66 @@ void updateOBDData() {
         g_dtc_asm_active = false;
     }
 
+    // v6.15: TCM ATF/TCC record (~1 Hz), supported-PID bitmaps (boot), optional DID sweep
+    if (!g_pwr_window) {
+        if (now - g_tcm_last_poll_ms >= TCM_POLL_INTERVAL_MS) {
+            g_tcm_last_poll_ms = now;
+            sendOBD_Mode21_TCM(TCM_LID_TRANS_DATA);
+        }
+        obdDiscoveryStep(now);
+        didSweepStep(now);
+    }
+    if (g_tcm_asm_active && (now - g_tcm_asm_start_ms > DTC_ASM_TIMEOUT_MS)) {
+        g_tcm_asm_active = false;
+    }
+
     // 2. Receive any pending CAN frames (non-blocking)
     twai_message_t rx;
     while (twai_receive(&rx, pdMS_TO_TICKS(1)) == ESP_OK) {
-        // Filter for OBD-II responses (0x7E8-0x7EF)
-        if (!rx.extd && rx.identifier >= OBD_MIN_RESP_ID && rx.identifier <= OBD_MAX_RESP_ID) {
+        if (rx.extd) continue;
+        if (rx.identifier == OBD_TCM_RESP_ID) {
+            // v6.15: TCM (0x7E9): Mode 21 record first, else its Mode 03 DTC reply
+            if (!handleTCMFrame(rx)) handleDTCFrame(rx);
+        }
+        else if (rx.identifier >= OBD_MIN_RESP_ID && rx.identifier <= OBD_MAX_RESP_ID) {
+            // Filter for OBD-II responses (0x7E8-0x7EF)
             // Mode 03 (DTC) frames are ISO-TP framed; route them to the reassembler
             // first, then Mode 22 (0x62) responses, else it's a Mode 01 reply.
             if (handleDTCFrame(rx)) {
                 // consumed as DTC data
             } else if (rx.data_length_code >= 2 && rx.data[1] == 0x62) {
                 decodeOBD_Mode22Reply(rx);   // v6.14: Mode 22 (Nissan oil temp)
+                if (rx.data_length_code >= 4 && ((((uint16_t)rx.data[2] << 8) | rx.data[3]) != OBD_DID_OIL_TEMP))
+                    logSweepDID(rx);         // v6.15: any other DID answering = sweep hit
+            } else if (rx.data_length_code >= 3 && rx.data[0] == 0x10 && rx.data[2] == 0x62) {
+                logSweepDID(rx);             // v6.15: multi-frame Mode 22 reply (first frame only)
+            } else if (rx.data_length_code >= 2 && rx.data[1] == 0x7F) {
+                // negative response (e.g. 7F 22 31 = DID not supported) — expected during the sweep
             } else {
                 decodeOBD_Mode01Reply(rx);
             }
         }
+        else {
+            handlePassiveCanFrame(rx, now);   // v6.15: 0x180 pedal/rpm, 0x551 ECT, 0x354 VDC, ID census
+        }
     }
-    
+    canCensusStep(now);
+
     // 3. Check for stale data
     checkOBDDataStaleness();
+
+    // 3b. v6.15: pedal source (PID 0x49 first, else the 100 Hz CAN 0x180 byte) and the
+    //     power-window flag that steers the scheduler on the next call.
+    {
+        int pct = 0, src = 0;
+        if (g_obd_data.pedal_valid) { pct = g_obd_data.pedal_pct; src = 1; }
+        else if (g_can180.ts && (now - g_can180.ts) < CAN_PEDAL_STALE_MS) {
+            pct = (int)((float)g_can180.pedal_raw * 100.0f / 255.0f + 0.5f); src = 2;
+        }
+        g_pwr.pedal_pct = pct; g_pwr.pedal_src = src;
+        if (src && pct > g_pwr.pedal_max_seen) g_pwr.pedal_max_seen = pct;
+        pwrUpdateWindow(now);
+    }
     
     // 4. Update Water Temperature from ECT
     if (g_obd_data.coolant_valid) {
@@ -3859,6 +4461,18 @@ void updateOBDData() {
     g_vehicle_data.dtc_count     = g_dtc01_valid ? g_dtc_count_01 : -1;
     g_vehicle_data.dtc_valid     = g_dtc01_valid;
 
+    // 6d. v6.15: pedal + TCM values for the CSV (the POWER fields are filled by updatePowerMonitor)
+    g_vehicle_data.pedal_pct = g_pwr.pedal_pct;
+    g_vehicle_data.pedal_src = g_pwr.pedal_src;
+    if (g_tcm_valid && (now - g_tcm_ts) < 5000) {
+        g_vehicle_data.atf1_f = (int)(celsiusToFahrenheit((float)g_tcm_atf1_c) + 0.5f);
+        g_vehicle_data.atf2_f = (int)(celsiusToFahrenheit((float)g_tcm_atf2_c) + 0.5f);
+        g_vehicle_data.tcc_slip_rpm = g_tcm_tcc_slip;
+        g_vehicle_data.atf_valid = true;
+    } else {
+        g_vehicle_data.atf_valid = false;
+    }
+
     // 7. Periodic logging (ALWAYS logs status, even when no ECU data received)
     static uint32_t lastOBDLog = 0;
     if (now - lastOBDLog > 5000) {  // Log every 5 seconds
@@ -3888,6 +4502,14 @@ void updateOBDData() {
                 g_obd_data.fuel_level_valid    ? g_obd_data.fuel_level_pct : -1,
                 g_obd_data.baro_valid          ? g_obd_data.baro_kpa : -1,
                 g_obd_data.fuel_sys_valid      ? g_obd_data.fuel_sys_status : 0);
+            // v6.15: pedal source + raw passive-CAN words for on-car scale validation
+            // (compare rpmRaw180 with RPM above, pedalRaw180/255 with the pedal PID, ect551-40 with ECT).
+            Serial.printf("[CAN180] pedal:%d%%(src %d) frames:%lu rpmRaw180:%u pedalRaw180:%u ect551:%d vdcE:%u vdcG:%u window:%d ATF:%d/%dC slip:%d\n",
+                g_pwr.pedal_pct, g_pwr.pedal_src, (unsigned long)g_can180.count,
+                g_can180.rpm_raw, g_can180.pedal_raw,
+                g_can180.ect_ts ? (int)g_can180.ect_raw - 40 : -99,
+                g_can180.vdc_e, g_can180.vdc_g, g_pwr_window ? 1 : 0,
+                g_tcm_valid ? g_tcm_atf1_c : -99, g_tcm_valid ? g_tcm_atf2_c : -99, g_tcm_valid ? g_tcm_tcc_slip : -1);
         } else {
             // No valid data from ECU - log bus state so SD logs show OBD is alive but silent
             Serial.printf("[OBD] CAN active, no ECU response (TX=GPIO%d RX=GPIO%d) pid_idx=%d\n",
@@ -3904,6 +4526,373 @@ void updateOBDData() {
 }
 
 #pragma endregion OBD Data Provider
+
+//=================================================================
+// v6.15 HEAT DERATE MONITOR ("POWER")
+//=================================================================
+// Answers "is the ECU pulling power because the car is hot?" from the OBD tap alone.
+//
+//   1. Power windows (pwrUpdateWindow, OBD section) make timing measurable at WOT (~8 Hz).
+//   2. A cool baseline of WOT timing / load / pedal-gap per 500-rpm bin is learned on the
+//      first warm-but-cool laps and kept in NVS ("timbase").
+//   3. Every later WOT timing sample is compared to its bin -> tim_delta. rpm is
+//      extrapolated to the timing sample's timestamp so low-gear pulls bin correctly.
+//   4. Detectors: TIMING (delta), THROTTLE (pedal-vs-plate gap vs cool), LIFT (load below
+//      cool), REV CAP (rpm plateau < 7000 at WOT while oil is hot / limiter-jagged),
+//      FUEL? (rpm stumble that recovers, in a corner), AIR (SAE J1349 density loss).
+//   5. Worst active state -> banner + popup + CSV + [PWR] / [SESSION] lines.
+//
+// Everything is time-qualified (must persist) and latched (stays up long enough to read).
+// Runs from loop() after updateOBDData()/mergeOilTempSource(), i.e. with the merged oil temp.
+//=================================================================
+#pragma region Heat Derate Monitor
+#if ENABLE_OBD_CAN
+
+static void pwrLoadBaseline() {
+    g_pwr.bin = -1;
+    g_pwr.sess_min_delta = 0.0f;
+    memset(&g_pwr_base, 0, sizeof(g_pwr_base));
+    g_prefs.begin("timbase", true);
+    size_t len = g_prefs.getBytesLength("bins");
+    if (len == sizeof(PwrBaseline)) g_prefs.getBytes("bins", &g_pwr_base, sizeof(g_pwr_base));
+    g_prefs.end();
+    if (g_pwr_base.version != PWR_BASELINE_VERSION) {
+        memset(&g_pwr_base, 0, sizeof(g_pwr_base));
+        g_pwr_base.version = PWR_BASELINE_VERSION;
+        Serial.println("[PWR] baseline: none stored yet (learns on the first cool WOT pulls)");
+        return;
+    }
+    int ready = 0; char bins[PWR_RPM_BINS * 12 + 1]; int m = 0;
+    for (int i = 0; i < PWR_RPM_BINS; i++) {
+        if (g_pwr_base.bin[i].n >= PWR_BIN_MIN_N) {
+            ready++;
+            m += snprintf(bins + m, sizeof(bins) - m, "%d:%.1f ", PWR_RPM_BIN_MIN + i * PWR_RPM_BIN_SIZE, g_pwr_base.bin[i].tim);
+        }
+    }
+    Serial.printf("[PWR] baseline loaded from NVS: %d/%d bins ready (rpm:timing) %s\n", ready, PWR_RPM_BINS, m ? bins : "");
+}
+
+static void pwrSaveBaseline(bool force) {
+    uint32_t now = millis();
+    if (!force) {
+        if (!g_pwr_base_dirty) return;
+        if (now - g_pwr_base_saved_ms < PWR_BASELINE_SAVE_MS) return;
+    }
+    g_prefs.begin("timbase", false);
+    g_prefs.putBytes("bins", &g_pwr_base, sizeof(g_pwr_base));
+    g_prefs.end();
+    g_pwr_base_dirty = false;
+    g_pwr_base_saved_ms = now;
+    Serial.println("[PWR] baseline saved to NVS");
+}
+
+static void pwrResetBaseline(const char* why) {
+    memset(&g_pwr_base, 0, sizeof(g_pwr_base));
+    g_pwr_base.version = PWR_BASELINE_VERSION;
+    g_pwr.delta_valid = false; g_pwr.tim_delta = 0; g_pwr.tim_base = 0; g_pwr.bin_n = 0; g_pwr.bin = -1;
+    g_pwr.gap_delta = 0; g_pwr.load_delta = 0;
+    g_pwr.tim_bad_since = 0; g_pwr.gap_bad_since = 0; g_pwr.load_bad_since = 0;
+    pwrSaveBaseline(true);
+    Serial.printf("[PWR] baseline RESET (%s)\n", why);
+}
+
+// SAE J1349 correction factor from inlet temp + absolute pressure (dry-air approximation:
+// no humidity sensor yet). Loss% = 1 - 1/cf. 77F/990mb reference -> 0%.
+static float pwrAirLoss(int iat_f, int baro_kpa, float* cf_out) {
+    float Tc = ((float)iat_f - 32.0f) * 5.0f / 9.0f;
+    float Pd = (float)baro_kpa * 10.0f;                       // kPa -> mbar
+    if (Pd < 600.0f) Pd = 600.0f;
+    float cf = 1.18f * (990.0f / Pd) * sqrtf((Tc + 273.0f) / 298.0f) - 0.18f;
+    if (cf < 0.5f) cf = 0.5f;
+    if (cf_out) *cf_out = cf;
+    float loss = (1.0f - 1.0f / cf) * 100.0f;
+    if (loss < -20.0f) loss = -20.0f;
+    if (loss >  30.0f) loss =  30.0f;
+    return loss;
+}
+
+// Which temperature "explains" a timing pull right now (for the reason string).
+static const char* pwrAttribution(int oil_f, int iat_f, int ect_f) {
+    if (oil_f >= PWR_REVCAP_OIL_F) return "OIL";
+    if (iat_f >= PWR_COOL_IAT_MAX_F) return "IAT";
+    if (ect_f >= 215) return "ECT";
+    return "no temp excuse (knock?)";
+}
+
+static void updatePowerMonitor() {
+    uint32_t now = millis();
+    if (g_demo_mode || !g_obd_initialized) {
+        g_pwr.state = PWR_OK; g_pwr.sev = 0; g_pwr.reason[0] = '\0';
+        g_vehicle_data.pwr_state = 0; g_vehicle_data.pwr_sev = 0;
+        return;
+    }
+    if (g_pwr_baseline_reset_req) { g_pwr_baseline_reset_req = false; pwrResetBaseline("PWR_BASELINE_RESET in /wifi.cfg"); }
+
+    // ---- temperatures the detectors reason about (merged oil temp = PRTXI or Mode 22) ----
+    const int ect_f = g_vehicle_data.water_temp_valid      ? g_vehicle_data.water_temp_value_f : -1;
+    const int iat_f = g_vehicle_data.intake_air_temp_valid ? g_vehicle_data.intake_air_temp_f  : -1;
+    const int oil_f = g_vehicle_data.oil_temp_valid        ? g_vehicle_data.oil_temp_value_f   : -1;
+
+    // ---- AIR: density loss from IAT + baro ----
+    if (iat_f >= 0 && g_vehicle_data.baro_valid && g_vehicle_data.baro_kpa > 0) {
+        g_pwr.air_loss_pct = pwrAirLoss(iat_f, g_vehicle_data.baro_kpa, &g_pwr.air_cf);
+    } else { g_pwr.air_loss_pct = 0.0f; g_pwr.air_cf = 1.0f; }
+
+    // ---- new WOT timing sample? ----
+    if (g_obd_data.timing_valid && g_obd_data.timing_timestamp != g_pwr.last_tim_ts) {
+        const uint32_t ts = g_obd_data.timing_timestamp;
+        g_pwr.last_tim_ts = ts;
+
+        bool rpm_ok = g_obd_data.rpm_valid && (uint32_t)labs((long)ts - (long)g_obd_data.rpm_timestamp) <= PWR_ALIGN_RPM_MS;
+        bool thr_ok = g_obd_data.throttle_valid && (uint32_t)labs((long)ts - (long)g_obd_data.throttle_ts) <= PWR_ALIGN_LOAD_MS;
+        bool load_ok = g_obd_data.load_valid && (uint32_t)labs((long)ts - (long)g_obd_data.load_ts) <= PWR_ALIGN_LOAD_MS;
+        bool wot = thr_ok && load_ok &&
+                   g_obd_data.throttle_pct >= PWR_WINDOW_THROTTLE_PCT && g_obd_data.load_pct >= PWR_WOT_LOAD_PCT;
+
+        if (rpm_ok && wot) {
+            // extrapolate rpm to the timing sample's timestamp using the last two rpm samples
+            float rpm_at = g_obd_data.rpm;
+            if (g_obd_data.rpm_prev_ts && g_obd_data.rpm_timestamp > g_obd_data.rpm_prev_ts) {
+                uint32_t dtp = g_obd_data.rpm_timestamp - g_obd_data.rpm_prev_ts;
+                if (dtp >= 50 && dtp <= 1500) {
+                    float rate = (g_obd_data.rpm - g_obd_data.rpm_prev) / (float)dtp;      // rpm per ms
+                    float corr = rate * ((float)ts - (float)g_obd_data.rpm_timestamp);
+                    if (corr >  600.0f) corr =  600.0f;
+                    if (corr < -600.0f) corr = -600.0f;
+                    rpm_at += corr;
+                }
+            }
+            int bin = (int)((rpm_at - PWR_RPM_BIN_MIN) / PWR_RPM_BIN_SIZE);
+            if (rpm_at >= PWR_RPM_BIN_MIN && bin >= 0 && bin < PWR_RPM_BINS) {
+                PwrBin& b = g_pwr_base.bin[bin];
+                const float tim = g_obd_data.timing_deg;
+                const float load = (float)g_obd_data.load_pct;
+                const bool pedal_pinned = g_pwr.pedal_src != 0 && g_pwr.pedal_max_seen >= 60 &&
+                                          g_pwr.pedal_pct >= g_pwr.pedal_max_seen - 5;
+                const float gap = (float)(g_pwr.pedal_pct - g_obd_data.throttle_pct);
+
+                // cool? (warm engine, but none of the heat drivers elevated)
+                const bool cool = ect_f >= PWR_COOL_ECT_MIN_F && ect_f <= PWR_COOL_ECT_MAX_F &&
+                                  (iat_f < 0 || iat_f < PWR_COOL_IAT_MAX_F) &&
+                                  (oil_f < 0 || oil_f < PWR_COOL_OIL_MAX_F);
+                if (cool) {
+                    float a = (b.n < PWR_BIN_MIN_N) ? 1.0f / (float)(b.n + 1) : PWR_EMA_ALPHA;   // fast start, then EMA
+                    b.tim  = (b.n == 0) ? tim    : b.tim  + a * (tim    - b.tim);
+                    b.load = (b.n == 0) ? load   : b.load + a * (load   - b.load);
+                    b.rpm  = (b.n == 0) ? rpm_at : b.rpm  + a * (rpm_at - b.rpm);   // mean rpm for slope interpolation
+                    if (b.n < 65000) b.n++;
+                    if (pedal_pinned) {
+                        float ag = (b.n_gap < PWR_BIN_MIN_N) ? 1.0f / (float)(b.n_gap + 1) : PWR_EMA_ALPHA;
+                        b.gap = (b.n_gap == 0) ? gap : b.gap + ag * (gap - b.gap);
+                        if (b.n_gap < 65000) b.n_gap++;
+                    }
+                    g_pwr_base_dirty = true;
+                }
+
+                g_pwr.bin = bin; g_pwr.tim_live = tim; g_pwr.bin_n = b.n;
+                if (b.n >= PWR_BIN_MIN_N) {
+                    // Interpolate the baseline to the exact rpm using a local slope from ready
+                    // neighbour bins. The map climbs ~2.5 deg per 500-rpm bin, so comparing a
+                    // sample against its bin mean alone would read up to ~2.5 deg of phantom pull
+                    // at a bin edge; the slope term removes that within-bin gradient.
+                    float base = b.tim; float slope = 0.0f; bool have = false;
+                    if (bin + 1 < PWR_RPM_BINS && g_pwr_base.bin[bin + 1].n >= PWR_BIN_MIN_N &&
+                        bin - 1 >= 0 && g_pwr_base.bin[bin - 1].n >= PWR_BIN_MIN_N) {
+                        float dr = g_pwr_base.bin[bin + 1].rpm - g_pwr_base.bin[bin - 1].rpm;
+                        if (dr > 1.0f) { slope = (g_pwr_base.bin[bin + 1].tim - g_pwr_base.bin[bin - 1].tim) / dr; have = true; }
+                    }
+                    if (!have && bin + 1 < PWR_RPM_BINS && g_pwr_base.bin[bin + 1].n >= PWR_BIN_MIN_N) {
+                        float dr = g_pwr_base.bin[bin + 1].rpm - b.rpm;
+                        if (dr > 1.0f) { slope = (g_pwr_base.bin[bin + 1].tim - b.tim) / dr; have = true; }
+                    }
+                    if (!have && bin - 1 >= 0 && g_pwr_base.bin[bin - 1].n >= PWR_BIN_MIN_N) {
+                        float dr = b.rpm - g_pwr_base.bin[bin - 1].rpm;
+                        if (dr > 1.0f) slope = (b.tim - g_pwr_base.bin[bin - 1].tim) / dr;
+                    }
+                    // clamp so a noisy neighbour can't invent a wild correction (map is < ~0.02 deg/rpm)
+                    if (slope >  0.05f) slope =  0.05f;
+                    if (slope < -0.05f) slope = -0.05f;
+                    base += slope * (rpm_at - b.rpm);
+                    g_pwr.tim_base = base;
+                    g_pwr.tim_delta = tim - base;
+                    g_pwr.delta_valid = true;
+                    g_pwr.delta_ts = now;
+                    if (g_pwr.tim_delta < g_pwr.sess_min_delta) g_pwr.sess_min_delta = g_pwr.tim_delta;
+                    // TIMING: amber must persist past amber for PWR_TIM_HOLD_MS; small hysteresis
+                    // on release. RED is a SEPARATE sustained breach (tim_red_since) so a single
+                    // noisy bin-edge sample at -6 can't latch red — it only reads amber.
+                    if (g_pwr.tim_delta <= PWR_TIM_AMBER_DEG) {
+                        if (!g_pwr.tim_bad_since) { g_pwr.tim_bad_since = now; g_pwr.delta_worst = g_pwr.tim_delta; }
+                        if (g_pwr.tim_delta < g_pwr.delta_worst) g_pwr.delta_worst = g_pwr.tim_delta;
+                        g_pwr.tim_last_bad_ms = now;
+                    } else if (g_pwr.tim_delta > PWR_TIM_AMBER_DEG + 0.5f) {
+                        g_pwr.tim_bad_since = 0;
+                    }
+                    if (g_pwr.tim_delta <= PWR_TIM_RED_DEG) {
+                        if (!g_pwr.tim_red_since) g_pwr.tim_red_since = now;
+                        g_pwr.tim_last_red_ms = now;
+                    } else if (g_pwr.tim_delta > PWR_TIM_RED_DEG + 0.5f) {
+                        g_pwr.tim_red_since = 0;
+                    }
+                    // LIFT: calculated load below the cool baseline
+                    g_pwr.load_delta = (int)(load - b.load + (load >= b.load ? 0.5f : -0.5f));
+                    if (g_pwr.load_delta <= -PWR_LOAD_DEFICIT_PCT) {
+                        if (!g_pwr.load_bad_since) g_pwr.load_bad_since = now;
+                        g_pwr.load_last_bad_ms = now;
+                    } else g_pwr.load_bad_since = 0;
+                } else {
+                    g_pwr.delta_valid = false; g_pwr.tim_base = 0; g_pwr.tim_delta = 0;
+                    g_pwr.tim_bad_since = 0; g_pwr.load_bad_since = 0; g_pwr.load_delta = 0;
+                }
+                // THROTTLE: pedal pinned but the plate opens less than it did cool
+                if (pedal_pinned && b.n_gap >= PWR_BIN_MIN_N) {
+                    g_pwr.gap_live = (int)gap;
+                    g_pwr.gap_delta = (int)(gap - b.gap + 0.5f);
+                    if (g_pwr.gap_delta >= PWR_GAP_PTS) {
+                        if (!g_pwr.gap_bad_since) g_pwr.gap_bad_since = now;
+                        g_pwr.gap_last_bad_ms = now;
+                    } else g_pwr.gap_bad_since = 0;
+                } else { g_pwr.gap_bad_since = 0; g_pwr.gap_delta = 0; g_pwr.gap_live = 0; }
+            }
+        }
+    }
+
+    // ---- REV CAP + FUEL? : per new rpm sample, inside a power window ----
+    if (g_pwr_window && g_obd_data.rpm_valid && g_obd_data.rpm_timestamp != g_pwr.last_rpm_ts) {
+        g_pwr.last_rpm_ts = g_obd_data.rpm_timestamp;
+        const float rpm = g_obd_data.rpm;
+        const bool pedal_pinned = g_pwr.pedal_src != 0 && g_pwr.pedal_max_seen >= 60 &&
+                                  g_pwr.pedal_pct >= g_pwr.pedal_max_seen - 5;
+        const bool thr85 = (g_obd_data.throttle_valid && g_obd_data.throttle_pct >= 85) || pedal_pinned;
+
+        // plateau tracker
+        if (!thr85) {
+            g_pwr.plat_since = 0;
+        } else if (g_pwr.plat_since == 0 || fabsf(rpm - g_pwr.plat_ref) > PWR_REVCAP_BAND_RPM) {
+            g_pwr.plat_ref = rpm; g_pwr.plat_min = rpm; g_pwr.plat_max = rpm; g_pwr.plat_since = now;
+        } else {
+            if (rpm < g_pwr.plat_min) g_pwr.plat_min = rpm;
+            if (rpm > g_pwr.plat_max) g_pwr.plat_max = rpm;
+            // A rev cap is a SUSTAINED, FLAT ceiling at WOT below the normal limiter, with hot
+            // oil (the documented oil-temp protection). "Flat" (narrow band) is what separates a
+            // real ceiling from a slow climb or a fuel stumble; hot oil is what separates it from
+            // a drag/gear-limited top-speed plateau on a cool engine. A brief plateau (< HOLD) or
+            // a wobble > the band resets the tracker above, so neither reaches here.
+            if (now - g_pwr.plat_since >= PWR_REVCAP_HOLD_MS && g_pwr.plat_ref < PWR_REVCAP_MAX_RPM &&
+                rpm >= PWR_WINDOW_RPM_MIN && oil_f >= PWR_REVCAP_OIL_F &&
+                (g_pwr.plat_max - g_pwr.plat_min) <= PWR_REVCAP_BAND_RPM) {
+                if (!g_pwr.rev_cap_ms || now - g_pwr.rev_cap_ms > 5000) g_pwr.rev_cap_count++;
+                g_pwr.rev_cap_rpm = (int)((g_pwr.plat_min + g_pwr.plat_max) * 0.5f + 0.5f);
+                g_pwr.rev_cap_ms = now;
+            }
+        }
+
+        // fuel stumble: a 300-1000 rpm drop between consecutive samples at WOT in a corner,
+        // that recovers within 1 s (an upshift drops more and doesn't come back)
+        if (thr85 && g_obd_data.rpm_prev_ts && (g_obd_data.rpm_timestamp - g_obd_data.rpm_prev_ts) <= 400) {
+            float drop = g_obd_data.rpm_prev - rpm;
+            float lat = g_vehicle_data.accel_valid ? g_vehicle_data.accel_x_g : 0.0f;
+            if (!g_pwr.fuel_pending && drop >= PWR_FUEL_DROP_MIN && drop <= PWR_FUEL_DROP_MAX && fabsf(lat) >= PWR_FUEL_LAT_G) {
+                g_pwr.fuel_pending = true; g_pwr.fuel_pre_rpm = g_obd_data.rpm_prev;
+                g_pwr.fuel_drop_ms = now; g_pwr.fuel_lat_g = lat;
+            }
+        }
+        if (g_pwr.fuel_pending) {
+            if (now - g_pwr.fuel_drop_ms > PWR_FUEL_RECOVER_MS) g_pwr.fuel_pending = false;      // never recovered: not a stumble
+            else if (rpm >= g_pwr.fuel_pre_rpm - 150.0f && now - g_pwr.fuel_drop_ms >= 150) {   // recovered: FUEL?
+                g_pwr.fuel_pending = false; g_pwr.fuel_ms = now;
+            }
+        }
+    }
+    if (!g_pwr_window) { g_pwr.plat_since = 0; g_pwr.fuel_pending = false; }
+
+    // ---- resolve the POWER state (worst active wins) ----
+    int state = PWR_OK, sev = 0;
+    char reason[48] = "";
+    const bool timing_hold = g_pwr.tim_bad_since && (now - g_pwr.tim_bad_since) >= PWR_TIM_HOLD_MS;
+    const bool red_hold    = g_pwr.tim_red_since && (now - g_pwr.tim_red_since) >= PWR_TIM_HOLD_MS;
+    static uint32_t tim_latch_until = 0, gap_latch_until = 0, load_latch_until = 0;
+    static int tim_latch_sev = 0;
+    if (timing_hold) {
+        tim_latch_until = g_pwr.tim_last_bad_ms + PWR_TIM_LATCH_MS;
+        // red only when the -6 breach itself was sustained; a lone edge spike stays amber
+        tim_latch_sev = red_hold ? 2 : 1;
+    }
+    if (g_pwr.gap_bad_since  && (now - g_pwr.gap_bad_since)  >= PWR_GAP_HOLD_MS)  gap_latch_until  = g_pwr.gap_last_bad_ms  + PWR_LATCH_MS;
+    if (g_pwr.load_bad_since && (now - g_pwr.load_bad_since) >= PWR_LOAD_HOLD_MS) load_latch_until = g_pwr.load_last_bad_ms + PWR_LATCH_MS;
+
+    const bool revcap_active = g_pwr.rev_cap_ms && (now - g_pwr.rev_cap_ms) < PWR_REVCAP_LATCH_MS;
+    const bool fuel_active   = g_pwr.fuel_ms    && (now - g_pwr.fuel_ms)    < PWR_FUEL_LATCH_MS;
+    const bool timing_active = (int32_t)(tim_latch_until - now) > 0;
+    const bool gap_active    = (int32_t)(gap_latch_until - now) > 0;
+    const bool load_active   = (int32_t)(load_latch_until - now) > 0;
+    const bool air_active    = g_pwr.air_loss_pct >= PWR_AIR_BANNER_PCT;
+
+    if (fuel_active) {
+        state = PWR_FUEL; sev = 2;
+        snprintf(reason, sizeof(reason), "FUEL? stumble %.1fg %s", fabsf(g_pwr.fuel_lat_g), g_pwr.fuel_lat_g >= 0 ? "R" : "L");
+    } else if (revcap_active) {
+        state = PWR_REVCAP; sev = 2;
+        snprintf(reason, sizeof(reason), "REV CAP %d", g_pwr.rev_cap_rpm);
+        if (oil_f >= 0) snprintf(reason + strlen(reason), sizeof(reason) - strlen(reason), " - OIL %dF", oil_f);
+    } else if (timing_active) {
+        state = PWR_TIMING; sev = tim_latch_sev;
+        snprintf(reason, sizeof(reason), "TIMING %.1f deg - %s", g_pwr.delta_worst, pwrAttribution(oil_f, iat_f, ect_f));
+    } else if (gap_active) {
+        state = PWR_THROTTLE; sev = 1;
+        snprintf(reason, sizeof(reason), "THROTTLE gap +%d vs cool", g_pwr.gap_delta);
+    } else if (load_active) {
+        state = PWR_LIFT; sev = 1;
+        snprintf(reason, sizeof(reason), "LIFT load %d%% vs cool", g_pwr.load_delta);
+    } else if (air_active) {
+        state = PWR_AIR; sev = 1;
+        snprintf(reason, sizeof(reason), "AIR %.1f%% - IAT %dF", -g_pwr.air_loss_pct, iat_f);
+    }
+    if (state != g_pwr.state) {
+        g_pwr.state_since = now;
+        if (state != PWR_OK) Serial.printf("[PWR] state -> %s (%s)\n", PWR_STATE_NAME[state], reason);
+        else Serial.println("[PWR] state -> OK");
+        if (state == PWR_OK) { g_pwr.ack_state = PWR_OK; g_pwr.ack_sev = 0; }   // re-arm the banner
+    }
+    g_pwr.state = state; g_pwr.sev = sev;
+    strncpy(g_pwr.reason, reason, sizeof(g_pwr.reason) - 1); g_pwr.reason[sizeof(g_pwr.reason) - 1] = '\0';
+
+    // ---- session stats ----
+    if (state != PWR_OK) g_pwr.sess_states_seen |= (uint16_t)(1u << state);
+    if (iat_f > g_pwr.sess_max_iat_f) g_pwr.sess_max_iat_f = iat_f;
+    if (g_pwr.air_loss_pct > g_pwr.sess_max_air_loss) g_pwr.sess_max_air_loss = g_pwr.air_loss_pct;
+
+    // ---- publish for the CSV ----
+    g_vehicle_data.tim_base_deg   = g_pwr.delta_valid ? g_pwr.tim_base : 0.0f;
+    g_vehicle_data.tim_delta_deg  = g_pwr.delta_valid ? g_pwr.tim_delta : 0.0f;
+    g_vehicle_data.tim_bin_n      = g_pwr.bin_n;
+    g_vehicle_data.thr_gap_pct    = g_pwr.gap_delta;
+    g_vehicle_data.load_delta_pct = g_pwr.delta_valid ? g_pwr.load_delta : 0;
+    g_vehicle_data.rev_cap_rpm    = g_pwr.rev_cap_rpm;
+    g_vehicle_data.air_loss_pct   = g_pwr.air_loss_pct;
+    g_vehicle_data.pwr_state      = state;
+    g_vehicle_data.pwr_sev        = sev;
+
+    // ---- housekeeping: persist the baseline (rate-limited), 2 s status line ----
+    pwrSaveBaseline(false);
+    static uint32_t last_line = 0;
+    if (now - last_line >= 2000) {
+        last_line = now;
+        Serial.printf("[PWR] %s%s%s | dTim %+.1f (bin %d n=%d base %.1f) | gap %+d | load %+d%% | revcap %d x%d | air %+.1f%% | win %d | oil %d iat %d ect %d\n",
+            PWR_STATE_NAME[state], reason[0] ? " " : "", reason,
+            g_pwr.delta_valid ? g_pwr.tim_delta : 0.0f,
+            g_pwr.bin >= 0 ? PWR_RPM_BIN_MIN + g_pwr.bin * PWR_RPM_BIN_SIZE : 0, g_pwr.bin_n,
+            g_pwr.delta_valid ? g_pwr.tim_base : 0.0f,
+            g_pwr.gap_delta, g_pwr.delta_valid ? g_pwr.load_delta : 0,
+            g_pwr.rev_cap_rpm, g_pwr.rev_cap_count, -g_pwr.air_loss_pct, g_pwr_window ? 1 : 0,
+            oil_f, iat_f, ect_f);
+    }
+}
+
+#else
+static void updatePowerMonitor() {}
+#endif // ENABLE_OBD_CAN
+#pragma endregion Heat Derate Monitor
 
 //=================================================================
 // SD CARD DATA LOGGER
@@ -4292,7 +5281,10 @@ bool sdStartSession() {
         // v6.10 fuel-trust transparency columns (appended so v6.9 positions are unchanged)
         "stft_b1,stft_b2,ltft_b1,ltft_b2,fuel_trim_valid,"
         "ft_timing_deg,pen_stft,pen_ltft,pen_bank,pen_timing,"
-        "mil_on,dtc_count\n";
+        "mil_on,dtc_count,"
+        // v6.15 Heat Derate Monitor columns (appended so v6.10 positions are unchanged; 80 total)
+        "tim_base_deg,tim_delta_deg,tim_bin_n,pedal_pct,pedal_src,thr_gap_pct,load_delta_pct,"
+        "rev_cap_rpm,air_loss_pct,pwr_state,pwr_sev,atf1_f,atf2_f,tcc_slip_rpm\n";
 
     size_t written = g_sd_state.data_file.print(header);
     if (written == 0) {
@@ -4401,7 +5393,7 @@ void sdWriteTask(void* parameter) {
     
     SDLogEntry entry;
     SerialLogEntry logEntry;
-    char line[700];  // v6.9: widened for datetime + extended OBD columns; v6.10: +12 fuel-trust fields
+    char line[700];  // v6.9: widened for datetime + extended OBD columns; v6.10: +12 fuel-trust fields; v6.15: +14 POWER fields (~370 chars worst case, fits)
     
     // Debug counter for periodic status
     uint32_t loop_counter = 0;
@@ -4515,7 +5507,10 @@ void sdWriteTask(void* parameter) {
                 // v6.10 fuel-trust transparency columns
                 "%.1f,%.1f,%.1f,%.1f,%d,"
                 "%.1f,%.1f,%.1f,%.1f,%.1f,"
-                "%d,%d\n",
+                "%d,%d,"
+                // v6.15 Heat Derate Monitor columns (14)
+                "%.1f,%.1f,%d,%d,%d,%d,%d,"
+                "%d,%.1f,%d,%d,%d,%d,%d\n",
                 datetime_copy, entry.data.rpm,  // datetime, rpm
                 entry.data.oil_pressure_psi, oil_press_crit,  // oil pressure + critical
                 entry.data.oil_temp_value_f, oil_temp_crit,  // oil temp + critical
@@ -4548,7 +5543,13 @@ void sdWriteTask(void* parameter) {
                 entry.data.fuel_trim_valid ? 1 : 0,
                 entry.data.ft_timing_deg, entry.data.ft_pen_stft, entry.data.ft_pen_ltft,
                 entry.data.ft_pen_bank,   entry.data.ft_pen_timing,
-                entry.data.mil_on ? 1 : 0, entry.data.dtc_count
+                entry.data.mil_on ? 1 : 0, entry.data.dtc_count,
+                // v6.15 Heat Derate Monitor (order matches the header exactly)
+                entry.data.tim_base_deg, entry.data.tim_delta_deg, entry.data.tim_bin_n,
+                entry.data.pedal_pct, entry.data.pedal_src, entry.data.thr_gap_pct, entry.data.load_delta_pct,
+                entry.data.rev_cap_rpm, entry.data.air_loss_pct, entry.data.pwr_state, entry.data.pwr_sev,
+                entry.data.atf_valid ? entry.data.atf1_f : -1, entry.data.atf_valid ? entry.data.atf2_f : -1,
+                entry.data.atf_valid ? entry.data.tcc_slip_rpm : -1
             );
             
             // Write with retry
@@ -4942,6 +5943,10 @@ bool loadWifiConfig() {
             templateFile.println("# CLOUD_FOLDER=370zMonitor_logs");
             templateFile.println("# v6.12 local WiFi file page: minutes to serve after boot (0=off, default 15):");
             templateFile.println("# FILE_SERVER_MINUTES=15");
+            templateFile.println("# v6.15 Heat Derate Monitor: sweep Nissan Mode 22 DIDs 0x1100-0x12FF once at idle (logs [DID] lines):");
+            templateFile.println("# OBD_DID_SWEEP=1");
+            templateFile.println("# v6.15: wipe the learned cool timing baseline at boot (remove the line afterwards):");
+            templateFile.println("# PWR_BASELINE_RESET=1");
             templateFile.close();
             Serial.printf("[WIFI] Template created at %s - please edit with your credentials\n", WIFI_CONFIG_FILE);
         } else {
@@ -5005,6 +6010,17 @@ bool loadWifiConfig() {
                 g_fileserver_minutes = value.toInt();
                 Serial.printf("[FILESRV] Serve window: %d min\n", g_fileserver_minutes);
             }
+#if ENABLE_OBD_CAN
+            // v6.15: Heat Derate Monitor options
+            else if (key.equalsIgnoreCase("OBD_DID_SWEEP")) {
+                g_did_sweep_enabled = (value.toInt() != 0);
+                Serial.printf("[DID] Mode 22 DID sweep: %s\n", g_did_sweep_enabled ? "ENABLED (runs once at idle)" : "off");
+            }
+            else if (key.equalsIgnoreCase("PWR_BASELINE_RESET")) {
+                g_pwr_baseline_reset_req = (value.toInt() != 0);
+                if (g_pwr_baseline_reset_req) Serial.println("[PWR] baseline reset requested by /wifi.cfg (remove the line afterwards)");
+            }
+#endif
         }
     }
     
@@ -7683,6 +8699,15 @@ static const char* dtcDescription(const char* c) {
     return "";
 }
 
+// v6.15: long-press on the popup's RESET BASELINE button wipes the learned cool map.
+// Closes the popup and confirms with a toast so the reset is unmistakable.
+static void pwr_reset_longpress_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    pwrResetBaseline("long-press in popup");
+    if (g_ft_popup) { lv_obj_delete(g_ft_popup); g_ft_popup = NULL; }
+    showToast("POWER baseline reset - relearns on cool WOT", TOAST_COLOR_SUCCESS, TOAST_SUCCESS_MS);
+}
+
 static void showFuelTrustPopup() {
     if (!ui_Screen1) return;
     if (g_ft_popup) { lv_obj_delete(g_ft_popup); g_ft_popup = NULL; }
@@ -7730,7 +8755,11 @@ static void showFuelTrustPopup() {
             "  STFT avg %.1f%%  ->  -%.0f\n"
             "  LTFT avg %.1f%%  ->  -%.0f\n"
             "  Bank split ST %.1f / LT %.1f  ->  -%.0f\n"
+#if FUEL_TRUST_TIMING_MODE
+            "  Timing vs cool %+.1f deg  ->  -%.0f\n"
+#else
             "  Timing pulls x%d  ->  -%.0f\n"
+#endif
             "  --------------------------\n"
             "  = %d%%\n"
             "\n"
@@ -7742,7 +8771,11 @@ static void showFuelTrustPopup() {
             g_ft.avgAbsST, g_ft.penST,
             g_ft.avgAbsLT, g_ft.penLT,
             g_ft.deltaST, g_ft.deltaLT, g_ft.penBank,
+#if FUEL_TRUST_TIMING_MODE
+            g_pwr.delta_valid ? g_pwr.tim_delta : 0.0f, g_ft.penTiming,
+#else
             g_ft.timingPulls, g_ft.penTiming,
+#endif
             g_ft.score, avgLTsigned, dir);
     } else {
         snprintf(b, sizeof(b),
@@ -7783,6 +8816,60 @@ static void showFuelTrustPopup() {
     lv_obj_set_style_text_font(dtc, &lv_font_montserrat_14, 0);
     lv_obj_align(dtc, LV_ALIGN_TOP_LEFT, 470, 72);
 
+    // v6.15: POWER block (Heat Derate Monitor) under the trouble codes
+    {
+        char p[700]; int n = 0;
+        const int oil_f = g_vehicle_data.oil_temp_valid ? g_vehicle_data.oil_temp_value_f : -1;
+        const int iat_f = g_vehicle_data.intake_air_temp_valid ? g_vehicle_data.intake_air_temp_f : -1;
+        const int ect_f = g_vehicle_data.water_temp_valid ? g_vehicle_data.water_temp_value_f : -1;
+        int ready = 0;
+        for (int i = 0; i < PWR_RPM_BINS; i++) if (g_pwr_base.bin[i].n >= PWR_BIN_MIN_N) ready++;
+        n += snprintf(p + n, sizeof(p) - n, "POWER   %s%s%s\n", PWR_STATE_NAME[g_pwr.state],
+                      g_pwr.reason[0] ? "  " : "", g_pwr.reason);
+        if (g_pwr.delta_valid)
+            n += snprintf(p + n, sizeof(p) - n, "  timing %+.1f vs cool  (bin %d n=%d: %.1f now / %.1f cool)\n",
+                          g_pwr.tim_delta, PWR_RPM_BIN_MIN + g_pwr.bin * PWR_RPM_BIN_SIZE, g_pwr.bin_n,
+                          g_pwr.tim_live, g_pwr.tim_base);
+        else
+            n += snprintf(p + n, sizeof(p) - n, "  timing: baseline %d/%d bins ready, learning on cool WOT\n", ready, PWR_RPM_BINS);
+        if (g_pwr.pedal_src)
+            n += snprintf(p + n, sizeof(p) - n, "  pedal %d%% (%s)  plate %d%%  gap %+d vs cool\n",
+                          g_pwr.pedal_pct, g_pwr.pedal_src == 1 ? "PID 49" : "CAN 180",
+                          g_vehicle_data.throttle_valid ? g_vehicle_data.throttle_pct : -1, g_pwr.gap_delta);
+        else
+            n += snprintf(p + n, sizeof(p) - n, "  pedal: no source (PID 0x49 / CAN 0x180 silent)\n");
+        n += snprintf(p + n, sizeof(p) - n, "  load %+d%% vs cool   rev cap %s%d (x%d)\n",
+                      g_pwr.delta_valid ? g_pwr.load_delta : 0, g_pwr.rev_cap_rpm ? "" : "none ",
+                      g_pwr.rev_cap_rpm, g_pwr.rev_cap_count);
+        n += snprintf(p + n, sizeof(p) - n, "  air %+.1f%%  IAT %dF  baro %d kPa\n", -g_pwr.air_loss_pct, iat_f,
+                      g_vehicle_data.baro_valid ? g_vehicle_data.baro_kpa : -1);
+        n += snprintf(p + n, sizeof(p) - n, "  temps  oil %d  IAT %d  ECT %d  -> %s\n", oil_f, iat_f, ect_f,
+                      pwrAttribution(oil_f, iat_f, ect_f));
+        if (g_vehicle_data.atf_valid)
+            n += snprintf(p + n, sizeof(p) - n, "  ATF (TCM, verify) %d / %dF  slip %d rpm", g_vehicle_data.atf1_f,
+                          g_vehicle_data.atf2_f, g_vehicle_data.tcc_slip_rpm);
+        else
+            n += snprintf(p + n, sizeof(p) - n, "  ATF (TCM): no reply yet");
+        lv_obj_t* pw = lv_label_create(g_ft_popup);
+        lv_label_set_text(pw, p);
+        lv_obj_set_style_text_color(pw, g_pwr.sev == 2 ? lv_color_hex(0xFF6F5E) :
+                                        g_pwr.sev == 1 ? lv_color_hex(0xF2A93B) : lv_color_hex(0x9FD8FF), 0);
+        lv_obj_set_style_text_font(pw, &lv_font_montserrat_14, 0);
+        lv_obj_align(pw, LV_ALIGN_TOP_LEFT, 470, 236);
+
+        // long-press (1.5 s) button: wipe the learned baseline. A plain tap does nothing,
+        // so a stray touch can't erase it.
+        lv_obj_t* btn = lv_btn_create(g_ft_popup);   // same API the file browser uses
+        lv_obj_set_size(btn, 200, 34);
+        lv_obj_align(btn, LV_ALIGN_BOTTOM_RIGHT, -24, -16);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), 0);
+        lv_obj_add_event_cb(btn, pwr_reset_longpress_cb, LV_EVENT_LONG_PRESSED, NULL);
+        lv_obj_t* bl = lv_label_create(btn);
+        lv_label_set_text(bl, "hold: RESET BASELINE");
+        lv_obj_set_style_text_font(bl, &lv_font_montserrat_14, 0);
+        lv_obj_center(bl);
+    }
+
     Serial.println("[UI] Fuel Trust popup opened");
 }
 
@@ -7791,6 +8878,66 @@ static void fuel_trust_tap_cb(lv_event_t* e) {
     // Kick a fresh DTC read so the codes shown are current, then open the popup.
     if (g_obd_initialized) { sendOBD_Mode03(); g_dtc_last_read_ms = millis(); }
     showFuelTrustPopup();
+}
+
+// ---------------------------------------------------------------------------
+// v6.15: POWER banner — top-layer strip (same pattern as the DEMO banner), shown only
+// when the Heat Derate Monitor state is not OK. Amber = AIR/LIFT/THROTTLE/TIMING(-3),
+// red = TIMING(-6)/FUEL?/REV CAP. Tap = acknowledge (hides until a worse state or a
+// different one) + opens the popup. Re-arms automatically when the state returns to OK.
+// ---------------------------------------------------------------------------
+static lv_obj_t* g_pwr_banner = NULL;
+
+static void pwr_banner_tap_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    g_pwr.ack_state = g_pwr.state; g_pwr.ack_sev = g_pwr.sev;
+    if (g_pwr_banner) lv_obj_add_flag(g_pwr_banner, LV_OBJ_FLAG_HIDDEN);
+    g_pwr.banner_shown = false;
+    Serial.printf("[PWR] banner acknowledged (%s)\n", PWR_STATE_NAME[g_pwr.state]);
+    showFuelTrustPopup();
+}
+
+static void updatePowerBanner() {
+    const bool want = !g_demo_mode && g_pwr.state != PWR_OK &&
+                      !(g_pwr.state == g_pwr.ack_state && g_pwr.sev <= g_pwr.ack_sev);
+    if (!want) {
+        if (g_pwr_banner && g_pwr.banner_shown) { lv_obj_add_flag(g_pwr_banner, LV_OBJ_FLAG_HIDDEN); g_pwr.banner_shown = false; }
+        return;
+    }
+    if (!g_pwr_banner) {
+        lv_obj_t* top = lv_layer_top();
+        g_pwr_banner = lv_label_create(top);
+        lv_obj_set_style_bg_opa(g_pwr_banner, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_font(g_pwr_banner, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_pad_ver(g_pwr_banner, 5, 0);
+        lv_obj_set_style_pad_hor(g_pwr_banner, 40, 0);
+        lv_obj_set_width(g_pwr_banner, lv_pct(100));
+        lv_obj_set_style_text_align(g_pwr_banner, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(g_pwr_banner, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_add_flag(g_pwr_banner, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_add_flag(g_pwr_banner, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(g_pwr_banner, pwr_banner_tap_cb, LV_EVENT_CLICKED, NULL);
+    }
+    static int last_state = -1, last_sev = -1; static char last_reason[48] = "";
+    if (last_state != g_pwr.state || last_sev != g_pwr.sev || strcmp(last_reason, g_pwr.reason) != 0) {
+        last_state = g_pwr.state; last_sev = g_pwr.sev;
+        strncpy(last_reason, g_pwr.reason, sizeof(last_reason) - 1); last_reason[sizeof(last_reason) - 1] = '\0';
+        char t[80];
+        snprintf(t, sizeof(t), "PWR  %s", g_pwr.reason[0] ? g_pwr.reason : PWR_STATE_NAME[g_pwr.state]);
+        lv_label_set_text(g_pwr_banner, t);
+        if (g_pwr.sev >= 2) {
+            lv_obj_set_style_bg_color(g_pwr_banner, lv_color_hex(0xE03A2E), 0);
+            lv_obj_set_style_text_color(g_pwr_banner, lv_color_hex(0xFFFFFF), 0);
+        } else {
+            lv_obj_set_style_bg_color(g_pwr_banner, lv_color_hex(0xF2A93B), 0);
+            lv_obj_set_style_text_color(g_pwr_banner, lv_color_hex(0x000000), 0);
+        }
+    }
+    if (!g_pwr.banner_shown) {
+        lv_obj_clear_flag(g_pwr_banner, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(g_pwr_banner);
+        g_pwr.banner_shown = true;
+    }
 }
 #else
 static void fuel_trust_tap_cb(lv_event_t* e) { LV_UNUSED(e); }  // OBD disabled: no-op
@@ -9496,9 +10643,14 @@ void setup() {
 
     // Load unit preferences from flash
     loadUnitPreferences();
-    
+
     // Load auto brightness preference from flash
     loadAutoBrightnessPreference();
+
+#if ENABLE_OBD_CAN
+    // v6.15: learned cool timing baseline (Heat Derate Monitor) from flash
+    pwrLoadBaseline();
+#endif
 
     // Initialize Modbus RS485 sensors
 #if ENABLE_MODBUS_SENSORS
@@ -10039,10 +11191,18 @@ void loop() {
         Serial.printf("[STATUS] fps=%d (frames=%u flushes=%u) cpu0=%d%% cpu1=%d%% idle0=%u idle1=%u heap=%u mode=%s\n",
             fps, frames, flushes, cpu0_percent, cpu1_percent, delta0, delta1,
             ESP.getFreeHeap(), g_demo_mode ? "DEMO" : "LIVE");
-        // v6.7: running session summary line
+        // v6.7: running session summary line (v6.15: + Heat Derate Monitor peaks)
+#if ENABLE_OBD_CAN
+        Serial.printf("[SESSION] min_oilP(>2k)=%dpsi peak_oilT=%dF maxG lat=%.2f lon=%.2f vert=%.2f | min_dTiming=%.1f rev_cap=%d max_IAT=%dF max_air_loss=%.1f%% states=0x%02X\n",
+            (g_sess.min_oil_psi >= 9999) ? 0 : g_sess.min_oil_psi,
+            g_sess.peak_oil_f, g_sess.max_lat_g, g_sess.max_lon_g, g_sess.max_vert_g,
+            g_pwr.sess_min_delta, g_pwr.rev_cap_rpm, g_pwr.sess_max_iat_f, g_pwr.sess_max_air_loss,
+            g_pwr.sess_states_seen);
+#else
         Serial.printf("[SESSION] min_oilP(>2k)=%dpsi peak_oilT=%dF maxG lat=%.2f lon=%.2f vert=%.2f\n",
             (g_sess.min_oil_psi >= 9999) ? 0 : g_sess.min_oil_psi,
             g_sess.peak_oil_f, g_sess.max_lat_g, g_sess.max_lon_g, g_sess.max_vert_g);
+#endif
         cpu_busy_time = 0;
         last_status = now;
     }
@@ -10062,6 +11222,12 @@ void loop() {
 
         // Step 1.5 (v6.14): OBD oil temp fills in for the dead Modbus oil-temp sensor
         mergeOilTempSource();
+
+        // Step 1.6 (v6.15): Heat Derate Monitor — needs the merged oil temp, feeds the banner + CSV
+        updatePowerMonitor();
+#if ENABLE_OBD_CAN
+        updatePowerBanner();
+#endif
 
         // Step 2: Update UI from g_vehicle_data
         updateUI();

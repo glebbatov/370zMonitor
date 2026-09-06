@@ -4,7 +4,7 @@
 
 **370zMonitor** is a track car data logging and display system for a 2018 Nissan 370Z. It uses an ESP32-S3 microcontroller with a 7" touchscreen to display real-time sensor data during track days.
 
-- **Current Version:** v6.14
+- **Current Version:** v6.15
 - **Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (800x480) with onboard TJA1051T CAN transceiver and SP3485 RS485 transceiver
 - **Hardware:** Waveshare Industrial 8-Ch Analog Acquisition Module (Model B, 0-10V / 0-20mA / 4-20mA selectable)
 - **Hardware:** Crowtail I2C Hub 2.0 (for multiple I2C devices)
@@ -131,6 +131,7 @@ Defined near the top of `370zMonitor.ino`. Default values shown:
 #define ENABLE_USB_MSC              1   // USB Mass Storage mode
 #define ENABLE_MODBUS_SENSORS       1   // RS485 sensor reading
 #define ENABLE_OBD_CAN              1   // OBD-II via CAN bus (TWAI)
+#define FUEL_TRUST_TIMING_MODE      1   // v6.15: 1=Fuel Trust timing term uses the learned-baseline delta; 0=legacy consecutive-sample counter
 #define UPDATE_INTERVAL_MS          25  // UI refresh rate (ms)
 #define USB_MSC_BOOT_PIN            0   // GPIO0 = BOOT button
 ```
@@ -169,6 +170,47 @@ Defined in the "Gauges Configuration" region of the sketch:
 | Steer Temp | 60 F | 300 F | `>=230 F` |
 | Diff Temp | 60 F | 320 F | `>=260 F` |
 | Fuel Trust | 0% | 100% | `<=75%` |
+
+### v6.15 Heat Derate Monitor ("POWER") — is the ECU pulling power because it's hot?
+
+Answers this from the OBD tap alone (no new hardware). Lives in the `#pragma region Heat Derate Monitor`
+in `370zMonitor.ino`; runs from `loop()` right after `mergeOilTempSource()`.
+
+- **Power windows** (`pwrUpdateWindow`): while throttle >= 70% and rpm >= 3000 (or the pedal is pinned),
+  the OBD scheduler switches to `OBD_PID_LIST_POWER` at 60 ms so timing advance (PID 0x0E) refreshes ~8 Hz
+  instead of every 3-5 s. The full 26-PID list resumes 1.5 s after the throttle lifts.
+- **Learned cool baseline** (`g_pwr_base`, NVS namespace `timbase`): WOT timing/load/pedal-gap averaged per
+  500-rpm bin while the engine is warm-but-cool (ECT 160-205F, IAT <120F, oil <230F). rpm is extrapolated to
+  the timing sample's timestamp, and the baseline is slope-interpolated across neighbour bins so bin edges
+  don't read phantom pull. **Reset**: long-press RESET BASELINE in the FUEL TRUST popup, or
+  `PWR_BASELINE_RESET=1` in `/wifi.cfg`.
+- **Detectors -> one POWER state (worst wins)**: FUEL? (rpm stumble that recovers at WOT in a corner),
+  REV CAP (flat rpm plateau <7000 at WOT with hot oil), TIMING (delta vs baseline: -3 amber / -6 red, each
+  sustained), THROTTLE (pedal-vs-plate gap grows vs cool), LIFT (calculated load below the cool baseline),
+  AIR (SAE J1349 density loss from IAT+baro; banner only >=6%). All time-qualified and latched.
+- **UI**: a top banner (same top-layer pattern as the DEMO banner; amber/red; hidden when OK) shows state +
+  reason; tap = acknowledge + open the FUEL TRUST popup, which gained a POWER block + the RESET button.
+- **CSV**: 14 columns appended (66 -> **80 total**, existing positions unchanged): `tim_base_deg, tim_delta_deg,
+  tim_bin_n, pedal_pct, pedal_src, thr_gap_pct, load_delta_pct, rev_cap_rpm, air_loss_pct, pwr_state, pwr_sev,
+  atf1_f, atf2_f, tcc_slip_rpm`. New `[PWR]` serial line every 2 s; `[SESSION]` extended.
+- **Pedal**: PID 0x49 if supported, else passive CAN `0x180` byte F (`pedal_src` says which).
+- **TCM ATF temps + TCC slip** via Mode 21 LID 0x20 (`0x7E1`->`0x7E9`). **Byte offsets `TCM_ATF1_IDX` etc.
+  are PROVISIONAL** — the raw record is dumped on a `[TCM]` line to confirm against the PRTXI trans temp.
+- **Discovery** (one-time, logged): supported-PID bitmaps at boot (`[OBD-DISC]`), a 30 s passive CAN ID
+  census (`[CAN-DISC]`), and an optional Nissan Mode 22 DID sweep (`OBD_DID_SWEEP=1` in `/wifi.cfg`, `[DID]`).
+- **Fuel Trust** timing term now uses the baseline delta (`FUEL_TRUST_TIMING_MODE 1`); the old
+  consecutive-sample counter was noise (fired in 24.5% of a street drive). The score will change.
+
+**v6.15 first-flash validation (on-car, in order):**
+1. Flash; confirm splash reads v6.15 and the CSV header has 80 columns ending `...atf1_f,atf2_f,tcc_slip_rpm`.
+2. Boot: read the `[OBD-DISC]` line — confirm whether pedal 0x49 / torque 0x61-63 are supported; `[CAN-DISC]`
+   line — is 0x180 heard (pedal source)?
+3. Idle: `[TCM]` line dumps the Mode 21 record. Compare the provisional ATF1/ATF2 against the PRTXI trans
+   sensor; adjust `TCM_ATF1_IDX`/`TCM_ATF2_IDX`/`TCM_TCC_IDX` if the bytes are off.
+4. First drive: on `[CAN180]`, check `pedalRaw180`/255 tracks the pedal and `rpmRaw180` tracks RPM (scale).
+5. Track day: the morning (cool) session builds the baseline; the afternoon shows deltas. Compare the
+   banner/`[PWR]` verdicts and the CSV against how the car felt. HOST-VERIFIED only; NOT yet flash-tested.
+
 
 ### Unit Preferences
 Stored in ESP32 Preferences (flash), namespace `units`:
